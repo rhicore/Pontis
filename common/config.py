@@ -25,10 +25,13 @@ class Config:
     max_json_depth: int = 10  # Maximum depth for JSON flattening
 
     # LLM settings
-    llm_provider: str = "anthropic"  # or "openai"
-    llm_model: str = "claude-sonnet-4-6"
-    llm_api_key: Optional[str] = None
+    llm_provider: str = "https://api.deepseek.com"  # or "openai"
+    llm_model: str = "deepseek-chat"
+    llm_api_key: Optional[str] = 'sk-3c10dd45fab045228ca025f88eeb85bb'
     llm_enabled: bool = True
+
+    # Semantic enrichment settings
+    brief_max_words: int = 20  # Max words for column brief (for ls display)
 
     # Caching
     cache_enabled: bool = True

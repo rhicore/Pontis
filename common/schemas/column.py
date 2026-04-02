@@ -39,3 +39,7 @@ class ColumnNode(BaseNode):
     samples: List[Any] = Field(default_factory=list)
 
     # Note: Foreign key info is now handled at Table level by JoinRelationEnricher
+
+    # AI-generated semantic descriptions
+    brief: Optional[str] = None  # Short explanation of field format and meaning
+    detail: Optional[str] = None  # Detailed data range, cardinality guidance for SQL literals

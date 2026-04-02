@@ -227,10 +227,16 @@ class ModularEngine(ExtractorEngine):
 
     def _register_default_enrichers(self):
         """Register built-in enrichers (if enabled)"""
-        if self.config.llm_enabled:
-            from extractor.enrichers.ai_summary import AISummaryEnricher
-            self.register_enricher(AISummaryEnricher(self.config))
-
-        # Always register relationship enricher (it's fast)
+        # Phase 2a: Relationship detection (fast, no LLM needed)
         from extractor.enrichers.join_relation import JoinRelationEnricher
         self.register_enricher(JoinRelationEnricher(self.config))
+
+        # Phase 2b: Semantic enrichment (requires LLM)
+        if self.config.llm_enabled:
+            # Column-level semantic analysis
+            from extractor.enrichers.column_semantic import ColumnSemanticEnricher
+            self.register_enricher(ColumnSemanticEnricher(self.config))
+
+            # Table-level semantic summary
+            from extractor.enrichers.table_semantic import TableSemanticEnricher
+            self.register_enricher(TableSemanticEnricher(self.config))

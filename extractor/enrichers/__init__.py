@@ -11,5 +11,12 @@ To add a new enricher:
 """
 from extractor.enrichers.ai_summary import AISummaryEnricher
 from extractor.enrichers.join_relation import JoinRelationEnricher
+from extractor.enrichers.column_semantic import ColumnSemanticEnricher
+from extractor.enrichers.table_semantic import TableSemanticEnricher
 
-__all__ = ["AISummaryEnricher", "JoinRelationEnricher"]
+__all__ = [
+    "AISummaryEnricher",
+    "JoinRelationEnricher",
+    "ColumnSemanticEnricher",
+    "TableSemanticEnricher",
+]

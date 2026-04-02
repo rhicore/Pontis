@@ -18,6 +18,10 @@ class TableNode(BaseNode):
     # Join info as flat list of dicts
     joins: List[Dict[str, Any]] = Field(default_factory=list)
 
+    # AI-generated semantic descriptions
+    brief: Optional[str] = None  # Short summary for ls display (max 20 words)
+    detail: Optional[str] = None  # Detailed description for SQL generation guidance
+
 
 class ViewNode(BaseNode):
     """Schema for View nodes - separate from TableNode"""
