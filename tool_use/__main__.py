@@ -14,7 +14,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from tool_use.tools import ToolContext, ls, stat, search, find
+from tool_use.tools import ToolContext, ls, meta, search, find
 
 
 def ls_command(args):
@@ -32,15 +32,15 @@ def ls_command(args):
         sys.exit(1)
 
 
-def stat_command(args):
-    """Execute stat command"""
+def meta_command(args):
+    """Execute meta command"""
     pontis_path = os.path.abspath(args.pontis)
     if not os.path.exists(pontis_path):
         print(f"Error: .pontis directory not found: {pontis_path}", file=sys.stderr)
         sys.exit(1)
     try:
         ctx = ToolContext(pontis_path)
-        result = stat(args.path, ctx)
+        result = meta(args.path, args.key, ctx)
         print(result)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -183,8 +183,11 @@ Examples:
   # List contents of .pontis directory
   python -m tool_use ls ./my_data/.pontis
 
-  # Get detailed info about a table
-  python -m tool_use stat ./my_data/.pontis mydb.db/orders
+  # Get metadata about a table
+  python -m tool_use meta ./my_data/.pontis mydb.db/orders
+
+  # Get specific metadata key
+  python -m tool_use meta ./my_data/.pontis mydb.db/orders row_count
 
   # Search for columns related to "customer"
   python -m tool_use search ./my_data/.pontis "customer"
@@ -204,10 +207,11 @@ Examples:
     ls_parser.add_argument('pontis', help='Path to .pontis directory')
     ls_parser.add_argument('path', nargs='?', default='.', help='Path within .pontis to list')
 
-    # Stat command
-    stat_parser = subparsers.add_parser('stat', help='Get detailed info about a node')
-    stat_parser.add_argument('pontis', help='Path to .pontis directory')
-    stat_parser.add_argument('path', help='Path to node within .pontis')
+    # META command
+    meta_parser = subparsers.add_parser('meta', help='Get metadata of a node')
+    meta_parser.add_argument('pontis', help='Path to .pontis directory')
+    meta_parser.add_argument('path', help='Path to node within .pontis')
+    meta_parser.add_argument('key', nargs='?', help='Specific metadata key to retrieve (optional)')
 
     # Search command
     search_parser = subparsers.add_parser('search', help='Search for nodes')
@@ -229,8 +233,8 @@ Examples:
 
     if args.command == 'ls':
         ls_command(args)
-    elif args.command == 'stat':
-        stat_command(args)
+    elif args.command == 'meta':
+        meta_command(args)
     elif args.command == 'search':
         search_command(args)
     elif args.command == 'find':

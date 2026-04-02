@@ -1,5 +1,5 @@
 """Column node schema - simplified and flattened"""
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from pydantic import Field
 from common.schemas.base import BaseNode, NodeType
 
@@ -30,12 +30,12 @@ class ColumnNode(BaseNode):
     max_length: Optional[int] = None
     avg_length: Optional[float] = None
 
-    # Top K most frequent values - compact string format
-    # Format: "value1:count1, value2:count2, ..."
-    top_k: str = ""
+    # Top K most frequent values - YAML friendly list of dicts
+    # Format: [{"value": "xxx", "count": 5}, ...]
+    top_k: List[Dict[str, Any]] = Field(default_factory=list)
 
-    # Sample values - compact string format
-    # Format: "value1, value2, ..."
-    samples: str = ""
+    # Sample values - YAML friendly list
+    # Format: ["value1", "value2", ...]
+    samples: List[Any] = Field(default_factory=list)
 
     # Note: Foreign key info is now handled at Table level by JoinRelationEnricher

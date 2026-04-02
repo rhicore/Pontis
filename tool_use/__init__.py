@@ -4,13 +4,13 @@ This module provides tools that LLM agents can use to explore and query
 the virtual file system created by the Pontis extractor.
 """
 from .vfs import PontisVFS
-from .tools import ls, stat, search, find
+from .tools import ls, meta, search, find
 from .prompts import SYSTEM_PROMPT, get_tool_descriptions
 
 __all__ = [
     "PontisVFS",
     "ls",
-    "stat",
+    "meta",
     "search",
     "find",
     "SYSTEM_PROMPT",

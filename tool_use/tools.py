@@ -54,16 +54,17 @@ def ls(path: str = ".", context: Optional[ToolContext] = None) -> str:
         return f"Error listing directory: {e}"
 
 
-def stat(path: str, context: Optional[ToolContext] = None) -> str:
+def meta(path: str, key: Optional[str] = None, context: Optional[ToolContext] = None) -> str:
     """
-    Get detailed information about a virtual node.
+    Get metadata of a virtual node (token-efficient format for LLM).
 
     Args:
         path: Path to the node (relative or absolute within pontis)
+        key: Specific metadata key to retrieve (optional)
         context: Tool execution context
 
     Returns:
-        Detailed node information
+        Node metadata in compact text format
     """
     if context is None:
         return "Error: No context provided"
@@ -71,12 +72,24 @@ def stat(path: str, context: Optional[ToolContext] = None) -> str:
     try:
         resolved_path = context.resolve_path(path)
         node = context.vfs.get_node_info(resolved_path)
-        return context.vfs.format_stat_output(node)
+
+        if key:
+            # Return specific key value (compact)
+            value = node.raw_meta.get(key)
+            if value is None:
+                return f"{key}: N/A"
+            # For joins, use compact format
+            if key == "joins" and isinstance(value, list):
+                return context.vfs.format_joins_compact(value)
+            return f"{key}: {value}"
+        else:
+            # Return all metadata (compact format)
+            return context.vfs.format_meta_compact(node)
 
     except FileNotFoundError:
         return f"Error: Node not found: {path}"
     except Exception as e:
-        return f"Error getting node info: {e}"
+        return f"Error: {e}"
 
 
 def search(query: str, path: str = ".", context: Optional[ToolContext] = None) -> str:
@@ -214,14 +227,18 @@ TOOL_DEFINITIONS = [
         }
     },
     {
-        "name": "stat",
-        "description": "Get detailed metadata about a specific node (file, table, column, etc.) in the Pontis VFS",
+        "name": "meta",
+        "description": "Get metadata of a specific node (file, table, column, etc.) in the Pontis VFS. Optionally retrieve a specific key.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
                     "description": "Path to the node (relative or absolute within pontis)"
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Optional: specific metadata key to retrieve (e.g., 'row_count', 'data_type'). If omitted, returns all metadata."
                 }
             },
             "required": ["path"]

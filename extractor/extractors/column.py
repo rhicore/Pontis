@@ -68,13 +68,12 @@ class ColumnExtractor(BaseExtractor):
             # Calculate stats
             self._calculate_stats(cursor, table_name, column_name, data_type, table_row_count, node)
 
-            # Get samples as compact string
+            # Get samples as list
             try:
-                samples = self._get_samples(cursor, table_name, column_name)[:5]
-                node.samples = ", ".join(str(s) for s in samples)
+                node.samples = self._get_samples(cursor, table_name, column_name)[:5]
             except Exception as e:
                 logger.debug(f"Could not get samples: {e}")
-                node.samples = ""
+                node.samples = []
 
             return node
 
@@ -169,11 +168,10 @@ class ColumnExtractor(BaseExtractor):
                 ORDER BY cnt DESC
                 LIMIT {self.config.top_k}
             ''')
-            top_k_items = [f"{row[0]}:{row[1]}" for row in cursor.fetchall()]
-            node.top_k = ", ".join(top_k_items)
+            node.top_k = [{"value": row[0], "count": row[1]} for row in cursor.fetchall()]
         except Exception as e:
             logger.debug(f"Could not get top k: {e}")
-            node.top_k = ""
+            node.top_k = []
 
     def _get_samples(self, cursor, table_name: str, column_name: str) -> List[Any]:
         """Get sample values"""

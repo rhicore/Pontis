@@ -101,8 +101,8 @@ Long: <long description>"""
 
     def _enrich_column(self, node: ColumnNode) -> None:
         """Generate AI summary for column"""
-        # Get samples from compact string format
-        sample_str = node.samples[:100] if node.samples else 'N/A'
+        # Get samples from list
+        sample_str = ', '.join(str(s) for s in node.samples[:3]) if node.samples else 'N/A'
 
         prompt = f"""Analyze this database column and provide brief descriptions.
 

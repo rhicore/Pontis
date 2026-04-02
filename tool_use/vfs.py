@@ -23,6 +23,7 @@ class VFSNode:
     view_count: Optional[int] = None
     line_count: Optional[int] = None
     cardinality: Optional[int] = None
+    null_percentage: Optional[float] = None  # For Column nodes
     data_type: Optional[str] = None  # For Column nodes
     raw_meta: Dict[str, Any] = field(default_factory=dict)
 
@@ -170,6 +171,7 @@ class PontisVFS:
             view_count=meta.get('view_count'),
             line_count=meta.get('line_count'),
             cardinality=meta.get('cardinality'),
+            null_percentage=meta.get('null_percentage'),  # For Column nodes
             data_type=meta.get('data_type'),  # For Column nodes
             raw_meta=meta
         )
@@ -214,7 +216,7 @@ class PontisVFS:
 
         return name
 
-    def format_stat_output(self, node: VFSNode) -> str:
+    def format_meta_output(self, node: VFSNode) -> str:
         """Format node for stat command output - flat structure."""
         lines = []
 
@@ -277,7 +279,92 @@ class PontisVFS:
         if 'top_level_keys' in meta and meta['top_level_keys']:
             lines.append(f"\nTop-level keys: {', '.join(meta['top_level_keys'][:10])}")
 
+        # Display joins for tables
+        if 'joins' in meta and meta['joins']:
+            joins = meta['joins']
+            if joins:
+                lines.append(f"\nJoin Relationships ({len(joins)} found):")
+                for j in joins[:10]:  # Limit to 10
+                    target = j.get('target_table', 'unknown')
+                    src_col = j.get('source_column', 'unknown')
+                    tgt_col = j.get('target_column', 'unknown')
+                    conf = j.get('confidence', 0)
+                    comment = j.get('comment', '')
+                    lines.append(f"  {src_col} -> {target}.{tgt_col} (confidence: {conf})")
+                    if comment:
+                        lines.append(f"    Note: {comment}")
+
         return "\n".join(lines)
+
+    def format_meta_compact(self, node: VFSNode) -> str:
+        """Format node metadata in compact, token-efficient format for LLM."""
+        meta = node.raw_meta
+        lines = []
+
+        # Header: Type Name
+        type_name = node.node_type
+        name = node.name
+        if node.data_type:  # For Column
+            name = f"{name}({node.data_type})"
+        lines.append(f"{type_name}: {name}")
+
+        # Core stats (single line)
+        stats = []
+        if node.row_count is not None:
+            stats.append(f"rows={node.row_count}")
+        if node.column_count is not None:
+            stats.append(f"cols={node.column_count}")
+        if node.cardinality is not None:
+            stats.append(f"distinct={node.cardinality}")
+        if node.null_percentage is not None:
+            stats.append(f"null={node.null_percentage:.1f}%")
+        if stats:
+            lines.append(f"Stats: {', '.join(stats)}")
+
+        # Joins (compact)
+        joins = meta.get('joins')
+        if joins:
+            join_strs = []
+            for j in joins[:5]:  # Limit to 5
+                src = j.get('source_column', '?')
+                tgt = f"{j.get('target_table', '?')}.{j.get('target_column', '?')}"
+                conf = j.get('confidence', 0)
+                join_strs.append(f"{src}->{tgt}(c{conf})")
+            lines.append(f"Joins: {', '.join(join_strs)}")
+
+        # Top K values (compact from list)
+        top_k = meta.get('top_k')
+        if top_k and isinstance(top_k, list):
+            topk_strs = []
+            for item in top_k[:5]:
+                val = item.get('value', '?')
+                cnt = item.get('count', 0)
+                topk_strs.append(f"{val}:{cnt}")
+            lines.append(f"TopK: {', '.join(topk_strs)}")
+
+        # Samples (compact from list)
+        samples = meta.get('samples')
+        if samples and isinstance(samples, list):
+            lines.append(f"Samples: {', '.join(str(s) for s in samples[:5])}")
+
+        # Summary (if exists)
+        short = meta.get('short_summary')
+        if short:
+            lines.append(f"Desc: {short}")
+
+        return " | ".join(lines)
+
+    def format_joins_compact(self, joins: list) -> str:
+        """Format joins list in compact format."""
+        if not joins:
+            return "Joins: N/A"
+        parts = []
+        for j in joins[:5]:
+            src = j.get('source_column', '?')
+            tgt = f"{j.get('target_table', '?')}.{j.get('target_column', '?')}"
+            conf = j.get('confidence', 0)
+            parts.append(f"{src}->{tgt}(c{conf})")
+        return f"Joins: {', '.join(parts)}"
 
     def _build_stat_name(self, node: VFSNode) -> str:
         """Build display name with type annotations for stat."""

@@ -45,24 +45,55 @@ class JoinRelationEnricher(BaseEnricher):
         return True
 
     def enrich(self, tree: NodeTree) -> None:
-        """Analyze all tables and detect join relationships"""
-        logger.info("Analyzing join relationships...")
+        """
+        Enrich join relationships:
+        1. AI-detect additional joins based on column name patterns
+        2. Generate reverse (inbound) join records for all tables
+
+        Note: Explicit foreign keys are already extracted by TableExtractor (Phase 1)
+        """
+        logger.info("Enriching join relationships...")
 
         # Step 1: Build index of all columns by normalized name
         self._build_column_index(tree)
 
-        # Step 2: For each table, find potential joins
+        # Step 2: AI-detect additional joins and collect all joins for reverse generation
+        all_joins = []  # [(source_path, join_dict), ...]
+
         for rel_path, node in tree.walk():
             if not isinstance(node, TableNode):
                 continue
 
+            # Collect existing joins from Phase 1 (extractor)
+            if node.joins:
+                for j in node.joins:
+                    all_joins.append((rel_path, j))
+
+            # AI-detect additional joins (enricher)
             try:
-                joins = self._detect_joins_for_table(node, rel_path, tree)
-                if joins:
-                    node.joins = joins
-                    logger.info(f"Found {len(joins)} joins for {node.name}")
+                detected_joins = self._detect_joins_for_table(node, rel_path, tree)
+                for j in detected_joins:
+                    # Check if this join already exists (avoid duplicates)
+                    is_duplicate = any(
+                        existing[0] == rel_path and
+                        existing[1].get("target_table") == j.get("target_table") and
+                        existing[1].get("source_column") == j.get("source_column")
+                        for existing in all_joins
+                    )
+                    if not is_duplicate:
+                        all_joins.append((rel_path, j))
+                        if not node.joins:
+                            node.joins = []
+                        node.joins.append(j)
+                        logger.debug(f"AI detected join: {node.name}.{j['source_column']} -> {j['target_table']}")
+
+                if detected_joins:
+                    logger.info(f"AI detected {len(detected_joins)} new joins for {node.name}")
             except Exception as e:
-                logger.warning(f"Failed to analyze joins for {rel_path}: {e}")
+                logger.warning(f"Failed to detect joins for {rel_path}: {e}")
+
+        # Step 3: Generate reverse joins (enricher - requires all tables info)
+        self._add_reverse_joins(tree, all_joins)
 
     def _build_column_index(self, tree: NodeTree) -> None:
         """Index all columns by their normalized names"""
@@ -83,17 +114,31 @@ class JoinRelationEnricher(BaseEnricher):
     def _detect_joins_for_table(
         self, table: TableNode, table_path: str, tree: NodeTree
     ) -> List[Dict]:
-        """Detect potential joins for a single table"""
+        """
+        Detect potential joins for a single table using AI heuristics.
+        Skips columns that already have explicit foreign keys (from Phase 1 extractor).
+        """
         joins = []
         table_name = table.name.lower()
+
+        # Get columns that already have explicit FKs (skip these)
+        explicit_fk_columns = set()
+        if table.joins:
+            for j in table.joins:
+                if j.get("confidence") == 1.0:
+                    explicit_fk_columns.add(j.get("source_column"))
 
         # Get this table's columns
         table_columns = self._get_table_columns(table_path, tree)
 
         for col_name, column in table_columns:
+            # Skip if this column already has an explicit FK
+            if col_name in explicit_fk_columns:
+                continue
+
             col_lower = col_name.lower()
 
-            # Pattern 1: Column looks like FK (ends with _id)
+            # Pattern: Column looks like FK (ends with _id)
             for suffix in self.FK_SUFFIXES:
                 if col_lower.endswith(suffix):
                     base = col_lower[:-len(suffix)]
@@ -106,22 +151,20 @@ class JoinRelationEnricher(BaseEnricher):
                         target_pk = self._find_primary_key(target_path, tree)
 
                         if target_pk:
+                            confidence = 0.8 if col_lower == f"{base}_id" else 0.6
                             joins.append({
-                                "from_column": col_name,
-                                "to_table": os.path.basename(target_path),
-                                "to_column": target_pk,
-                                "confidence": "high" if col_lower == f"{base}_id" else "medium",
-                                "type": "fk_candidate"
+                                "target_table": os.path.basename(target_path),
+                                "target_column": target_pk,
+                                "source_column": col_name,
+                                "confidence": confidence,
+                                "comment": f"AI detected: column name pattern '{col_name}' suggests join to '{target_table}'"
                             })
-
-            # Pattern 2: This table might be referenced by others
-            # (enriched when processing those tables)
 
         # Deduplicate
         seen = set()
         unique_joins = []
         for j in joins:
-            key = (j["from_column"], j["to_table"])
+            key = (j["source_column"], j["target_table"])
             if key not in seen:
                 seen.add(key)
                 unique_joins.append(j)
@@ -166,6 +209,40 @@ class JoinRelationEnricher(BaseEnricher):
                 return child_name
 
         return None
+
+    def _add_reverse_joins(self, tree: NodeTree, all_joins: List[Tuple[str, Dict]]) -> None:
+        """Add reverse (inbound) join records to target tables"""
+        for source_path, join in all_joins:
+            target_table_name = join.get("target_table")
+            if not target_table_name:
+                continue
+
+            # Find target table node
+            target_path = self._find_table_path(target_table_name.lower(), tree)
+            if not target_path:
+                continue
+
+            target_node = tree.get_node(target_path)
+            if not isinstance(target_node, TableNode):
+                continue
+
+            # Create reverse join record
+            reverse_join = {
+                "target_table": os.path.basename(source_path),  # Source becomes target
+                "target_column": join.get("source_column"),  # Source column becomes target
+                "source_column": join.get("target_column"),  # Target column becomes source
+                "confidence": join.get("confidence"),
+                "comment": f"Reverse: this table is referenced by '{os.path.basename(source_path)}'"
+            }
+
+            # Add to target table's joins
+            if not target_node.joins:
+                target_node.joins = []
+            target_node.joins.append(reverse_join)
+
+            # Save updated target node
+            tree.save_node(target_path, target_node)
+            logger.info(f"Added reverse join to {target_table_name} from {os.path.basename(source_path)}")
 
     def _pluralize(self, word: str) -> str:
         """Simple pluralization"""

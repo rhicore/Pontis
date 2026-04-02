@@ -14,7 +14,9 @@
       "Bash(PYTHONPATH=/nfsdat2/home/bcchenslm/Projects/Pontis uv run python -m extractor ./example_data/context -v)",
       "Bash(PYTHONPATH=/nfsdat2/home/bcchenslm/Projects/Pontis uv run:*)",
       "Bash(mv csv_extractor.py csv.py)",
-      "Bash(mv json_extractor.py json.py)"
+      "Bash(mv json_extractor.py json.py)",
+      "Bash(mkdir -p /tmp/test_data)",
+      "Bash(cp /tmp/test_fk.db /tmp/test_data/)"
     ]
   }
 }

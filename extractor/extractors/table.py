@@ -59,6 +59,9 @@ class TableExtractor(BaseExtractor):
             # Get column count and PK
             columns_info, pk_columns = self._get_column_info(cursor, table_name, dialect)
 
+            # Get foreign keys (joins)
+            joins = self._get_foreign_keys(cursor, table_name, dialect)
+
             # Get view definition if applicable
             view_definition = None
             base_tables = []
@@ -67,7 +70,7 @@ class TableExtractor(BaseExtractor):
 
             # Create node
             if is_view:
-                return ViewNode(
+                node = ViewNode(
                     name=table_name,
                     row_count=row_count,
                     column_count=len(columns_info),
@@ -75,13 +78,17 @@ class TableExtractor(BaseExtractor):
                     base_tables=base_tables,
                     view_definition=view_definition
                 )
+                # Note: joins for views would need to be parsed from view_definition
+                return node
             else:
-                return TableNode(
+                node = TableNode(
                     name=table_name,
                     row_count=row_count,
                     column_count=len(columns_info),
                     primary_key=pk_columns[0] if pk_columns else None
                 )
+                node.joins = joins
+                return node
 
         except Exception as e:
             logger.error(f"Failed to extract table {table_name}: {e}")
@@ -117,6 +124,25 @@ class TableExtractor(BaseExtractor):
         except Exception as e:
             logger.warning(f"Failed to get view definition: {e}")
         return None
+
+    def _get_foreign_keys(self, cursor, table_name: str, dialect: str) -> List[dict]:
+        """Get foreign key relationships for the table"""
+        joins = []
+        try:
+            if dialect == "SQLite":
+                cursor.execute(f'PRAGMA foreign_key_list("{table_name}")')
+                for fk in cursor.fetchall():
+                    # SQLite returns: (id, seq, table, from, to, on_update, on_delete, match)
+                    joins.append({
+                        "target_table": fk[2],
+                        "target_column": fk[4],
+                        "source_column": fk[3],
+                        "confidence": 1.0,
+                        "comment": "Explicit foreign key constraint from database schema"
+                    })
+        except Exception as e:
+            logger.warning(f"Failed to get foreign keys for {table_name}: {e}")
+        return joins
 
     def expand(self, node: TableNode, physical_path: str, pontis_path: str):
         """
