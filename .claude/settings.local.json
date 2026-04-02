@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(echo \"Exit code: $?\")",
+      "Bash(uv add:*)",
+      "Bash(uv run:*)",
+      "Bash(mv csv_node.py csv.py)",
+      "Bash(mv json_node.py json.py)",
+      "Bash(mv markdown_node.py markdown.py)",
+      "Bash(ls -la /nfsdat2/home/bcchenslm/Projects/Pontis/*.py)",
+      "Bash(rm -rf /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/context/.pontis)",
+      "Bash(PYTHONPATH=/nfsdat2/home/bcchenslm/Projects/Pontis uv run python -m extractor ./example_data/context -v)",
+      "Bash(PYTHONPATH=/nfsdat2/home/bcchenslm/Projects/Pontis uv run:*)",
+      "Bash(mv csv_extractor.py csv.py)",
+      "Bash(mv json_extractor.py json.py)"
+    ]
+  }
+}

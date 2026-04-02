@@ -1,0 +1,42 @@
+# Pontis VFS Configuration
+
+# Directory settings
+pontis_dir_name: ".pontis"
+meta_filename: "_meta.yml"
+
+# Supported file extensions
+db_extensions:
+  - ".db"
+  - ".sqlite"
+  - ".sqlite3"
+  - ".duckdb"
+
+csv_extensions:
+  - ".csv"
+
+json_extensions:
+  - ".json"
+  - ".jsonl"
+
+md_extensions:
+  - ".md"
+  - ".markdown"
+
+# Extraction settings
+sample_size: 100
+top_k: 5
+max_json_depth: 10
+
+# LLM settings
+llm_provider: "anthropic"
+llm_model: "claude-sonnet-4-6"
+llm_api_key: null
+llm_enabled: false
+
+# Caching
+cache_enabled: true
+skip_unchanged_files: true
+
+# Logging
+log_level: "INFO"
+log_file: null
