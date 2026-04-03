@@ -7,7 +7,7 @@ import logging
 from typing import Optional
 
 from extractor.base import BaseEnricher, NodeTree
-from common.config import Config
+from extractor.config import ExtractorConfig
 from common.schemas.base import BaseNode
 from common.schemas.table import TableNode, ViewNode
 from common.schemas.column import ColumnNode
@@ -23,7 +23,7 @@ class AISummaryEnricher(BaseEnricher):
     Priority: 500 (middle - after basic extraction, before late enrichers)
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: ExtractorConfig):
         super().__init__(config)
         self.llm_client = None
         if config.llm_enabled:

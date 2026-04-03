@@ -3,7 +3,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from common.config import Config
+from extractor.config import ExtractorConfig
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class BaseLLMClient(ABC):
     """Base class for LLM clients"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: ExtractorConfig):
         self.config = config
 
     @abstractmethod
@@ -31,7 +31,7 @@ class PlaceholderLLMClient(BaseLLMClient):
 class AnthropicClient(BaseLLMClient):
     """Anthropic Claude client"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: ExtractorConfig):
         super().__init__(config)
         self.api_key = config.llm_api_key
         self.model = config.llm_model
@@ -54,7 +54,7 @@ class AnthropicClient(BaseLLMClient):
 class OpenAIClient(BaseLLMClient):
     """OpenAI-compatible client (supports OpenAI, Deepseek, etc.)"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: ExtractorConfig):
         super().__init__(config)
         self.api_key = config.llm_api_key
         self.model = config.llm_model
@@ -94,7 +94,7 @@ class OpenAIClient(BaseLLMClient):
             return ""
 
 
-def get_llm_client(config: Config) -> BaseLLMClient:
+def get_llm_client(config: ExtractorConfig) -> BaseLLMClient:
     """Factory function to get appropriate LLM client"""
     if not config.llm_enabled:
         return PlaceholderLLMClient(config)

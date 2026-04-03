@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 from extractor.base import BaseEnricher, NodeTree
 from extractor.llm import get_llm_client
-from common.config import Config
+from extractor.config import ExtractorConfig
 from common.schemas.table import TableNode
 from common.schemas.column import ColumnNode
 
@@ -27,7 +27,7 @@ class ColumnSemanticEnricher(BaseEnricher):
     Priority: 800 (runs after join detection which may inform column semantics)
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: ExtractorConfig):
         super().__init__(config)
         self.llm = get_llm_client(config)
 

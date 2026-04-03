@@ -9,7 +9,7 @@ from typing import Dict, List, Set, Tuple, Optional
 from collections import defaultdict
 
 from extractor.base import BaseEnricher, NodeTree
-from common.config import Config
+from extractor.config import ExtractorConfig
 from common.schemas.table import TableNode
 from common.schemas.column import ColumnNode
 
@@ -32,7 +32,7 @@ class JoinRelationEnricher(BaseEnricher):
     # Patterns that suggest foreign key columns
     FK_SUFFIXES = ['_id', '_key', '_code', 'id', 'uuid']
 
-    def __init__(self, config: Config):
+    def __init__(self, config: ExtractorConfig):
         super().__init__(config)
         self._column_index: Dict[str, List[Tuple[str, ColumnNode]]] = defaultdict(list)
 

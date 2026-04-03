@@ -1,4 +1,4 @@
-"""Configuration management"""
+"""Extractor configuration"""
 import os
 from dataclasses import dataclass, field
 from typing import Optional, List
@@ -6,8 +6,8 @@ import yaml
 
 
 @dataclass
-class Config:
-    """Pontis configuration"""
+class ExtractorConfig:
+    """Pontis extractor configuration"""
 
     # Directory settings
     pontis_dir_name: str = ".pontis"
@@ -27,8 +27,8 @@ class Config:
     # LLM settings
     llm_provider: str = "https://api.deepseek.com"  # or "openai"
     llm_model: str = "deepseek-chat"
-    llm_api_key: Optional[str] = 'sk-3c10dd45fab045228ca025f88eeb85bb'
-    llm_enabled: bool = True
+    llm_api_key: Optional[str] = None
+    llm_enabled: bool = False
 
     # Semantic enrichment settings
     brief_max_words: int = 20  # Max words for column brief (for ls display)
@@ -42,7 +42,7 @@ class Config:
     log_file: Optional[str] = None
 
     @classmethod
-    def from_file(cls, path: str) -> "Config":
+    def from_file(cls, path: str) -> "ExtractorConfig":
         """Load config from YAML file"""
         with open(path, 'r') as f:
             data = yaml.safe_load(f)
@@ -54,10 +54,10 @@ class Config:
             yaml.dump(self.__dict__, f, default_flow_style=False)
 
 
-def load_config(path: Optional[str] = None) -> Config:
+def load_config(path: Optional[str] = None) -> ExtractorConfig:
     """Load configuration from file or return defaults"""
     if path and os.path.exists(path):
-        return Config.from_file(path)
+        return ExtractorConfig.from_file(path)
 
     # Check for config in common locations
     config_paths = [
@@ -68,6 +68,6 @@ def load_config(path: Optional[str] = None) -> Config:
 
     for p in config_paths:
         if os.path.exists(p):
-            return Config.from_file(p)
+            return ExtractorConfig.from_file(p)
 
-    return Config()
+    return ExtractorConfig()

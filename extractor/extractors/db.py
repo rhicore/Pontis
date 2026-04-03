@@ -8,7 +8,7 @@ import logging
 from typing import List, Optional
 
 from extractor.base import BaseExtractor
-from common.config import Config
+from extractor.config import ExtractorConfig
 from common.schemas.db import DBNode
 
 logger = logging.getLogger(__name__)

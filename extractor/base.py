@@ -18,7 +18,7 @@ from pathlib import Path
 
 import yaml
 
-from common.config import Config
+from extractor.config import ExtractorConfig
 from common.schemas.base import BaseNode
 
 logger = logging.getLogger(__name__)
@@ -146,7 +146,7 @@ class BaseExtractor(ABC):
     For containers (like DB), implement expand() to generate child nodes.
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: ExtractorConfig):
         self.config = config
         self.logger = logging.getLogger(self.__class__.__name__)
 
@@ -211,7 +211,7 @@ class BaseEnricher(ABC):
     4. No side effects outside pontis directory
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: ExtractorConfig):
         self.config = config
         self.logger = logging.getLogger(self.__class__.__name__)
 

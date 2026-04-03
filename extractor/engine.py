@@ -8,7 +8,7 @@ import logging
 from typing import List, Optional, Type
 from pathlib import Path
 
-from common.config import Config
+from extractor.config import ExtractorConfig
 from common.schemas.base import BaseNode
 from extractor.base import BaseExtractor, BaseEnricher, NodeTree
 
@@ -30,7 +30,7 @@ class ExtractorEngine:
         Result: enriched metadata (joins, AI summaries, etc.)
     """
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Optional[ExtractorConfig] = None):
         self.config = config or Config()
         self._extractors: List[BaseExtractor] = []
         self._enrichers: List[BaseEnricher] = []
@@ -199,7 +199,7 @@ class ModularEngine(ExtractorEngine):
     Users can extend by registering additional ones.
     """
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Optional[ExtractorConfig] = None):
         super().__init__(config)
         self._register_default_extractors()
         self._register_default_enrichers()

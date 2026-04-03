@@ -4,7 +4,7 @@ import logging
 from typing import Any, List, Optional
 
 from extractor.base import BaseExtractor
-from common.config import Config
+from extractor.config import ExtractorConfig
 from common.schemas.column import ColumnNode
 
 logger = logging.getLogger(__name__)

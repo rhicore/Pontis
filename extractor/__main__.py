@@ -15,7 +15,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from common.config import Config, load_config
+from extractor.config import ExtractorConfig, load_config
 from extractor.engine import ModularEngine
 
 
@@ -31,7 +31,7 @@ def setup_logging(log_level: str = "INFO", log_file: str = None):
     )
 
 
-def print_summary(target_path: str, config: Config):
+def print_summary(target_path: str, config: ExtractorConfig):
     """Print summary of extracted metadata"""
     pontis_path = os.path.join(target_path, config.pontis_dir_name)
     if not os.path.exists(pontis_path):
