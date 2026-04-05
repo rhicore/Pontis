@@ -1,45 +1,90 @@
-"""Column node schema - simplified and flattened"""
-from typing import List, Optional, Any, Dict
-from pydantic import Field
+"""Column node schema - FLAT STRUCTURE ONLY
+
+Columns are stored as: [table].table/[colname].[datatype].col/
+
+Inside the .col folder:
+- _meta.yml: flat metadata (stats, type info)
+- .sample/ folder: sample values (with _bin cache)
+- .topk/ folder: top-k frequent values (with _bin cache)
+"""
+from typing import Optional, Any
 from common.schemas.base import BaseNode, NodeType
 
 
 class ColumnNode(BaseNode):
-    """Schema for Column nodes - flattened stats"""
+    """Schema for Column nodes - ALL FIELDS ARE FLAT
+
+    Stored as: [table].table/[colname].[datatype].col/_meta.yml
+
+    Example _meta.yml:
+        type: "Column"
+        name: "id.INT.col"
+        data_type: "INT"
+        nullable: false
+        cardinality: 1000
+        null_count: 0
+        min_value: 1
+        max_value: 1000
+        # Note: samples and top_k are NOT stored here
+        # They are in subfolders: .sample/ and .topk/
+    """
     type: NodeType = NodeType.COLUMN
 
-    # Column data type for display (e.g., "TEXT", "INTEGER", "REAL")
-    # This is shown in ls output
+    # Column data type for display (scalar)
     data_type: str = "UNKNOWN"
 
-    # Nullable flag
+    # Nullable flag (scalar)
     nullable: bool = True
 
-    # Flat stats - all at top level, no nested structures
-    cardinality: Optional[int] = None  # Distinct count (shown in ls as "Distinct: X")
+    # Stats (all scalars)
+    cardinality: Optional[int] = None  # Distinct count
     null_count: Optional[int] = None
     null_percentage: Optional[float] = None
 
-    # For numeric columns - flat stats
+    # For numeric columns (scalars)
     min_value: Optional[Any] = None
     max_value: Optional[Any] = None
     mean_value: Optional[float] = None
 
-    # For string columns - flat stats
+    # For string columns (scalars)
     min_length: Optional[int] = None
     max_length: Optional[int] = None
     avg_length: Optional[float] = None
 
-    # Top K most frequent values - YAML friendly list of dicts
-    # Format: [{"value": "xxx", "count": 5}, ...]
-    top_k: List[Dict[str, Any]] = Field(default_factory=list)
+    # AI-generated semantic descriptions (scalars)
+    brief: Optional[str] = None
+    detail: Optional[str] = None
 
-    # Sample values - YAML friendly list
-    # Format: ["value1", "value2", ...]
-    samples: List[Any] = Field(default_factory=list)
+    # Note: samples and top_k are stored in subfolders, not here
+    # - .sample/_meta.yml and .sample/_bin
+    # - .topk/_meta.yml and .topk/_bin
 
-    # Note: Foreign key info is now handled at Table level by JoinRelationEnricher
 
-    # AI-generated semantic descriptions
-    brief: Optional[str] = None  # Short explanation of field format and meaning
-    detail: Optional[str] = None  # Detailed data range, cardinality guidance for SQL literals
+class SampleNode(BaseNode):
+    """Sample values node - stored in .sample/ folder
+
+    The actual sample values are stored in _bin file (serialized).
+    _meta.yml only contains metadata about the sample.
+    """
+    type: NodeType = NodeType.COLUMN  # Same type as parent
+
+    # Sample metadata (scalars)
+    sample_count: int = 0
+    sample_source: Optional[str] = None  # Reference to parent column
+
+    # Note: actual samples are in _bin file
+
+
+class TopKNode(BaseNode):
+    """Top-K values node - stored in .topk/ folder
+
+    The actual top-k values are stored in _bin file (serialized).
+    _meta.yml only contains metadata.
+    """
+    type: NodeType = NodeType.COLUMN  # Same type as parent
+
+    # Top-K metadata (scalars)
+    k: int = 5
+    total_distinct: Optional[int] = None
+
+    # Note: actual top-k values are in _bin file
