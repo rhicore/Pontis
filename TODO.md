@@ -218,3 +218,37 @@ ls列，就是显示这个列的所有distinct值
   
 
 **案例**：在 GA360 数据库中，存在按日期命名的表（如 `GA_SESSIONS_20160801` 到 `GA_SESSIONS_20170801`），每张表的 DDL 文件超过 150KB 。通过这种压缩方式，DDL 总大小从超过 50MB 降至不足 2MB，在不丢失核心信息的情况下实现了 **96% 以上的压缩率** 。
+
+
+
+# 每种数据类型显示的Info
+- json/xml/md等序列化或文本文件
+    - 文本行数
+- DICT 
+    - 5 pairs
+- ARRAY
+    - xx items
+- STR
+    - 直接展示字符串，如果超出某个长度就显示字符串长度
+- BOOL
+    - 直接展示 true false
+- INT
+    - 直接展示整数值，如果超出就隐藏
+- NULL
+    - 不用展示
+
+- col
+    - INT.col
+        
+    - ...
+
+- table
+    - 展示行数和列数
+- view
+    - 展示列数
+
+- db
+    - 展示多少张表
+
+- sample/topk
+    - 采样/取top数量

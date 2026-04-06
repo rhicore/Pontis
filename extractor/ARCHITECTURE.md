@@ -2,121 +2,85 @@
 
 ## 文件树结构
 
+每个文件夹下面必然有一个_meta.yml 代表当前文件夹对应文件的元数据，这里不显示
 ```
 .pontis/
 ├── raw_data/                              # 原始数据目录（无后缀）
 │
 ├── [数据库名].db/                          # 数据库目录 (.db)
-│   ├── _meta.yml                          # 数据库元数据
 │   │
 │   ├── [表名].table/                       # 表目录 (.table)
-│   │   ├── _meta.yml                      # 表元数据
 │   │   │
 │   │   ├── [列名].[数据类型].col/          # 列目录 (.col)
-│   │   │   ├── _meta.yml                  # 列元数据
 │   │   │   ├── .sample/                   # 采样值目录
-│   │   │   │   ├── _meta.yml
 │   │   │   │   └── _bin                   # 序列化的采样值
 │   │   │   └── .topk/                     # Top-K 值目录
-│   │   │       ├── _meta.yml
 │   │   │       └── _bin                   # 序列化的 Top-K 值
 │   │   │
 │   │   └── [其他列].[类型].col/            # 更多列...
 │   │
 │   ├── [视图名].view/                      # 视图目录 (.view)
-│   │   ├── _meta.yml                      # 视图元数据
 │   │   │
 │   │   ├── [列名].[数据类型].col/          # 视图列 (.col)
-│   │   │   ├── _meta.yml
 │   │   │   ├── .sample/
-│   │   │   │   ├── _meta.yml
 │   │   │   │   └── _bin
 │   │   │   └── .topk/
-│   │   │       ├── _meta.yml
 │   │   │       └── _bin
 │   │   │
 │   │   └── [源列名]__to__[目标表].[目标列].flow   # 血缘关系 (.flow)
-│   │       └── _meta.yml
 │   │
 │   ├── [表名].[列名]__to__[目标表].[目标列].fk    # 物理外键 (.fk)
-│   │   └── _meta.yml
 │   │
 │   └── [表名].[列名]__to__[目标表].[目标列].rel   # 逻辑关系 (.rel)
-│       └── _meta.yml
 │
 ├── [文档名].md/                            # Markdown 文档 (.md)
-│   ├── _meta.yml
 │   ├── section_1.chunk/                    # 文本分片 (.chunk)
-│   │   ├── _meta.yml
 │   │   └── _bin                            # 文本内容
 │   └── section_2.chunk/
-│       ├── _meta.yml
 │       └── _bin
 │
 ├── [文档名].txt/                           # 纯文本文档 (.txt)
-│   ├── _meta.yml
 │   ├── paragraph_1.chunk/
-│   │   ├── _meta.yml
 │   │   └── _bin
 │   └── paragraph_2.chunk/
-│       ├── _meta.yml
 │       └── _bin
 │
 ├── [文档名].pdf/                           # PDF 文档 (.pdf)
-│   ├── _meta.yml
 │   ├── page_1.chunk/
-│   │   ├── _meta.yml
 │   │   └── _bin                            # 文本提取内容
 │   └── page_2.chunk/
-│       ├── _meta.yml
 │       └── _bin
 │
 ├── [表名].csv/                             # CSV 文件 (.csv)
-│   ├── _meta.yml
 │   ├── [列名].TEXT.col/                    # CSV 列 (.col)
-│   │   ├── _meta.yml
 │   │   ├── .sample/
-│   │   │   ├── _meta.yml
 │   │   │   └── _bin
 │   │   └── .topk/
-│   │       ├── _meta.yml
 │   │       └── _bin
 │   └── [其他列].[类型].col/
 │
 ├── [表名].tsv/                             # TSV 文件 (.tsv)
-│   ├── _meta.yml
 │   └── [列名].[类型].col/                   # 同 CSV 结构
 │
 ├── [文件名].json/                          # JSON 文件 (.json)
-│   ├── _meta.yml
 │   └── [key_路径].json/                     # JSON 键目录
-│       ├── _meta.yml
 │       └── [子键].json/                     # 嵌套结构
-│           ├── _meta.yml
 │           └── ...
 │
 ├── [文件名].yaml/                          # YAML 文件 (.yaml)
-│   ├── _meta.yml
 │   └── [key_路径].yaml/                     # 同 JSON 结构
-│       ├── _meta.yml
 │       └── ...
 │
 ├── [文件名].xml/                           # XML 文件 (.xml)
-│   ├── _meta.yml
 │   └── [元素路径].xml/                      # XML 元素目录
-│       ├── _meta.yml
 │       └── ...
 │
 ├── [文件名].toml/                          # TOML 文件 (.toml)
-│   ├── _meta.yml
 │   └── [section].toml/                     # TOML section 目录
-│       ├── _meta.yml
 │       └── ...
 │
 └── [文件名].hcl/                           # HCL 文件 (.hcl)
-    ├── _meta.yml
     └── [block].hcl/                        # HCL block 目录
-        ├── _meta.yml
         └── ...
 ```
 
