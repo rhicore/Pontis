@@ -10,16 +10,17 @@ from tool_use.utils.serialized_vfs import (
     create_serialized_handler,
     is_serialized_file,
 )
-from tool_use.utils.ls_config import (
-    LS_CONFIG,
+from tool_use.utils.config import (
+    LS_TYPE_CONFIG,
+    SERIALIZED_TYPE_CONFIG,
     TypeConfig,
+)
+from tool_use.utils.formatters import (
     get_type_config,
     format_info_from_meta,
     get_brief_from_meta,
     get_file_type_from_name,
-    SERIALIZED_TYPE_CONFIG,
 )
-
 
 @dataclass
 class VFSNode:

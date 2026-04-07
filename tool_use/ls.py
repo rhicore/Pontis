@@ -10,7 +10,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from tool_use.utils.context import ToolContext
-from tool_use.utils.ls_config import can_ls_node, get_type_config, get_file_type_from_name
+from tool_use.utils.formatters import can_ls_node, get_type_config, get_file_type_from_name
 
 
 def ls_command(pontis_root: str, path: str = ".", current_cwd: str = "") -> str:

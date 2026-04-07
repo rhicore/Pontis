@@ -186,11 +186,10 @@ class PontisShell:
 
         elif cmd == "meta":
             if not arg:
-                return "Usage: meta <path>"
-            args = arg.split(maxsplit=1)
-            path = args[0]
-            key = args[1] if len(args) > 1 else None
-            return meta_command(self.pontis_path, path, key)
+                return "Usage: meta <path> [-a] [+key]"
+            # 传递所有参数
+            meta_args = arg.split()
+            return meta_command(self.pontis_path, meta_args, self.cwd)
 
         elif cmd == "search":
             if not arg:

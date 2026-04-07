@@ -88,7 +88,7 @@ class SerializedNode:
         Uses string template for consistent formatting.
         """
         # Import here to avoid circular import
-        from tool_use.utils.ls_config import format_serialized_info
+        from tool_use.utils.formatters import format_serialized_info
 
         type_name = self.node_type.value
         return format_serialized_info(type_name, self.value, max_str_len=30)
