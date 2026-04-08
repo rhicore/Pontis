@@ -8,10 +8,9 @@ Usage:
     pontis <folder>                    # Enter folder and start interactive shell
     pontis ls <project_path> [path]    # List directory
     pontis cd <project_path> <path>    # Change directory (returns new cwd)
-    pontis meta <project_path> <path>  # Get metadata (physical file only)
-    pontis pglob <project_path> <file> <pattern>  # Search entities
-    pontis pmeta <project_path> <file> [entity]   # Entity metadata
-    pontis pread <project_path> <file> [entity]   # Read content
+    pontis meta <project_path> <file> [entity]   # Get metadata
+    pontis read <project_path> <file> [entity]   # Read content
+    pontis glob <project_path> <file> [pattern]  # Search entities
 """
 import os
 import sys
@@ -23,7 +22,8 @@ sys.path.insert(0, project_root)
 
 from tool_use import (
     ls_command, cd_command,
-    pglob_command, pmeta_command, pread_command
+    glob_command, grep_command, meta_command, read_command,
+    pglob_command, pmeta_command, pread_command  # backward compatibility
 )
 
 # Tab completion support
@@ -39,7 +39,7 @@ class TabCompleter:
 
     def __init__(self, shell: 'PontisShell'):
         self.shell = shell
-        self.commands = ['ls', 'cd', 'pwd', 'pglob', 'pmeta', 'pread', 'clear', 'help', 'exit', 'quit']
+        self.commands = ['ls', 'cd', 'pwd', 'glob', 'grep', 'meta', 'read', 'clear', 'help', 'exit', 'quit']
 
     def complete(self, text, state):
         """Complete function for readline"""
@@ -124,7 +124,7 @@ class PontisShell:
             self.completer = TabCompleter(self)
             readline.set_completer(self.completer.complete)
             readline.parse_and_bind('tab: complete')
-            readline.set_completer_delims(' \t\n`!@#$^&*()=+[{]}\\|;\',<>?')
+            readline.set_completer_delims(r' \t\n`!@#$^&*()=+[{]}\|;\',<>?')
 
     def run(self):
         """Run interactive shell"""
@@ -176,26 +176,35 @@ class PontisShell:
         elif cmd == "pwd":
             return f"{self.cwd}" if self.cwd else "/"
 
-        elif cmd == "pglob":
-            # pglob <file> <pattern>
+        elif cmd == "glob":
+            # glob <file> [pattern]
             args = arg.split(maxsplit=1)
+            if len(args) < 1:
+                return "Usage: glob <physical_file> [pattern]"
+            physical_file = args[0]
+            pattern = args[1] if len(args) > 1 else "*"
+            return glob_command(self.project_path, physical_file, pattern, current_cwd=self.cwd)
+
+        elif cmd == "grep":
+            # grep <file> [entity] <pattern> [options]
+            args = arg.split()
             if len(args) < 2:
-                return "Usage: pglob <physical_file> <entity_pattern>"
-            return pglob_command(self.project_path, args[0], args[1], self.cwd)
+                return "Usage: grep <physical_file> [entity_name] <pattern> [options]"
+            return grep_command(self.project_path, args[0], args[1:], current_cwd=self.cwd)
 
-        elif cmd == "pmeta":
-            # pmeta <file> [entity] [options]
+        elif cmd == "meta":
+            # meta <file> [entity] [options]
             args = arg.split()
             if len(args) < 1:
-                return "Usage: pmeta <physical_file> [entity_name] [options]"
-            return pmeta_command(self.project_path, args[0], args[1:], self.cwd)
+                return "Usage: meta <physical_file> [entity_name] [options]"
+            return meta_command(self.project_path, *args, current_cwd=self.cwd)
 
-        elif cmd == "pread":
-            # pread <file> [entity] [options]
+        elif cmd == "read":
+            # read <file> [entity] [options]
             args = arg.split()
             if len(args) < 1:
-                return "Usage: pread <physical_file> [entity_name] [options]"
-            return pread_command(self.project_path, args[0], args[1:], self.cwd)
+                return "Usage: read <physical_file> [entity_name] [options]"
+            return read_command(self.project_path, *args, current_cwd=self.cwd)
 
         elif cmd == "clear":
             os.system('clear' if os.name != 'nt' else 'cls')
@@ -216,9 +225,10 @@ class PontisShell:
 │   pwd              Show current directory                   │
 │                                                              │
 │ Knowledge Graph (Pontis Entities):                           │
-│   pglob <file> <pat>   Search entities under physical file  │
-│   pmeta <file> [ent]   Show entity metadata                 │
-│   pread <file> [ent]   Read entity content                  │
+│   glob <file> [pat]   Search entities (default: all)        │
+│   grep <file> [ent] <pat>  Grep content in file/entity      │
+│   meta <file> [ent]   Show entity metadata                  │
+│   read <file> [ent]   Read entity content                   │
 │                                                              │
 │ Other:                                                       │
 │   clear            Clear screen                             │
@@ -234,10 +244,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  pontis ./my_project              # Enter project and start shell
-  pontis ls ./my_project           # List project root
-  pontis pglob ./my_project mydb.db "*.table"
-  pontis pread ./my_project mydb.db users.table
+  pontis ./my_project                    # Enter project and start shell
+  pontis ls ./my_project                 # List project root
+  pontis glob ./my_project mydb.db "*.table"
+  pontis read ./my_project mydb.db users.table
         """
     )
 
@@ -282,23 +292,31 @@ Examples:
             sys.exit(1)
         print(cd_command(project_path, "", extra_args[0]))
 
-    elif cmd == "pglob":
+    elif cmd == "glob":
+        if not extra_args:
+            print("Usage: pontis glob <project_path> <file> [pattern]")
+            sys.exit(1)
+        physical_file = extra_args[0]
+        pattern = extra_args[1] if len(extra_args) > 1 else "*"
+        print(glob_command(project_path, physical_file, pattern))
+
+    elif cmd == "grep":
         if len(extra_args) < 2:
-            print("Usage: pontis pglob <project_path> <file> <pattern>")
+            print("Usage: pontis grep <project_path> <file> [entity] <pattern>")
             sys.exit(1)
-        print(pglob_command(project_path, extra_args[0], extra_args[1]))
+        print(grep_command(project_path, extra_args[0], extra_args[1:]))
 
-    elif cmd == "pmeta":
+    elif cmd == "meta":
         if not extra_args:
-            print("Usage: pontis pmeta <project_path> <file> [entity] [options]")
+            print("Usage: pontis meta <project_path> <file> [entity] [options]")
             sys.exit(1)
-        print(pmeta_command(project_path, extra_args[0], extra_args[1:]))
+        print(meta_command(project_path, *extra_args))
 
-    elif cmd == "pread":
+    elif cmd == "read":
         if not extra_args:
-            print("Usage: pontis pread <project_path> <file> [entity] [options]")
+            print("Usage: pontis read <project_path> <file> [entity] [options]")
             sys.exit(1)
-        print(pread_command(project_path, extra_args[0], extra_args[1:]))
+        print(read_command(project_path, *extra_args))
 
     else:
         print(f"Unknown command: {cmd}")

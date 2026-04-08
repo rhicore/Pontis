@@ -26,8 +26,8 @@ def generate(storage: VFSStorage) -> None:
         logger.warning("LLM not configured, skipping semantic generation")
         return
 
-    # 扁平结构: *.db/*.*.*.col (e.g., "users.id.INT.col")
-    for node in storage.find_nodes("*.db/*.*.*.col"):
+    # 扁平结构: *.db/_entity/*.*.*.col (e.g., "users.id.INT.col")
+    for node in storage.find_nodes("*.db/_entity/*.*.*.col"):
         try:
             _generate_for_column(node, storage, llm)
         except Exception as e:

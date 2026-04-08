@@ -42,6 +42,8 @@ from extractor.txt_chunk import generate as txt_chunk
 
 # DB关系与语义
 from extractor.db_table_relations import generate as db_table_relations
+from extractor.db_column_overlap import generate as db_column_overlap
+from extractor.db_column_rel import generate as db_column_rel
 from extractor.db_table_semantic import generate as db_table_semantic
 from extractor.db_column_semantic import generate as db_column_semantic
 
@@ -121,7 +123,17 @@ def extract(target: str, config_path: str = None, verbose: bool = False) -> None
     db_table_relations(storage)
     logger.info("")
 
-    # ========== Phase 8: 语义分析（AI） ==========
+    # ========== Phase 8: 列值重叠检测（硬性规则） ==========
+    logger.info("[Phase 8] Detecting column overlaps...")
+    db_column_overlap(storage, config)
+    logger.info("")
+
+    # ========== Phase 9: 列关系打分（LLM软筛选） ==========
+    logger.info("[Phase 9] Scoring column relations...")
+    db_column_rel(storage, config)
+    logger.info("")
+
+    # ========== Phase 10: 语义分析（AI） ==========
     logger.info("[Phase 8] Generating semantics...")
     db_table_semantic(storage)
     db_column_semantic(storage)

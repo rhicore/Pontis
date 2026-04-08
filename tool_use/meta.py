@@ -1,26 +1,27 @@
-"""pmeta command - Read/Write metadata for physical files and knowledge graph entities
+"""meta command - Read/Write metadata for physical files and knowledge graph entities
 
-Usage for physical file attributes:
-    python -m tool_use.pmeta <project_path> <physical_file> [-a] [+key] [key=value]
+New syntax with :: operator:
+    python -m tool_use.meta <project_path> <physical_file::entity> [options]
 
-Usage for entity attributes:
-    python -m tool_use.pmeta <project_path> <physical_file> <entity_name> [-a] [+key] [key=value]
+Legacy syntax (still supported):
+    python -m tool_use.meta <project_path> <physical_file> [entity] [options]
 
 Examples:
     # Show physical file metadata
-    python -m tool_use.pmeta ./my_project mydb.db
-    python -m tool_use.pmeta ./my_project mydb.db -a
-    python -m tool_use.pmeta ./my_project mydb.db +table_count
+    python -m tool_use.meta ./my_project mydb.db
+    python -m tool_use.meta ./my_project mydb.db -a
+    python -m tool_use.meta ./my_project mydb.db +table_count
 
-    # Show entity metadata
-    python -m tool_use.pmeta ./my_project mydb.db users.table
-    python -m tool_use.pmeta ./my_project mydb.db users.id.INT.col +cardinality
+    # Show entity metadata (new :: syntax)
+    python -m tool_use.meta ./my_project "mydb.db::users.table"
+    python -m tool_use.meta ./my_project "mydb.db::users.id.INT.col" +cardinality
 
-    # Write metadata (physical file)
-    python -m tool_use.pmeta ./my_project mydb.db "semantic_summary=User database"
+    # Legacy syntax still works
+    python -m tool_use.meta ./my_project mydb.db users.table
 
-    # Write metadata (entity)
-    python -m tool_use.pmeta ./my_project mydb.db users.table "description=User info"
+    # Write metadata
+    python -m tool_use.meta ./my_project mydb.db "semantic_summary=User database"
+    python -m tool_use.meta ./my_project "mydb.db::users.table" "description=User info"
 """
 import sys
 import os
@@ -31,16 +32,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tool_use.utils.context import ToolContext
 
 
-def parse_pmeta_args(args: list) -> tuple:
-    """Parse pmeta command arguments.
+def parse_meta_args(args: list) -> tuple:
+    """Parse meta command arguments, supporting :: syntax.
 
-    Returns: (entity_name, show_all, specific_key, write_key, write_value)
+    Returns: (physical_file, entity_name, show_all, specific_key, write_key, write_value)
     """
     entity_name = None
     show_all = False
     specific_key = None
     write_key = None
     write_value = None
+    physical_file = None
 
     i = 0
     while i < len(args):
@@ -48,8 +50,10 @@ def parse_pmeta_args(args: list) -> tuple:
 
         if arg == "-a":
             show_all = True
+            i += 1
         elif arg.startswith("+"):
             specific_key = arg[1:]
+            i += 1
         elif "=" in arg:
             # Write operation: key=value
             parts = arg.split("=", 1)
@@ -68,16 +72,24 @@ def parse_pmeta_args(args: list) -> tuple:
                     write_value = False
                 elif write_value.lower() == "null" or write_value.lower() == "none":
                     write_value = None
-        else:
-            # This is likely the entity name (first non-flag arg after physical file)
-            if entity_name is None:
-                entity_name = arg
+            i += 1
+        elif physical_file is None:
+            # Check for :: syntax
+            if '::' in arg:
+                parts = arg.split('::', 1)
+                physical_file = parts[0]
+                entity_name = parts[1] if parts[1] else None
             else:
-                # Second non-flag arg - treat as value for write
-                pass
-        i += 1
+                physical_file = arg
+            i += 1
+        elif entity_name is None:
+            # Legacy syntax: second non-flag arg is entity name
+            entity_name = arg
+            i += 1
+        else:
+            i += 1
 
-    return entity_name, show_all, specific_key, write_key, write_value
+    return physical_file, entity_name, show_all, specific_key, write_key, write_value
 
 
 def find_meta_path(pontis_root: str, physical_file: str, entity_name: str = None) -> str:
@@ -92,8 +104,8 @@ def find_meta_path(pontis_root: str, physical_file: str, entity_name: str = None
         Path to _meta.yml file
     """
     if entity_name:
-        # Entity meta is under the physical file directory
-        meta_dir = os.path.join(pontis_root, physical_file, entity_name)
+        # Entity meta is under _entity folder
+        meta_dir = os.path.join(pontis_root, physical_file, "_entity", entity_name)
     else:
         # Physical file meta is in the file's directory
         meta_dir = os.path.join(pontis_root, physical_file)
@@ -169,16 +181,23 @@ def format_meta_output(meta: dict, show_all: bool = False, specific_key: str = N
     return "\n".join(lines)
 
 
-def pmeta_command(
+def meta_command(
     project_path: str,
-    physical_file: str,
-    args: list,
+    *args,
     current_cwd: str = ""
 ) -> str:
-    """Get/Set metadata for physical files and entities."""
+    """Get/Set metadata for physical files and entities.
+
+    Supports :: syntax: physical_file::entity_name
+    """
     pontis_root = os.path.join(project_path, ".pontis")
     if not os.path.exists(pontis_root):
         return f"Error: .pontis directory not found in {project_path}"
+
+    physical_file, entity_name, show_all, specific_key, write_key, write_value = parse_meta_args(list(args))
+
+    if physical_file is None:
+        return "Usage: meta <project_path> <physical_file::entity> [options] or <physical_file> [entity] [options]"
 
     try:
         ctx = ToolContext(pontis_root)
@@ -186,9 +205,6 @@ def pmeta_command(
 
         # Resolve physical file path
         resolved_physical = ctx.resolve_path(physical_file)
-
-        # Parse arguments
-        entity_name, show_all, specific_key, write_key, write_value = parse_pmeta_args(args)
 
         # Find meta file path
         meta_path = find_meta_path(pontis_root, resolved_physical, entity_name)
@@ -198,14 +214,14 @@ def pmeta_command(
             meta = read_meta(meta_path)
             meta[write_key] = write_value
             write_meta(meta_path, meta)
-            target = f"{physical_file}/{entity_name}" if entity_name else physical_file
+            target = f"{physical_file}::{entity_name}" if entity_name else physical_file
             return f"Updated {target}: {write_key} = {write_value}"
 
         # Handle read operation
         meta = read_meta(meta_path)
 
         if not meta:
-            target = f"{physical_file}/{entity_name}" if entity_name else physical_file
+            target = f"{physical_file}::{entity_name}" if entity_name else physical_file
             return f"No metadata found for '{target}'"
 
         return format_meta_output(meta, show_all, specific_key)
@@ -220,7 +236,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     project_path = sys.argv[1]
-    physical_file = sys.argv[2]
-    args = sys.argv[3:]
+    args = sys.argv[2:]
 
-    print(pmeta_command(project_path, physical_file, args))
+    print(meta_command(project_path, *args))

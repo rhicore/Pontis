@@ -209,27 +209,33 @@ def _sync_file(physical_path: str, parent_rel_path: str, storage: VFSStorage) ->
 
 
 def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> None:
-    """展开数据库为扁平结构
+    """展开数据库为新的结构
 
-    扁平结构：
-    - [表名].table/          (表文件夹)
-    - [表名].[列名].[类型].col/   (列文件夹，直接在.db下)
-    - [视图名].view/         (视图文件夹)
+    新结构：
+    - _entity/                  (逻辑实体文件夹)
+        - [表名].table/         (表文件夹)
+        - [表名].[列名].[类型].col/  (列文件夹)
+        - [视图名].view/        (视图文件夹)
     """
     try:
         import sqlite3
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
+        # 创建 _entity 子文件夹
+        entity_rel_path = os.path.join(db_node.rel_path, "_entity")
+        entity_node = NodeRef(entity_rel_path, storage.pontis_root)
+        storage.ensure_dir(entity_node.full_path)
+
         # 获取表
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         tables = cursor.fetchall()
 
         for (table_name,) in tables:
-            # 创建表节点
+            # 创建表节点（在_entity下）
             safe_table_name = table_name.replace("/", "_").replace("\\", "_")
             table_node_name = f"{safe_table_name}.table"
-            table_rel_path = os.path.join(db_node.rel_path, table_node_name)
+            table_rel_path = os.path.join(entity_rel_path, table_node_name)
             table_node = NodeRef(table_rel_path, storage.pontis_root)
 
             # 基础表meta
@@ -238,9 +244,9 @@ def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> Non
             }
             storage.ensure_dir(table_node.full_path)
             storage.write_meta(table_node, table_meta)
-            logger.info(f"    Created: {db_node.name}/{table_node_name}")
+            logger.info(f"    Created: {db_node.name}/_entity/{table_node_name}")
 
-            # 获取列并创建列节点（直接在.db下，扁平结构）
+            # 获取列并创建列节点（在_entity下）
             cursor.execute(f'PRAGMA table_info("{table_name}")')
             columns = cursor.fetchall()
 
@@ -249,9 +255,9 @@ def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> Non
                 col_type = _normalize_type(col[2])
 
                 safe_col_name = col_name.replace("/", "_").replace("\\", "_")
-                # 扁平结构: [表名].[列名].[类型].col
+                # 新结构: _entity/[表名].[列名].[类型].col
                 col_node_name = f"{safe_table_name}.{safe_col_name}.{col_type}.col"
-                col_rel_path = os.path.join(db_node.rel_path, col_node_name)
+                col_rel_path = os.path.join(entity_rel_path, col_node_name)
                 col_node = NodeRef(col_rel_path, storage.pontis_root)
 
                 # 基础列meta
@@ -269,7 +275,7 @@ def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> Non
         for (view_name,) in views:
             safe_view_name = view_name.replace("/", "_").replace("\\", "_")
             view_node_name = f"{safe_view_name}.view"
-            view_rel_path = os.path.join(db_node.rel_path, view_node_name)
+            view_rel_path = os.path.join(entity_rel_path, view_node_name)
             view_node = NodeRef(view_rel_path, storage.pontis_root)
 
             view_meta = {
@@ -277,9 +283,9 @@ def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> Non
             }
             storage.ensure_dir(view_node.full_path)
             storage.write_meta(view_node, view_meta)
-            logger.info(f"    Created: {db_node.name}/{view_node_name}")
+            logger.info(f"    Created: {db_node.name}/_entity/{view_node_name}")
 
-            # 获取视图列（扁平结构）
+            # 获取视图列（在_entity下）
             try:
                 cursor.execute(f'PRAGMA table_info("{view_name}")')
                 view_columns = cursor.fetchall()
@@ -289,9 +295,9 @@ def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> Non
                     col_type = _normalize_type(col[2])
 
                     safe_col_name = col_name.replace("/", "_").replace("\\", "_")
-                    # 扁平结构: [视图名].[列名].[类型].col
+                    # 新结构: _entity/[视图名].[列名].[类型].col
                     col_node_name = f"{safe_view_name}.{safe_col_name}.{col_type}.col"
-                    col_rel_path = os.path.join(db_node.rel_path, col_node_name)
+                    col_rel_path = os.path.join(entity_rel_path, col_node_name)
                     col_node = NodeRef(col_rel_path, storage.pontis_root)
 
                     col_meta = {
@@ -309,9 +315,11 @@ def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> Non
 
 
 def _expand_csv(csv_path: str, csv_node: NodeRef, storage: VFSStorage, delimiter: str = ',') -> None:
-    """展开CSV/TSV为扁平列结构
+    """展开CSV/TSV为新的列结构
 
-    扁平结构：[文件名].[列名].TEXT.col/
+    新结构：
+    - _entity/                      (逻辑实体文件夹)
+        - [文件名].[列名].TEXT.col/  (列文件夹)
     """
     try:
         import csv
@@ -324,14 +332,19 @@ def _expand_csv(csv_path: str, csv_node: NodeRef, storage: VFSStorage, delimiter
         if not headers:
             return
 
+        # 创建 _entity 子文件夹
+        entity_rel_path = os.path.join(csv_node.rel_path, "_entity")
+        entity_node = NodeRef(entity_rel_path, storage.pontis_root)
+        storage.ensure_dir(entity_node.full_path)
+
         csv_stem = csv_node.stem  # 不带扩展名的文件名
 
-        # 为每个列创建节点（扁平结构）
+        # 为每个列创建节点（在_entity下）
         for col_name in headers:
             safe_col_name = col_name.replace("/", "_").replace("\\", "_").replace(".", "_")
-            # 扁平结构: [csv文件名].[列名].TEXT.col
+            # 新结构: _entity/[csv文件名].[列名].TEXT.col
             col_node_name = f"{csv_stem}.{safe_col_name}.TEXT.col"
-            col_rel_path = os.path.join(csv_node.rel_path, col_node_name)
+            col_rel_path = os.path.join(entity_rel_path, col_node_name)
             col_node = NodeRef(col_rel_path, storage.pontis_root)
 
             col_meta = {
@@ -340,7 +353,7 @@ def _expand_csv(csv_path: str, csv_node: NodeRef, storage: VFSStorage, delimiter
             storage.ensure_dir(col_node.full_path)
             storage.write_meta(col_node, col_meta)
 
-        logger.info(f"    Created {len(headers)} columns: {csv_node.name}")
+        logger.info(f"    Created {len(headers)} columns in _entity: {csv_node.name}")
 
     except Exception as e:
         logger.warning(f"Failed to expand CSV {csv_path}: {e}")

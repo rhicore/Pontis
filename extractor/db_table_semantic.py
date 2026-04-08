@@ -1,7 +1,7 @@
 """DB Table Semantic Generator - 数据库表语义生成器 (AI)
 
 职责：
-- 匹配 *.db/*.table 节点
+- 匹配 *.db/_entity/*.table 节点
 - 读取表名、列信息（从扁平结构的列节点）
 - 使用LLM生成表语义描述
 - 追加到_meta.yml
@@ -26,7 +26,7 @@ def generate(storage: VFSStorage) -> None:
         logger.warning("LLM not configured, skipping semantic generation")
         return
 
-    for node in storage.find_nodes("*.db/*.table"):
+    for node in storage.find_nodes("*.db/_entity/*.table"):
         try:
             _generate_for_table(node, storage, llm)
         except Exception as e:

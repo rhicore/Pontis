@@ -162,36 +162,29 @@ def ls_command(project_path: str, path: str = ".", current_cwd: str = "") -> str
         # Sort: directories first, then files
         entries.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
 
-        # Format output
+        # Format output: [path] | [Info]
         lines = []
-        lines.append("[Type]     | [Name]                           | [Info]               | [Brief]")
-        lines.append("-" * 85)
 
         for entry in entries:
-            # Determine type display
+            # Determine name display
             if entry['is_dir']:
-                type_str = "Dir"
                 name = entry['name'] + "/"
-            elif entry['is_container']:
-                type_str = "File+"
-                name = entry['name']
             else:
-                type_str = "File"
                 name = entry['name']
 
-            # Get info from meta
+            # Get info from meta (combine info + brief)
             info = format_info(entry['meta'], entry['is_dir'])
             brief = format_brief(entry['meta'])
 
-            # Truncate if needed
-            if len(name) > 32:
-                name = name[:29] + "..."
-            if len(info) > 20:
-                info = info[:17] + "..."
-            if len(brief) > 25:
-                brief = brief[:22] + "..."
+            # Combine info and brief
+            if brief and info != "-":
+                combined = f"{info}, {brief}"
+            elif brief:
+                combined = brief
+            else:
+                combined = info
 
-            line = f"{type_str:<10} | {name:<32} | {info:<20} | {brief}"
+            line = f"{name} | {combined}"
             lines.append(line)
 
         return "\n".join(lines)

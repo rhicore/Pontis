@@ -1,7 +1,7 @@
 """DB Table Relations Generator - 数据库表关系生成器
 
 职责：
-- 匹配 *.db/*.table 节点
+- 匹配 *.db/_entity/*.table 节点
 - 分析该表的外键和命名约定关系
 - 在.db目录下创建 [表名].[列名]__to__[目标表名].[目标列名].fk 文件
 
@@ -20,7 +20,7 @@ def generate(storage: VFSStorage) -> None:
     """为所有表节点分析关系"""
     logger.info("=== Generating table relations ===")
 
-    for node in storage.find_nodes("*.db/*.table"):
+    for node in storage.find_nodes("*.db/_entity/*.table"):
         try:
             _generate_for_table(node, storage)
         except Exception as e:

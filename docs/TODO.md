@@ -76,9 +76,9 @@ pontis VFS simple/
     read 一个文件夹/[x].基本类型
 
 ```
-pontis VFS flat/
+pontis/
 ├── raw_data/ # 不带后缀是指目录，可以包含实际文件存储中目录包含的类型
-├── [数据库名].db/                  # 数据库目录 (.db)
+├── [数据库名].db :                  # 数据库目录 (.db)
 │   ├── [表名].table
 │   ├── [表名].[列名].[数据类型].col                # 例如 money.INT.col
 │   ├── [表名].[列名]__to__[表名].[列名].fk   # 物理外键
@@ -88,12 +88,12 @@ pontis VFS flat/
 │   ├── [视图名].[列名].[数据类型].col                
 │   ├── [视图名].[列名]__to__[表名].[列名].flow   # 血缘关系
 │  
-├── [文档名].md/.txt/.pdf/各类代码文件                       # Markdown/文本长文档
+├── [文档名].md/.txt/.pdf/各类代码文件 :                       # Markdown/文本长文档
 │   ├── section_1.chunk # 文本分片
 │   ├── section_2.chunk
 │
 │
-├── [表名].csv/tsv
+├── [表名].csv/tsv:
 │   ├── [列名].[数据类型].col
 │ 
 ├── [文件名].json/.yaml/.xml/.toml/.hcl                  # 序列化格式
@@ -327,3 +327,48 @@ ls列，就是显示这个列的所有distinct值
 
 - sample/topk
     - 采样/取top数量
+
+# 修改逻辑
+
+glob修改成用制表符分割
+删去Type，只保留name 和Info，其中Info同时展示原本要显示的Info和brief（这些每种类型是可以自己配置的，应该我记得是在config.py里面
+```
+[name] | [Info]
+dev_databases/ | -
+dev.json | array[1534]，developer's query
+dev_tables.json | array[11], 
+```
+
+然后grep使用:分割，和正常grep一样
+
+```
+[name]:[index]:[Content]
+```
+
+但是因为不同的类型的index可能不太一样，尤其是逻辑实体
+所以要根据不同类型来
+
+比如说关系型数据库就是用主键做索引
+xx.db::abc.table:{pk=xx}:[Content]
+
+csv这些就是用row = 几，
+
+glob/ls
+[path] | [Info]
+
+grep
+[path] | [Index] | [Content]
+
+read
+[Index] | [Content]
+
+
+[Index]怎么写：
+
+如果是行就直接行数（csv也用行，就当成普通的文本文件读取）
+如果是关系数据库这里不太一样，
+    - 如果是grep因为展示出来的可能在不同文件所以是这样，[path] | {主键名}={主键值} | {对应列字段名}={检索到的值}
+    - 如果是read，因为必然是在一个文件或实体里面,所以把字段名放到第一行
+        - [主键字段名] | [对应字段值]
+        - [主键字段值] | [对应字段值]
+    - 另外，如果read的时候如果采用整数索引，就使用主键序来排序（不过不推荐就是了）

@@ -1,7 +1,7 @@
 """DB Table Info Generator - 数据库表信息生成器
 
 职责：
-- 匹配 *.db/*.table 节点
+- 匹配 *.db/_entity/*.table 节点
 - 添加表级元信息（行数、列数、主键等）
 - 列数从扁平结构的列节点计算（*.db/[表名].*.*.col）
 
@@ -19,7 +19,7 @@ def generate(storage: VFSStorage) -> None:
     """为所有表节点生成信息"""
     logger.info("=== Generating table info ===")
 
-    for node in storage.find_nodes("*.db/*.table"):
+    for node in storage.find_nodes("*.db/_entity/*.table"):
         try:
             _generate_for_table(node, storage)
         except Exception as e:

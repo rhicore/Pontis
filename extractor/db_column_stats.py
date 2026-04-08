@@ -20,8 +20,8 @@ def generate(storage: VFSStorage) -> None:
     """为所有.col节点生成统计信息"""
     logger.info("=== Generating column statistics ===")
 
-    # 扁平结构: *.db/*.*.*.col (e.g., "users.id.INT.col")
-    for node in storage.find_nodes("*.db/*.*.*.col"):
+    # 新结构: *.db/_entity/*.*.*.col (e.g., "users.id.INT.col")
+    for node in storage.find_nodes("*.db/_entity/*.*.*.col"):
         try:
             _generate_for_column(node, storage)
         except Exception as e:
@@ -39,9 +39,9 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage) -> bool:
         return False
 
     # 解析路径获取信息
-    # 路径格式: [...]/[db_name].db/[table_name].[col_name].[type].col
+    # 新路径格式: [...]/[db_name].db/_entity/[table_name].[col_name].[type].col
     path_parts = node.rel_path.split(os.sep)
-    if len(path_parts) < 2:
+    if len(path_parts) < 3:
         return False
 
     # 找到.db节点位置
@@ -51,13 +51,18 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage) -> bool:
             db_idx = i
             break
 
-    if db_idx == -1 or db_idx + 1 >= len(path_parts):
+    # 新结构下，列节点在 _entity 子文件夹下
+    if db_idx == -1 or db_idx + 2 >= len(path_parts):
+        return False
+
+    # 检查是否有 _entity 文件夹
+    if path_parts[db_idx + 1] != '_entity':
         return False
 
     db_rel_path = os.sep.join(path_parts[:db_idx+1])
 
-    # 解析列节点名: [表名].[列名].[类型].col
-    col_node_name = path_parts[db_idx + 1].replace(".col", "")
+    # 解析列节点名: [表名].[列名].[类型].col (现在在 _entity/ 下)
+    col_node_name = path_parts[db_idx + 2].replace(".col", "")
     col_parts = col_node_name.split(".")
     if len(col_parts) < 3:
         return False

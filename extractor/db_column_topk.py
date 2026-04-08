@@ -19,8 +19,8 @@ def generate(storage: VFSStorage, k: int = 5) -> None:
     """为所有DB列生成TopK值"""
     logger.info("=== Generating DB column TopK values ===")
 
-    # 扁平结构: *.db/*.*.*.col (e.g., "users.id.INT.col")
-    for node in storage.find_nodes("*.db/*.*.*.col"):
+    # 扁平结构: *.db/_entity/*.*.*.col (e.g., "users.id.INT.col")
+    for node in storage.find_nodes("*.db/_entity/*.*.*.col"):
         try:
             _generate_for_column(node, storage, k)
         except Exception as e:

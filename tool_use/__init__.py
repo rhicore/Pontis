@@ -5,23 +5,23 @@ This package provides commands to interact with the knowledge graph
 entities attached to physical files in the Pontis VFS.
 
 Commands:
-    pglob  - Search knowledge graph entities under a physical file
-    pmeta  - Read/Write metadata for physical files and entities
-    pread  - Read content from physical files and entities
+    glob   - Search knowledge graph entities under a physical file
+    meta   - Read/Write metadata for physical files and entities
+    read   - Read content from physical files and entities
     jd     - Display JSON/YAML structure
 
 Usage:
-    from tool_use import pglob, pmeta, pread, jd
+    from tool_use import glob, meta, read, jd
 
     # Search entities
-    result = pglob.pglob_command("./my_project", "mydb.db", "*.table")
+    result = glob.glob_command("./my_project", "mydb.db", "*.table")
 
     # Get metadata
-    result = pmeta.pmeta_command("./my_project", "mydb.db", [])
-    result = pmeta.pmeta_command("./my_project", "mydb.db", ["users.table", "-a"])
+    result = meta.meta_command("./my_project", "mydb.db", [])
+    result = meta.meta_command("./my_project", "mydb.db", ["users.table", "-a"])
 
     # Read content
-    result = pread.pread_command("./my_project", "mydb.db", ["users.table"])
+    result = read.read_command("./my_project", "mydb.db", ["users.table"])
 
     # Display JSON structure
     result = jd.jd_command("./my_project", "config.json", [])
@@ -50,10 +50,16 @@ from tool_use.utils.formatters import (
 # Commands
 from tool_use.ls import ls_command
 from tool_use.cd import cd_command
-from tool_use.pglob import pglob_command
-from tool_use.pmeta import pmeta_command
-from tool_use.pread import pread_command
+from tool_use.glob import glob_command
+from tool_use.grep import grep_command
+from tool_use.meta import meta_command
+from tool_use.read import read_command
 from tool_use.jd import jd_command
+
+# Aliases for backward compatibility
+pglob_command = glob_command
+pmeta_command = meta_command
+pread_command = read_command
 
 __all__ = [
     # Utils
@@ -72,8 +78,9 @@ __all__ = [
     # Commands
     'ls_command',
     'cd_command',
-    'pglob_command',
-    'pmeta_command',
-    'pread_command',
+    'glob_command',
+    'grep_command',
+    'meta_command',
+    'read_command',
     'jd_command',
 ]

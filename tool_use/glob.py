@@ -1,12 +1,17 @@
-"""pglob command - Search knowledge graph entities under a physical file
+"""glob command - Search physical files and knowledge graph entities
 
 Usage:
-    python -m tool_use.pglob <project_path> <physical_file> <entity_pattern>
+    # Search entities under a physical file
+    python -m tool_use.glob <project_path> <physical_file> [entity_pattern]
+
+    # List all entities under a physical file
+    python -m tool_use.glob ./my_project mydb.db
+    python -m tool_use.glob ./my_project mydb.db "*.table"
+    python -m tool_use.glob ./my_project mydb.db "users.*.col"
 
 Examples:
-    python -m tool_use.pglob ./my_project dev_databases/financial/financial.db "*.table"
-    python -m tool_use.pglob ./my_project dev_databases/financial/financial.db "account.*.col"
-    python -m tool_use.pglob ./my_project dev.json "ROOT.DICT.*"
+    python -m tool_use.glob ./my_project dev_databases/financial/financial.db "*.table"
+    python -m tool_use.glob ./my_project mydb.db "users.*.col"
 """
 import sys
 import os
@@ -20,7 +25,7 @@ from tool_use.utils.vfs import PontisVFS
 from tool_use.utils.serialized_vfs import SerializedNode
 
 
-def pglob_command(project_path: str, physical_file: str, entity_pattern: str, current_cwd: str = "") -> str:
+def glob_command(project_path: str, physical_file: str, entity_pattern: str = "*", current_cwd: str = "") -> str:
     """
     Search knowledge graph entities under a physical file.
 
@@ -58,13 +63,19 @@ def pglob_command(project_path: str, physical_file: str, entity_pattern: str, cu
             # For files (shouldn't happen in current design)
             return f"Error: Not a container: {physical_file}"
 
+        # Entities are now in _entity/ subfolder
+        entity_root = os.path.join(search_root, "_entity")
+        entity_full_path = os.path.join(pontis_root, entity_root)
+
+        if not os.path.exists(entity_full_path):
+            return f"No entities found under {physical_file} (no _entity folder)"
+
         # Find all entities matching the pattern
         vfs = PontisVFS(pontis_root)
         matching_nodes = []
 
-        # Walk the directory structure under the physical file
-        search_full_path = os.path.join(pontis_root, search_root)
-        for root, dirs, _ in os.walk(search_full_path):
+        # Walk the _entity directory structure
+        for root, dirs, _ in os.walk(entity_full_path):
             # Skip hidden directories
             dirs[:] = [d for d in dirs if not d.startswith('.')]
 
@@ -82,46 +93,30 @@ def pglob_command(project_path: str, physical_file: str, entity_pattern: str, cu
             return f"No entities matching '{entity_pattern}' found under {physical_file}"
 
         # Format output using ls-style formatting
-        return format_pglob_output(matching_nodes)
+        return format_glob_output(matching_nodes, physical_file)
 
     except Exception as e:
         return f"Error searching entities: {e}"
 
 
-def format_pglob_output(nodes: list) -> str:
-    """Format nodes for pglob output using ls-style format."""
+def format_glob_output(nodes: list, physical_file: str = "") -> str:
+    """Format nodes for glob output: [path] | [Info]."""
     if not nodes:
         return "(empty)"
 
-    # Sort nodes: directories first, then by name
-    def sort_key(n):
-        has_sub = getattr(n, 'has_children', False) or getattr(n, 'node_type', '') in ['Table', 'Column', 'View']
-        return (not has_sub, n.name.lower())
-
-    sorted_nodes = sorted(nodes, key=sort_key)
+    # Sort nodes by name
+    sorted_nodes = sorted(nodes, key=lambda n: n.name.lower())
 
     lines = []
-    lines.append("[Type]     | [Name]                           | [Info]               | [Brief]")
-    lines.append("-" * 85)
+    if physical_file:
+        lines.append(f"Entities under {physical_file}::_entity/:")
 
     for node in sorted_nodes:
-        # Determine node type display
-        node_type = getattr(node, 'node_type', 'Unknown')
-        if isinstance(node, SerializedNode):
-            node_type = node.node_type.value
-
-        # Format type column
-        type_str = node_type[:10]
-
-        # Format name
+        # Format name (path)
         name = node.name
-        if len(name) > 32:
-            name = name[:29] + "..."
 
         # Format info based on node type
         info = format_node_info(node)
-        if len(info) > 20:
-            info = info[:17] + "..."
 
         # Format brief
         brief = ""
@@ -129,10 +124,17 @@ def format_pglob_output(nodes: list) -> str:
             file_type = get_file_type_from_name(node.name, node.node_type)
             config = get_type_config(file_type)
             brief = get_brief_from_meta(node.raw_meta, config)
-        if len(brief) > 25:
-            brief = brief[:22] + "..."
 
-        line = f"{type_str:<10} | {name:<32} | {info:<20} | {brief}"
+        # Combine info and brief
+        if brief and info != "-":
+            combined = f"{info}, {brief}"
+        elif brief:
+            combined = brief
+        else:
+            combined = info
+
+        # Format: [path] | [Info]
+        line = f"{name} | {combined}"
         lines.append(line)
 
     return "\n".join(lines)
@@ -172,15 +174,16 @@ def format_node_info(node) -> str:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 4:
+    if len(sys.argv) < 3:
         print(__doc__)
         print("\nExamples:")
-        print("  python -m tool_use.pglob ./my_project mydb.db '*.table'")
-        print("  python -m tool_use.pglob ./my_project mydb.db 'users.*.col'")
+        print("  python -m tool_use.glob ./my_project mydb.db")
+        print("  python -m tool_use.glob ./my_project mydb.db \"*.table\"")
+        print("  python -m tool_use.glob ./my_project mydb.db \"users.*.col\"")
         sys.exit(1)
 
     project_path = sys.argv[1]
     physical_file = sys.argv[2]
-    entity_pattern = sys.argv[3]
+    entity_pattern = sys.argv[3] if len(sys.argv) > 3 else "*"
 
-    print(pglob_command(project_path, physical_file, entity_pattern))
+    print(glob_command(project_path, physical_file, entity_pattern))
