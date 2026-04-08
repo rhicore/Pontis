@@ -3,7 +3,7 @@
 职责：
 - 匹配 *.db/*.table 节点
 - 分析该表的外键和命名约定关系
-- 在表下创建 [col]__to__[target_table].[target_col].rel/ 文件夹
+- 在.db目录下创建 [表名].[列名]__to__[目标表名].[目标列名].fk 文件
 
 独立执行：
     python -m extractor.db_table_relations ./my_data
@@ -28,7 +28,7 @@ def generate(storage: VFSStorage) -> None:
 
 
 def _generate_for_table(node: NodeRef, storage: VFSStorage) -> bool:
-    """为单个表分析关系，在表下创建.rel文件夹"""
+    """为单个表分析关系，在.db目录下创建.fk文件"""
     meta = storage.read_meta(node)
     if not meta:
         return False
@@ -38,15 +38,25 @@ def _generate_for_table(node: NodeRef, storage: VFSStorage) -> bool:
     if len(path_parts) < 2:
         return False
 
-    db_rel_path = path_parts[0]
-    table_name = meta.get("source_table", node.name.replace(".table", ""))
+    # 找到.db节点位置
+    db_idx = -1
+    for i, part in enumerate(path_parts):
+        if part.endswith('.db'):
+            db_idx = i
+            break
 
-    # 获取DB路径
+    if db_idx == -1:
+        return False
+
+    db_rel_path = os.sep.join(path_parts[:db_idx+1])
     db_node = NodeRef(db_rel_path, node.pontis_root)
     db_meta = storage.read_meta(db_node)
     if not db_meta:
         return False
 
+    table_name = node.name.replace(".table", "")
+
+    # 获取DB路径
     rel_path = db_meta.get("path")
     db_path = storage.resolve_path(rel_path) if rel_path else None
     if not db_path or not os.path.exists(db_path):
@@ -66,10 +76,10 @@ def _generate_for_table(node: NodeRef, storage: VFSStorage) -> bool:
     # 合并所有关系
     all_relations = fk_relations + naming_relations
 
-    # 在表下为每个关系创建.rel文件夹
+    # 在.db目录下为每个关系创建.fk文件
     created_count = 0
     for rel in all_relations:
-        if _create_relation_folder(node, rel, storage):
+        if _create_relation_file(db_node, table_name, rel, storage):
             created_count += 1
 
     if created_count > 0:
@@ -178,38 +188,39 @@ def _find_naming_relations(db_path: str, table_name: str, columns: List[Dict]) -
     return relations
 
 
-def _create_relation_folder(table_node: NodeRef, relation: Dict, storage: VFSStorage) -> bool:
-    """在表下为关系创建.rel文件夹"""
+def _create_relation_file(db_node: NodeRef, from_table: str, relation: Dict, storage: VFSStorage) -> bool:
+    """在.db目录下为关系创建.fk文件"""
     try:
-        from_table = table_node.name.replace(".table", "")
         from_col = relation["from_column"]
         to_table = relation["to_table"]
         to_col = relation["to_column"]
 
-        # 构建关系文件夹名: [col]__to__[target_table].[target_col].rel
-        safe_col = from_col.replace("/", "_").replace("\\", "_")
-        safe_target = f"{to_table}.{to_col}".replace("/", "_").replace("\\", "_")
-        rel_folder_name = f"{safe_col}__to__{safe_target}.rel"
+        # 构建关系文件名: [表名].[列名]__to__[目标表名].[目标列名].fk
+        safe_from_col = from_col.replace("/", "_").replace("\\", "_")
+        safe_to_table = to_table.replace("/", "_").replace("\\", "_")
+        safe_to_col = to_col.replace("/", "_").replace("\\", "_")
 
-        rel_rel_path = os.path.join(table_node.rel_path, rel_folder_name)
-        rel_node = NodeRef(rel_rel_path, table_node.pontis_root)
+        fk_filename = f"{from_table}.{safe_from_col}__to__{safe_to_table}.{safe_to_col}.fk"
+        fk_rel_path = os.path.join(db_node.rel_path, fk_filename)
+        fk_node = NodeRef(fk_rel_path, db_node.pontis_root)
 
         # 检查是否已存在
-        if storage.exists(rel_node):
+        if storage.exists(fk_node):
             return False
 
         # 创建关系meta
-        rel_meta = {
+        fk_meta = {
             "relation_type": relation["type"],
             "from_table": from_table,
             "from_column": from_col,
             "to_table": to_table,
             "to_column": to_col,
-            "confidence": relation.get("confidence", 0.5)
+            "confidence": relation.get("confidence", 0.5),
+            "created_at": __import__('datetime').datetime.now().isoformat(),
         }
 
-        storage.ensure_dir(rel_node.full_path)
-        storage.write_meta(rel_node, rel_meta)
+        storage.ensure_dir(fk_node.full_path)
+        storage.write_meta(fk_node, fk_meta)
 
         return True
 

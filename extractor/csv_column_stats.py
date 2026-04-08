@@ -1,12 +1,12 @@
 """CSV Column Stats Generator - CSV列统计生成器
 
 职责：
-- 匹配所有 *.csv 和 *.tsv 节点下的 *.col 节点
+- 匹配所有 *.csv 和 *.tsv 节点下的 *.col 节点（扁平结构：[文件名].[列名].TEXT.col）
 - 读取CSV文件计算列统计
 - 追加到_meta.yml
 
 独立执行：
-    python -m extractor.gen_csv_stats ./my_data
+    python -m extractor.csv_column_stats ./my_data
 """
 import os
 import logging
@@ -20,14 +20,14 @@ def generate(storage: VFSStorage) -> None:
     """为所有CSV/TSV文件的列生成统计"""
     logger.info("=== Generating CSV column statistics ===")
 
-    # 查找所有CSV/TSV下的列节点
-    for node in storage.find_nodes("*.csv/*.*.col"):
+    # 扁平结构: *.csv/*.*.TEXT.col 或 *.tsv/*.*.TEXT.col
+    for node in storage.find_nodes("*.csv/*.*.*.col"):
         try:
             _generate_for_column(node, storage, delimiter=',')
         except Exception as e:
             logger.warning(f"Failed to generate stats for {node.name}: {e}")
 
-    for node in storage.find_nodes("*.tsv/*.*.col"):
+    for node in storage.find_nodes("*.tsv/*.*.*.col"):
         try:
             _generate_for_column(node, storage, delimiter='\t')
         except Exception as e:
@@ -60,7 +60,10 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, delimiter: str) -> 
         return False
 
     csv_rel_path = os.sep.join(path_parts[:csv_idx+1])
-    col_name = node.name.split('.')[0]
+
+    # 解析列名：扁平结构 [文件名].[列名].TEXT.col
+    col_node_name = path_parts[csv_idx + 1]  # e.g., "data.name.TEXT.col"
+    col_name = col_node_name.split('.')[1]  # 提取列名
 
     # 获取CSV源路径
     csv_node = NodeRef(csv_rel_path, node.pontis_root)

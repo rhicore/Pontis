@@ -1,7 +1,7 @@
 """CSV Semantic Generator - CSV语义生成器 (AI)
 
 职责：
-- 匹配 *.csv/*.tsv 节点和 *.csv/*.tsv/*.col 节点
+- 匹配 *.csv/*.tsv 节点和 *.csv/*.tsv 下的扁平列节点
 - 使用LLM生成CSV文件和列的语义描述
 - 追加到_meta.yml
 
@@ -37,14 +37,14 @@ def generate(storage: VFSStorage) -> None:
         except Exception as e:
             logger.warning(f"Failed to generate semantic for {node.name}: {e}")
 
-    # 再生成列级语义
-    for node in storage.find_nodes("*.csv/*.*.col"):
+    # 再生成列级语义（扁平结构: *.csv/*.*.*.col）
+    for node in storage.find_nodes("*.csv/*.*.*.col"):
         try:
             _generate_for_column(node, storage, llm)
         except Exception as e:
             logger.warning(f"Failed to generate semantic for {node.name}: {e}")
 
-    for node in storage.find_nodes("*.tsv/*.*.col"):
+    for node in storage.find_nodes("*.tsv/*.*.*.col"):
         try:
             _generate_for_column(node, storage, llm)
         except Exception as e:
@@ -63,14 +63,17 @@ def _generate_for_csv(node: NodeRef, storage: VFSStorage, llm) -> bool:
     column_count = meta.get("column_count", 0)
     row_count = meta.get("row_count", 0)
 
-    # 获取列名
+    # 获取列名（从扁平结构的列节点：[文件名].[列名].TEXT.col）
     columns = []
-    for child in storage.list_children(node):
-        if child.name.endswith(".col"):
-            col_meta = storage.read_meta(child)
-            if col_meta:
-                col_name = col_meta.get("source_column", child.name.split(".")[0])
-                columns.append(col_name)
+    csv_stem = node.stem  # CSV文件名（不含扩展名）
+    # 查找该CSV下的所有列节点
+    col_pattern = os.path.join(node.rel_path, f"{csv_stem}.*.*.col")
+    for col_node in storage.find_nodes(col_pattern):
+        # 解析列节点名: [文件名].[列名].TEXT.col
+        col_parts = col_node.name.replace(".col", "").split(".")
+        if len(col_parts) >= 2:
+            col_name = col_parts[1]  # 第二部分是列名
+            columns.append(col_name)
 
     prompt = f"""Analyze this CSV/TSV file and provide a brief semantic summary (10-30 words).
 
@@ -103,11 +106,16 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, llm) -> bool:
     if "semantic_summary" in meta:
         return False
 
-    col_name = node.name.split(".")[0]
-    data_type = node.name.split(".")[1] if len(node.name.split(".")) > 1 else "TEXT"
+    # 解析列节点名: [文件名].[列名].TEXT.col
+    col_parts = node.name.replace(".col", "").split(".")
+    if len(col_parts) < 3:
+        return False
 
-    # 获取样本
-    samples = meta.get("samples", [])
+    col_name = col_parts[1]  # 第二部分是列名
+    data_type = col_parts[2]  # 第三部分是数据类型
+
+    # 获取样本和topk（从meta根级别）
+    samples = meta.get("sample", [])
     topk = meta.get("topk", [])
 
     prompt = f"""Analyze this CSV column and provide a brief semantic summary (5-15 words).

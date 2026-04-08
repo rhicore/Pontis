@@ -3,6 +3,7 @@
 职责：
 - 匹配 *.db/*.table 节点
 - 添加表级元信息（行数、列数、主键等）
+- 列数从扁平结构的列节点计算（*.db/[表名].*.*.col）
 
 独立执行：
     python -m extractor.db_table_info ./my_data
@@ -36,7 +37,7 @@ def _generate_for_table(node: NodeRef, storage: VFSStorage) -> bool:
 
     # 解析路径
     path_parts = node.rel_path.split(os.sep)
-    if len(path_parts) < 3:
+    if len(path_parts) < 2:
         return False
 
     # 找到.db节点位置
@@ -46,7 +47,7 @@ def _generate_for_table(node: NodeRef, storage: VFSStorage) -> bool:
             db_idx = i
             break
 
-    if db_idx == -1 or db_idx + 1 >= len(path_parts):
+    if db_idx == -1:
         return False
 
     db_rel_path = os.sep.join(path_parts[:db_idx+1])
@@ -72,7 +73,7 @@ def _generate_for_table(node: NodeRef, storage: VFSStorage) -> bool:
         cursor.execute(f'SELECT COUNT(*) FROM "{table_name}"')
         row_count = cursor.fetchone()[0]
 
-        # 获取列数
+        # 获取列信息
         cursor.execute(f'PRAGMA table_info("{table_name}")')
         columns = cursor.fetchall()
         column_count = len(columns)

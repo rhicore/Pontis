@@ -72,7 +72,6 @@ def _sync_file(physical_path: str, parent_rel_path: str, storage: VFSStorage) ->
         '.json': '.json', '.jsonl': '.json',
         '.md': '.md', '.markdown': '.md',
         '.txt': '.txt', '.log': '.txt', '.text': '.txt',
-        '.pdf': '.pdf',
         '.yaml': '.yaml', '.yml': '.yaml',
         '.xml': '.xml', '.xsd': '.xml', '.xslt': '.xml', '.svg': '.xml',
         '.toml': '.toml',
@@ -210,9 +209,12 @@ def _sync_file(physical_path: str, parent_rel_path: str, storage: VFSStorage) ->
 
 
 def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> None:
-    """展开数据库为表和列结构
+    """展开数据库为扁平结构
 
-    仅创建文件夹结构，不添加统计信息
+    扁平结构：
+    - [表名].table/          (表文件夹)
+    - [表名].[列名].[类型].col/   (列文件夹，直接在.db下)
+    - [视图名].view/         (视图文件夹)
     """
     try:
         import sqlite3
@@ -225,12 +227,12 @@ def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> Non
 
         for (table_name,) in tables:
             # 创建表节点
-            safe_name = table_name.replace("/", "_").replace("\\", "_")
-            table_node_name = f"{safe_name}.table"
+            safe_table_name = table_name.replace("/", "_").replace("\\", "_")
+            table_node_name = f"{safe_table_name}.table"
             table_rel_path = os.path.join(db_node.rel_path, table_node_name)
             table_node = NodeRef(table_rel_path, storage.pontis_root)
 
-            # 基础表meta - 只保留created_at（其他信息可以从路径推断）
+            # 基础表meta
             table_meta = {
                 "created_at": datetime.now().isoformat(),
             }
@@ -238,7 +240,7 @@ def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> Non
             storage.write_meta(table_node, table_meta)
             logger.info(f"    Created: {db_node.name}/{table_node_name}")
 
-            # 获取列并创建列节点
+            # 获取列并创建列节点（直接在.db下，扁平结构）
             cursor.execute(f'PRAGMA table_info("{table_name}")')
             columns = cursor.fetchall()
 
@@ -247,13 +249,15 @@ def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> Non
                 col_type = _normalize_type(col[2])
 
                 safe_col_name = col_name.replace("/", "_").replace("\\", "_")
-                col_node_name = f"{safe_col_name}.{col_type}.col"
-                col_rel_path = os.path.join(table_node.rel_path, col_node_name)
+                # 扁平结构: [表名].[列名].[类型].col
+                col_node_name = f"{safe_table_name}.{safe_col_name}.{col_type}.col"
+                col_rel_path = os.path.join(db_node.rel_path, col_node_name)
                 col_node = NodeRef(col_rel_path, storage.pontis_root)
 
-                # 基础列meta - 只保留created_at
+                # 基础列meta
                 col_meta = {
                     "created_at": datetime.now().isoformat(),
+                    "source_table": table_name,
                 }
                 storage.ensure_dir(col_node.full_path)
                 storage.write_meta(col_node, col_meta)
@@ -263,8 +267,8 @@ def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> Non
         views = cursor.fetchall()
 
         for (view_name,) in views:
-            safe_name = view_name.replace("/", "_").replace("\\", "_")
-            view_node_name = f"{safe_name}.view"
+            safe_view_name = view_name.replace("/", "_").replace("\\", "_")
+            view_node_name = f"{safe_view_name}.view"
             view_rel_path = os.path.join(db_node.rel_path, view_node_name)
             view_node = NodeRef(view_rel_path, storage.pontis_root)
 
@@ -275,13 +279,40 @@ def _expand_database(db_path: str, db_node: NodeRef, storage: VFSStorage) -> Non
             storage.write_meta(view_node, view_meta)
             logger.info(f"    Created: {db_node.name}/{view_node_name}")
 
+            # 获取视图列（扁平结构）
+            try:
+                cursor.execute(f'PRAGMA table_info("{view_name}")')
+                view_columns = cursor.fetchall()
+
+                for col in view_columns:
+                    col_name = col[1]
+                    col_type = _normalize_type(col[2])
+
+                    safe_col_name = col_name.replace("/", "_").replace("\\", "_")
+                    # 扁平结构: [视图名].[列名].[类型].col
+                    col_node_name = f"{safe_view_name}.{safe_col_name}.{col_type}.col"
+                    col_rel_path = os.path.join(db_node.rel_path, col_node_name)
+                    col_node = NodeRef(col_rel_path, storage.pontis_root)
+
+                    col_meta = {
+                        "created_at": datetime.now().isoformat(),
+                        "source_view": view_name,
+                    }
+                    storage.ensure_dir(col_node.full_path)
+                    storage.write_meta(col_node, col_meta)
+            except Exception as e:
+                logger.debug(f"Could not get view columns for {view_name}: {e}")
+
         conn.close()
     except Exception as e:
         logger.warning(f"Failed to expand database {db_path}: {e}")
 
 
 def _expand_csv(csv_path: str, csv_node: NodeRef, storage: VFSStorage, delimiter: str = ',') -> None:
-    """展开CSV/TSV为列结构"""
+    """展开CSV/TSV为扁平列结构
+
+    扁平结构：[文件名].[列名].TEXT.col/
+    """
     try:
         import csv
 
@@ -293,10 +324,13 @@ def _expand_csv(csv_path: str, csv_node: NodeRef, storage: VFSStorage, delimiter
         if not headers:
             return
 
-        # 为每个列创建节点
+        csv_stem = csv_node.stem  # 不带扩展名的文件名
+
+        # 为每个列创建节点（扁平结构）
         for col_name in headers:
-            safe_name = col_name.replace("/", "_").replace("\\", "_").replace(".", "_")
-            col_node_name = f"{safe_name}.TEXT.col"
+            safe_col_name = col_name.replace("/", "_").replace("\\", "_").replace(".", "_")
+            # 扁平结构: [csv文件名].[列名].TEXT.col
+            col_node_name = f"{csv_stem}.{safe_col_name}.TEXT.col"
             col_rel_path = os.path.join(csv_node.rel_path, col_node_name)
             col_node = NodeRef(col_rel_path, storage.pontis_root)
 

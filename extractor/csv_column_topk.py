@@ -1,12 +1,11 @@
 """CSV Column TopK Generator - CSV列TopK值生成器
 
 职责：
-- 匹配所有 *.csv/*.tsv 下的 *.col 节点
-- 创建 .topk/ 文件夹
-- 写入 _bin 文件
+- 匹配所有 *.csv/*.tsv 下的 *.col 节点（扁平结构：[文件名].[列名].TEXT.col）
+- 将topk数据直接放入列节点的_meta.yml根级别
 
 独立执行：
-    python -m extractor.gen_csv_topk ./my_data
+    python -m extractor.csv_column_topk ./my_data
 """
 import os
 import logging
@@ -22,13 +21,14 @@ def generate(storage: VFSStorage, k: int = 5) -> None:
     """为所有CSV/TSV列生成TopK值"""
     logger.info("=== Generating CSV column TopK values ===")
 
-    for node in storage.find_nodes("*.csv/*.*.col"):
+    # 扁平结构: *.csv/*.*.*.col 或 *.tsv/*.*.*.col
+    for node in storage.find_nodes("*.csv/*.*.*.col"):
         try:
             _generate_for_column(node, storage, ',', k)
         except Exception as e:
             logger.warning(f"Failed to generate topk for {node.name}: {e}")
 
-    for node in storage.find_nodes("*.tsv/*.*.col"):
+    for node in storage.find_nodes("*.tsv/*.*.*.col"):
         try:
             _generate_for_column(node, storage, '\t', k)
         except Exception as e:
@@ -36,15 +36,13 @@ def generate(storage: VFSStorage, k: int = 5) -> None:
 
 
 def _generate_for_column(node: NodeRef, storage: VFSStorage, delimiter: str, k: int) -> bool:
-    """为单个列创建.topk/文件夹"""
+    """为单个列生成topk数据并存入meta根级别"""
     meta = storage.read_meta(node)
     if not meta:
         return False
 
-    topk_rel_path = os.path.join(node.rel_path, ".topk")
-    topk_node = NodeRef(topk_rel_path, node.pontis_root)
-
-    if storage.exists(topk_node):
+    # 检查是否已处理
+    if "topk" in meta:
         return False
 
     path_parts = node.rel_path.split(os.sep)
@@ -62,7 +60,10 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, delimiter: str, k: 
         return False
 
     csv_rel_path = os.sep.join(path_parts[:csv_idx+1])
-    col_name = node.name.split('.')[0]
+
+    # 解析列名：扁平结构 [文件名].[列名].TEXT.col
+    col_node_name = path_parts[csv_idx + 1]  # e.g., "data.name.TEXT.col"
+    col_name = col_node_name.split('.')[1]  # 提取列名
 
     csv_node = NodeRef(csv_rel_path, node.pontis_root)
     csv_meta = storage.read_meta(csv_node)
@@ -78,19 +79,11 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, delimiter: str, k: 
     if topk is None:
         return False
 
-    # 创建.topk/文件夹
-    storage.ensure_dir(topk_node.full_path)
-    storage.write_raw(topk_node, topk)
+    # 将topk数据直接放入meta根级别
+    meta["topk"] = topk
+    storage.write_meta(node, meta)
 
-    topk_meta = {
-        
-        
-        "count": len(topk),
-        "created_at": __import__('datetime').datetime.now().isoformat(),
-    }
-    storage.write_meta(topk_node, topk_meta)
-
-    logger.info(f"  TopK created: {node.rel_path}/.topk ({len(topk)} items)")
+    logger.info(f"  TopK added: {node.rel_path} ({len(topk)} items)")
     return True
 
 

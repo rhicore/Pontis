@@ -23,7 +23,8 @@
       "Bash(sed -i 's/\"name\": \".sample\",//g; s/\"type\": \"Sample\",//g' csv_column_sample.py)",
       "Bash(sed -i 's/\"name\": \".topk\",//g; s/\"type\": \"TopK\",//g' csv_column_topk.py)",
       "Bash(grep -n \"source_table\\\\|source_column\\\\|data_type\\\\|\\\\\"type\\\\\":\\\\|\\\\\"suffix\\\\\":\" /nfsdat2/home/bcchenslm/Projects/Pontis/extractor/*.py)",
-      "Bash(printf 'ls\\\\nexit\\\\n')"
+      "Bash(printf 'ls\\\\nexit\\\\n')",
+      "Bash(xargs -I {} basename {})"
     ]
   }
 }

@@ -1,12 +1,11 @@
 """CSV Column Sample Generator - CSV列采样生成器
 
 职责：
-- 匹配所有 *.csv/*.tsv 下的 *.col 节点
-- 创建 .sample/ 文件夹
-- 写入 _bin 文件
+- 匹配所有 *.csv/*.tsv 下的 *.col 节点（扁平结构：[文件名].[列名].TEXT.col）
+- 将sample数据直接放入列节点的_meta.yml根级别
 
 独立执行：
-    python -m extractor.gen_csv_sample ./my_data
+    python -m extractor.csv_column_sample ./my_data
 """
 import os
 import logging
@@ -21,13 +20,14 @@ def generate(storage: VFSStorage, sample_size: int = 10) -> None:
     """为所有CSV/TSV列生成样本"""
     logger.info("=== Generating CSV column samples ===")
 
-    for node in storage.find_nodes("*.csv/*.*.col"):
+    # 扁平结构: *.csv/*.*.TEXT.col 或 *.tsv/*.*.TEXT.col
+    for node in storage.find_nodes("*.csv/*.*.*.col"):
         try:
             _generate_for_column(node, storage, ',', sample_size)
         except Exception as e:
             logger.warning(f"Failed to generate sample for {node.name}: {e}")
 
-    for node in storage.find_nodes("*.tsv/*.*.col"):
+    for node in storage.find_nodes("*.tsv/*.*.*.col"):
         try:
             _generate_for_column(node, storage, '\t', sample_size)
         except Exception as e:
@@ -35,16 +35,13 @@ def generate(storage: VFSStorage, sample_size: int = 10) -> None:
 
 
 def _generate_for_column(node: NodeRef, storage: VFSStorage, delimiter: str, sample_size: int) -> bool:
-    """为单个列创建.sample/文件夹"""
+    """为单个列生成sample数据并存入meta根级别"""
     meta = storage.read_meta(node)
     if not meta:
         return False
 
-    # 检查是否已存在
-    sample_rel_path = os.path.join(node.rel_path, ".sample")
-    sample_node = NodeRef(sample_rel_path, node.pontis_root)
-
-    if storage.exists(sample_node):
+    # 检查是否已处理
+    if "sample" in meta:
         return False
 
     path_parts = node.rel_path.split(os.sep)
@@ -62,7 +59,10 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, delimiter: str, sam
         return False
 
     csv_rel_path = os.sep.join(path_parts[:csv_idx+1])
-    col_name = node.name.split('.')[0]
+
+    # 解析列名：扁平结构 [文件名].[列名].TEXT.col
+    col_node_name = path_parts[csv_idx + 1]  # e.g., "data.name.TEXT.col"
+    col_name = col_node_name.split('.')[1]  # 提取列名
 
     csv_node = NodeRef(csv_rel_path, node.pontis_root)
     csv_meta = storage.read_meta(csv_node)
@@ -78,19 +78,11 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, delimiter: str, sam
     if samples is None:
         return False
 
-    # 创建.sample/文件夹
-    storage.ensure_dir(sample_node.full_path)
-    storage.write_raw(sample_node, samples)
+    # 将sample数据直接放入meta根级别
+    meta["sample"] = samples
+    storage.write_meta(node, meta)
 
-    sample_meta = {
-        
-        
-        "count": len(samples),
-        "created_at": __import__('datetime').datetime.now().isoformat(),
-    }
-    storage.write_meta(sample_node, sample_meta)
-
-    logger.info(f"  Sample created: {node.rel_path}/.sample ({len(samples)} items)")
+    logger.info(f"  Sample added: {node.rel_path} ({len(samples)} items)")
     return True
 
 

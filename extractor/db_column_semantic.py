@@ -1,18 +1,18 @@
 """Column Semantic Generator - 列语义生成器 (AI)
 
 职责：
-- 匹配所有 *.col 节点
+- 匹配所有 *.db 下的 *.*.*.col 节点（扁平结构：[表名].[列名].[类型].col）
 - 读取列名、样本、统计数据
 - 使用LLM生成语义描述
 - 追加到_meta.yml
 
 独立执行：
-    python -m extractor.gen_column_semantic ./my_data
+    python -m extractor.db_column_semantic ./my_data
 """
 import os
 import logging
 from typing import Optional
-from extractor.utils import VFSStorage, NodeRef, get_llm
+from extractor.utils import VFSStorage, NodeRef, get_llm, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,8 @@ def generate(storage: VFSStorage) -> None:
         logger.warning("LLM not configured, skipping semantic generation")
         return
 
-    for node in storage.find_nodes("*.col"):
+    # 扁平结构: *.db/*.*.*.col (e.g., "users.id.INT.col")
+    for node in storage.find_nodes("*.db/*.*.*.col"):
         try:
             _generate_for_column(node, storage, llm)
         except Exception as e:
@@ -44,37 +45,42 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, llm) -> bool:
         return False
 
     # 解析路径获取信息
-    # 路径格式: [...]/[db_name].db/[table_name].table/[col_name].[type].col
+    # 路径格式: [...]/[db_name].db/[table_name].[col_name].[type].col
     path_parts = node.rel_path.split(os.sep)
-    if len(path_parts) < 3:
+    if len(path_parts) < 2:
         return False
 
-    # 找到.table位置
-    table_idx = -1
+    # 找到.db节点位置
+    db_idx = -1
     for i, part in enumerate(path_parts):
-        if part.endswith('.table') or part.endswith('.view'):
-            table_idx = i
+        if part.endswith('.db'):
+            db_idx = i
             break
 
-    if table_idx == -1 or table_idx + 1 >= len(path_parts):
+    if db_idx == -1 or db_idx + 1 >= len(path_parts):
         return False
 
-    table_name = path_parts[table_idx].replace(".table", "").replace(".view", "")
-    col_parts = path_parts[table_idx + 1].replace(".col", "").split(".")
-    col_name = col_parts[0]
-    data_type = col_parts[1] if len(col_parts) > 1 else "TEXT"
+    # 解析列节点名: [表名].[列名].[类型].col
+    col_node_name = path_parts[db_idx + 1].replace(".col", "")
+    col_parts = col_node_name.split(".")
+    if len(col_parts) < 3:
+        return False
 
-    # 收集上下文信息
-    samples = meta.get("samples", [])
-    cardinality = meta.get("cardinality")
+    table_name = col_parts[0]
+    col_name = col_parts[1]
+    data_type = col_parts[2]
+
+    # 收集上下文信息 - 从meta根级别读取
+    samples = meta.get("sample", [])
     topk = meta.get("topk", [])
+    cardinality = meta.get("cardinality")
 
     # 构建prompt
     prompt = _build_prompt(table_name, col_name, data_type, samples, cardinality, topk)
 
     # 调用LLM
     try:
-        summary = llm.generate(prompt, max_tokens=100)
+        summary = llm.complete(prompt, max_tokens=100)
         if summary:
             meta["semantic_summary"] = summary.strip()
             storage.write_meta(node, meta)

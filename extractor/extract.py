@@ -38,10 +38,6 @@ from extractor.serialized_info import generate as serialized_info
 from extractor.text_info import generate as text_info
 from extractor.txt_chunk import generate as txt_chunk
 
-# PDF相关
-from extractor.pdf_info import generate as pdf_info
-from extractor.pdf_chunk import generate as pdf_chunk
-
 # ========== 第三阶段：跨节点 + 语义生成 ==========
 
 # DB关系与语义
@@ -49,17 +45,12 @@ from extractor.db_table_relations import generate as db_table_relations
 from extractor.db_table_semantic import generate as db_table_semantic
 from extractor.db_column_semantic import generate as db_column_semantic
 
-# 序列化文件语义
+# 序列化文件语义（仅导入存在的模块）
 from extractor.json_semantic import generate as json_semantic
-from extractor.yaml_semantic import generate as yaml_semantic
-from extractor.xml_semantic import generate as xml_semantic
-from extractor.toml_semantic import generate as toml_semantic
-from extractor.hcl_semantic import generate as hcl_semantic
 
 # 文档语义
 from extractor.md_semantic import generate as md_semantic
 from extractor.txt_semantic import generate as txt_semantic
-from extractor.pdf_semantic import generate as pdf_semantic
 
 logger = logging.getLogger(__name__)
 
@@ -125,30 +116,19 @@ def extract(target: str, config_path: str = None, verbose: bool = False) -> None
     txt_chunk(storage)
     logger.info("")
 
-    # ========== Phase 7: PDF信息 + 分片 ==========
-    logger.info("[Phase 7] Generating PDF info and chunks...")
-    pdf_info(storage)
-    pdf_chunk(storage)
-    logger.info("")
-
-    # ========== Phase 8: 跨节点关系 ==========
-    logger.info("[Phase 8] Generating table relations...")
+    # ========== Phase 7: 跨节点关系 ==========
+    logger.info("[Phase 7] Generating table relations...")
     db_table_relations(storage)
     logger.info("")
 
-    # ========== Phase 9: 语义分析（AI） ==========
-    logger.info("[Phase 9] Generating semantics...")
+    # ========== Phase 8: 语义分析（AI） ==========
+    logger.info("[Phase 8] Generating semantics...")
     db_table_semantic(storage)
     db_column_semantic(storage)
     csv_semantic(storage)
     json_semantic(storage)
-    yaml_semantic(storage)
-    xml_semantic(storage)
-    toml_semantic(storage)
-    hcl_semantic(storage)
     md_semantic(storage)
     txt_semantic(storage)
-    pdf_semantic(storage)
     logger.info("")
 
     logger.info("=== Extraction complete ===")

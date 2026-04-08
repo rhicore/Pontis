@@ -1,9 +1,8 @@
 """DB Column TopK Generator - 数据库列TopK值生成器
 
 职责：
-- 匹配所有 *.db/*.table/*.col 节点
-- 创建 .topk/ 文件夹
-- 写入 _raw 文件（JSON格式的TopK值）
+- 匹配所有 *.db 下的 *.*.*.col 节点（扁平结构：[表名].[列名].[类型].col）
+- 将topk数据直接放入列节点的_meta.yml根级别
 
 独立执行：
     python -m extractor.db_column_topk ./my_data
@@ -20,7 +19,8 @@ def generate(storage: VFSStorage, k: int = 5) -> None:
     """为所有DB列生成TopK值"""
     logger.info("=== Generating DB column TopK values ===")
 
-    for node in storage.find_nodes("*.db/*.table/*.*.col"):
+    # 扁平结构: *.db/*.*.*.col (e.g., "users.id.INT.col")
+    for node in storage.find_nodes("*.db/*.*.*.col"):
         try:
             _generate_for_column(node, storage, k)
         except Exception as e:
@@ -28,23 +28,19 @@ def generate(storage: VFSStorage, k: int = 5) -> None:
 
 
 def _generate_for_column(node: NodeRef, storage: VFSStorage, k: int) -> bool:
-    """为单个列创建.topk/文件夹"""
+    """为单个列生成topk数据并存入meta根级别"""
     meta = storage.read_meta(node)
     if not meta:
         return False
 
-    # 检查是否已存在
-    topk_node_name = ".topk"
-    topk_rel_path = os.path.join(node.rel_path, topk_node_name)
-    topk_node = NodeRef(topk_rel_path, node.pontis_root)
-
-    if storage.exists(topk_node):
+    # 检查是否已处理
+    if "topk" in meta:
         return False
 
     # 解析路径获取信息
-    # 路径格式: [...]/[db_name].db/[table_name].table/[col_name].[type].col
+    # 路径格式: [...]/[db_name].db/[table_name].[col_name].[type].col
     path_parts = node.rel_path.split(os.sep)
-    if len(path_parts) < 3:
+    if len(path_parts) < 2:
         return False
 
     # 找到.db节点位置
@@ -54,13 +50,19 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, k: int) -> bool:
             db_idx = i
             break
 
-    if db_idx == -1 or db_idx + 2 >= len(path_parts):
+    if db_idx == -1 or db_idx + 1 >= len(path_parts):
         return False
 
     db_rel_path = os.sep.join(path_parts[:db_idx+1])
-    table_name = path_parts[db_idx + 1].replace(".table", "").replace(".view", "")
-    col_parts = path_parts[db_idx + 2].replace(".col", "").split(".")
-    col_name = col_parts[0]
+
+    # 解析列节点名: [表名].[列名].[类型].col
+    col_node_name = path_parts[db_idx + 1].replace(".col", "")
+    col_parts = col_node_name.split(".")
+    if len(col_parts) < 3:
+        return False
+
+    table_name = col_parts[0]
+    col_name = col_parts[1]
 
     # 获取DB源路径
     db_node = NodeRef(db_rel_path, node.pontis_root)
@@ -78,20 +80,11 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, k: int) -> bool:
     if topk is None:
         return False
 
-    # 创建.topk/文件夹
-    storage.ensure_dir(topk_node.full_path)
+    # 将topk数据直接放入meta根级别
+    meta["topk"] = topk
+    storage.write_meta(node, meta)
 
-    # 写入_raw文件（JSON格式）
-    storage.write_raw(topk_node, topk)
-
-    # 写入_meta.yml（仅保留必要的count和created_at）
-    topk_meta = {
-        "count": len(topk),
-        "created_at": __import__('datetime').datetime.now().isoformat(),
-    }
-    storage.write_meta(topk_node, topk_meta)
-
-    logger.info(f"  TopK created: {node.rel_path}/.topk ({len(topk)} items)")
+    logger.info(f"  TopK added: {node.rel_path} ({len(topk)} items)")
     return True
 
 

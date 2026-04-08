@@ -1,12 +1,12 @@
 """Column Statistics Generator - 列统计生成器
 
 职责：
-- 匹配所有 *.col 节点
+- 匹配所有 *.db 下的 *.*.*.col 节点（扁平结构：[表名].[列名].[类型].col）
 - 读取父DB的source_path
 - 计算统计数据并追加到_meta.yml
 
 独立执行：
-    python -m extractor.gen_column_stats ./my_data
+    python -m extractor.db_column_stats ./my_data
 """
 import os
 import logging
@@ -20,7 +20,8 @@ def generate(storage: VFSStorage) -> None:
     """为所有.col节点生成统计信息"""
     logger.info("=== Generating column statistics ===")
 
-    for node in storage.find_nodes("*.col"):
+    # 扁平结构: *.db/*.*.*.col (e.g., "users.id.INT.col")
+    for node in storage.find_nodes("*.db/*.*.*.col"):
         try:
             _generate_for_column(node, storage)
         except Exception as e:
@@ -38,9 +39,9 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage) -> bool:
         return False
 
     # 解析路径获取信息
-    # 路径格式: [...]/[db_name].db/[table_name].table/[col_name].[type].col
+    # 路径格式: [...]/[db_name].db/[table_name].[col_name].[type].col
     path_parts = node.rel_path.split(os.sep)
-    if len(path_parts) < 3:
+    if len(path_parts) < 2:
         return False
 
     # 找到.db节点位置
@@ -50,14 +51,20 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage) -> bool:
             db_idx = i
             break
 
-    if db_idx == -1 or db_idx + 2 >= len(path_parts):
+    if db_idx == -1 or db_idx + 1 >= len(path_parts):
         return False
 
     db_rel_path = os.sep.join(path_parts[:db_idx+1])
-    table_name = path_parts[db_idx + 1].replace(".table", "").replace(".view", "")
-    col_parts = path_parts[db_idx + 2].replace(".col", "").split(".")
-    col_name = col_parts[0]
-    data_type = col_parts[1] if len(col_parts) > 1 else "TEXT"
+
+    # 解析列节点名: [表名].[列名].[类型].col
+    col_node_name = path_parts[db_idx + 1].replace(".col", "")
+    col_parts = col_node_name.split(".")
+    if len(col_parts) < 3:
+        return False
+
+    table_name = col_parts[0]
+    col_name = col_parts[1]
+    data_type = col_parts[2] if len(col_parts) > 2 else "TEXT"
 
     # 获取DB源路径
     db_node = NodeRef(db_rel_path, node.pontis_root)

@@ -2,7 +2,7 @@
 
 职责：
 - 匹配 *.db/*.table 节点
-- 读取表名、列信息
+- 读取表名、列信息（从扁平结构的列节点）
 - 使用LLM生成表语义描述
 - 追加到_meta.yml
 
@@ -45,8 +45,8 @@ def _generate_for_table(node: NodeRef, storage: VFSStorage, llm) -> bool:
 
     table_name = node.name.replace(".table", "")
 
-    # 获取列信息
-    columns = _get_column_info(node, storage)
+    # 获取列信息（从扁平结构的列节点）
+    columns = _get_column_info(node, table_name, storage)
 
     # 构建prompt
     prompt = _build_prompt(table_name, columns)
@@ -65,22 +65,43 @@ def _generate_for_table(node: NodeRef, storage: VFSStorage, llm) -> bool:
     return False
 
 
-def _get_column_info(table_node: NodeRef, storage: VFSStorage) -> List[dict]:
-    """获取表的列信息"""
+def _get_column_info(table_node: NodeRef, table_name: str, storage: VFSStorage) -> List[dict]:
+    """获取表的列信息（从扁平结构：*.db/[表名].[列名].[类型].col）"""
     columns = []
 
-    # 查找所有列节点
-    col_pattern = os.path.join(table_node.rel_path, "*.col")
+    # 找到.db节点路径
+    path_parts = table_node.rel_path.split(os.sep)
+    if len(path_parts) < 2:
+        return columns
+
+    db_idx = -1
+    for i, part in enumerate(path_parts):
+        if part.endswith('.db'):
+            db_idx = i
+            break
+
+    if db_idx == -1:
+        return columns
+
+    db_rel_path = os.sep.join(path_parts[:db_idx+1])
+
+    # 查找所有属于该表的列节点（扁平结构：[表名].[列名].[类型].col）
+    # 列节点名格式: [table_name].[col_name].[type].col
+    col_pattern = os.path.join(db_rel_path, f"{table_name}.*.*.col")
     for col_node in storage.find_nodes(col_pattern):
         col_meta = storage.read_meta(col_node)
         if col_meta:
-            col_name = col_node.name.replace(".col", "").split(".")[0]
-            col_type = col_node.name.replace(".col", "").split(".")[1] if len(col_node.name.replace(".col", "").split(".")) > 1 else "TEXT"
-            columns.append({
-                "name": col_name,
-                "type": col_type,
-                "summary": col_meta.get("semantic_summary", "")
-            })
+            # 解析列节点名: [表名].[列名].[类型].col
+            col_node_name = col_node.name.replace(".col", "")
+            col_parts = col_node_name.split(".")
+            if len(col_parts) >= 3:
+                col_name = col_parts[1]
+                col_type = col_parts[2]
+                columns.append({
+                    "name": col_name,
+                    "type": col_type,
+                    "summary": col_meta.get("semantic_summary", "")
+                })
 
     return columns
 

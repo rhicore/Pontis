@@ -1,4 +1,31 @@
-"""Tool Use module for LLM agents"""
+"""
+Pontis Tool Use - Knowledge Graph Commands for Physical Files
+
+This package provides commands to interact with the knowledge graph
+entities attached to physical files in the Pontis VFS.
+
+Commands:
+    pglob  - Search knowledge graph entities under a physical file
+    pmeta  - Read/Write metadata for physical files and entities
+    pread  - Read content from physical files and entities
+    jd     - Display JSON/YAML structure
+
+Usage:
+    from tool_use import pglob, pmeta, pread, jd
+
+    # Search entities
+    result = pglob.pglob_command("./my_project", "mydb.db", "*.table")
+
+    # Get metadata
+    result = pmeta.pmeta_command("./my_project", "mydb.db", [])
+    result = pmeta.pmeta_command("./my_project", "mydb.db", ["users.table", "-a"])
+
+    # Read content
+    result = pread.pread_command("./my_project", "mydb.db", ["users.table"])
+
+    # Display JSON structure
+    result = jd.jd_command("./my_project", "config.json", [])
+"""
 
 # Utils
 from tool_use.utils.context import ToolContext
@@ -22,12 +49,11 @@ from tool_use.utils.formatters import (
 
 # Commands
 from tool_use.ls import ls_command
-from tool_use.meta import meta_command
 from tool_use.cd import cd_command
-from tool_use.pwd import pwd_command
-from tool_use.search import search_command
-from tool_use.find import find_command
-from tool_use.cat import cat_command
+from tool_use.pglob import pglob_command
+from tool_use.pmeta import pmeta_command
+from tool_use.pread import pread_command
+from tool_use.jd import jd_command
 
 __all__ = [
     # Utils
@@ -45,10 +71,9 @@ __all__ = [
     'format_serialized_info',
     # Commands
     'ls_command',
-    'meta_command',
     'cd_command',
-    'pwd_command',
-    'search_command',
-    'find_command',
-    'cat_command',
+    'pglob_command',
+    'pmeta_command',
+    'pread_command',
+    'jd_command',
 ]
