@@ -32,7 +32,9 @@
       "Bash(find:*)",
       "Bash(mkdir:*)",
       "Read(//nfsdat2/home/bcchenslm/**)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(pip install:*)",
+      "Bash(/nfsdat2/home/bcchenslm/Projects/Pontis/.venv/bin/pip install:*)"
     ]
   }
 }

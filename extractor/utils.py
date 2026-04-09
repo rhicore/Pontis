@@ -32,20 +32,23 @@ class Config:
     table_brief_max_words: int = 15
     log_level: str = "INFO"
 
-    @classmethod
-    def from_file(cls, path: str) -> "Config":
-        with open(path, 'r') as f:
-            data = yaml.safe_load(f)
-        return cls(**data)
-
 
 def load_config(path: Optional[str] = None) -> Config:
-    if path and os.path.exists(path):
-        return Config.from_file(path)
-    for p in ["pontis.yml", "pontis.yaml", os.path.expanduser("~/.pontis/config.yml")]:
-        if os.path.exists(p):
-            return Config.from_file(p)
-    return Config()
+    """Load extractor config, bridging from common.config.PontisConfig."""
+    from common.config import load_config as _load_pontis_config
+    pontis_cfg = _load_pontis_config(path)
+
+    return Config(
+        pontis_dir_name=pontis_cfg.pontis_dir_name,
+        meta_filename=pontis_cfg.meta_filename,
+        sample_size=pontis_cfg.sample_size,
+        top_k=pontis_cfg.top_k,
+        log_level=pontis_cfg.log_level,
+        llm_provider=pontis_cfg.extractor_provider,
+        llm_model=pontis_cfg.extractor_model,
+        llm_api_key=pontis_cfg.extractor_api_key or None,
+        llm_enabled=bool(pontis_cfg.extractor_api_key),
+    )
 
 
 # ==================== Node Reference ====================

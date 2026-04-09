@@ -1,42 +1,17 @@
-# Pontis VFS Configuration
+# Pontis Configuration
+# Copy to ~/.pontis/config.yml or project-level pontis.yml
 
-# Directory settings
-pontis_dir_name: ".pontis"
-meta_filename: "_meta.yml"
+# Extractor profile (cheap model for metadata/summaries)
+extractor_provider: "https://api.deepseek.com"
+extractor_model: "deepseek-chat"
+extractor_api_key: ""
 
-# Supported file extensions
-db_extensions:
-  - ".db"
-  - ".sqlite"
-  - ".sqlite3"
-  - ".duckdb"
-
-csv_extensions:
-  - ".csv"
-
-json_extensions:
-  - ".json"
-  - ".jsonl"
-
-md_extensions:
-  - ".md"
-  - ".markdown"
+# Agent profile (capable model for interactive analysis)
+agent_provider: "https://api.deepseek.com"
+agent_model: "deepseek-reasoner"
+agent_api_key: ""
 
 # Extraction settings
-sample_size: 100
+sample_size: 5
 top_k: 5
-max_json_depth: 10
-
-# LLM settings
-llm_provider: "anthropic"
-llm_model: "claude-sonnet-4-6"
-llm_api_key: null
-llm_enabled: false
-
-# Caching
-cache_enabled: true
-skip_unchanged_files: true
-
-# Logging
 log_level: "INFO"
-log_file: null
