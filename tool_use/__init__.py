@@ -1,86 +1,77 @@
 """
-Pontis Tool Use - Knowledge Graph Commands for Physical Files
+Pontis Tool Use - Agent tool implementations for physical files and entities.
 
-This package provides commands to interact with the knowledge graph
-entities attached to physical files in the Pontis VFS.
+Each tool is in its own subdirectory:
+    glob/    - Physical file and entity glob search
+    grep/    - Content search (ripgrep-based, with entity support)
+    read/    - Read files and entities
+    meta/    - View metadata for files and entities
+    lookup/  - Value-based search for data entities
+    search/  - Semantic search (placeholder)
+    bash/    - Shell command execution
 
-Commands:
-    glob   - Search knowledge graph entities under a physical file
-    meta   - Read/Write metadata for physical files and entities
-    read   - Read content from physical files and entities
-    jd     - Display JSON/YAML structure
+All tools support the path::entity pattern syntax for unified file/entity addressing.
 
-Usage:
-    from tool_use import glob, meta, read, jd
-
-    # Search entities
-    result = glob.glob_command("./my_project", "mydb.db", "*.table")
-
-    # Get metadata
-    result = meta.meta_command("./my_project", "mydb.db", [])
-    result = meta.meta_command("./my_project", "mydb.db", ["users.table", "-a"])
-
-    # Read content
-    result = read.read_command("./my_project", "mydb.db", ["users.table"])
-
-    # Display JSON structure
-    result = jd.jd_command("./my_project", "config.json", [])
+Shared utilities in utils/:
+    path_parser     - Unified path::entity pattern parser
+    config          - Display type configurations
+    formatters      - Shared formatting logic
+    serialized_vfs  - JSON/YAML virtual navigation (reads source files directly)
 """
 
-# Utils
-from tool_use.utils.context import ToolContext
-from tool_use.utils.vfs import PontisVFS
-from tool_use.utils.serialized_vfs import (
-    SerializedVFSEngine,
-    SerializedNode,
-    JsonNodeType,
-    is_serialized_file,
-)
-from tool_use.utils.config import (
-    LS_TYPE_CONFIG as LS_CONFIG,
-    TypeConfig,
-)
+# Shared utilities
+from tool_use.utils.path_parser import parse_path_pattern, ParsedPath
 from tool_use.utils.formatters import (
     get_type_config,
     can_ls_node,
     format_info_from_template,
     format_serialized_info,
 )
+from tool_use.utils.config import TypeConfig
+from tool_use.utils.serialized_vfs import (
+    SerializedVFSEngine,
+    SerializedNode,
+    JsonNodeType,
+)
 
-# Commands
-from tool_use.ls import ls_command
-from tool_use.cd import cd_command
-from tool_use.glob import glob_command
-from tool_use.grep import grep_command
-from tool_use.meta import meta_command
-from tool_use.read import read_command
-from tool_use.jd import jd_command
-
-# Aliases for backward compatibility
-pglob_command = glob_command
-pmeta_command = meta_command
-pread_command = read_command
+# Tool commands
+from tool_use.glob.tool import glob_command
+from tool_use.grep.tool import grep_command
+from tool_use.read.tool import read_command
+from tool_use.meta.tool import meta_command
+from tool_use.lookup.tool import lookup_command
+from tool_use.search.tool import search_command
+from tool_use.bash.tool import bash_command
 
 __all__ = [
     # Utils
-    'ToolContext',
-    'PontisVFS',
-    'SerializedVFSEngine',
-    'SerializedNode',
-    'JsonNodeType',
-    'is_serialized_file',
-    'LS_CONFIG',
-    'TypeConfig',
+    'parse_path_pattern',
+    'ParsedPath',
     'get_type_config',
     'can_ls_node',
     'format_info_from_template',
     'format_serialized_info',
-    # Commands
-    'ls_command',
-    'cd_command',
+    'TypeConfig',
+    'SerializedVFSEngine',
+    'SerializedNode',
+    'JsonNodeType',
+    # Tool commands
     'glob_command',
     'grep_command',
-    'meta_command',
     'read_command',
-    'jd_command',
+    'meta_command',
+    'lookup_command',
+    'search_command',
+    'bash_command',
 ]
+
+# Tool registry for agent framework
+TOOL_REGISTRY = {
+    'glob': glob_command,
+    'grep': grep_command,
+    'read': read_command,
+    'meta': meta_command,
+    'lookup': lookup_command,
+    'search': search_command,
+    'bash': bash_command,
+}

@@ -83,7 +83,8 @@ def _expand_database(node: NodeRef, storage: VFSStorage) -> None:
         storage.ensure_dir(table_node.full_path)
         storage.write_meta(table_node, {"created_at": datetime.now().isoformat()})
 
-        # 列节点
+        # 列节点 + 边
+        col_edges = []
         cursor.execute(f'PRAGMA table_info("{table_name}")')
         for col in cursor.fetchall():
             col_name = col[1]
@@ -98,6 +99,16 @@ def _expand_database(node: NodeRef, storage: VFSStorage) -> None:
                 "source_table": table_name,
             })
 
+            col_entity_name = f"{safe_name}.{safe_col}.{col_type}.col"
+            col_edges.append({
+                "from": f"{node.name}::{safe_name}.table",
+                "type": "columns",
+                "to": f"{node.name}::{col_entity_name}",
+            })
+
+        if col_edges:
+            storage.add_edges(col_edges)
+
         logger.info(f"  Entity: {node.name}/_entity/{safe_name}.table")
 
     # 获取视图
@@ -110,6 +121,7 @@ def _expand_database(node: NodeRef, storage: VFSStorage) -> None:
         storage.ensure_dir(view_node.full_path)
         storage.write_meta(view_node, {"created_at": datetime.now().isoformat()})
 
+        view_col_edges = []
         try:
             cursor.execute(f'PRAGMA table_info("{view_name}")')
             for col in cursor.fetchall():
@@ -124,8 +136,18 @@ def _expand_database(node: NodeRef, storage: VFSStorage) -> None:
                     "created_at": datetime.now().isoformat(),
                     "source_view": view_name,
                 })
+
+                col_entity_name = f"{safe_name}.{safe_col}.{col_type}.col"
+                view_col_edges.append({
+                    "from": f"{node.name}::{safe_name}.view",
+                    "type": "columns",
+                    "to": f"{node.name}::{col_entity_name}",
+                })
         except Exception:
             pass
+
+        if view_col_edges:
+            storage.add_edges(view_col_edges)
 
         logger.info(f"  Entity: {node.name}/_entity/{safe_name}.view")
 

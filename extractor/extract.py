@@ -80,6 +80,9 @@ def extract(target: str, config_path: str = None, verbose: bool = False) -> None
     # 初始化存储
     storage = VFSStorage(str(pontis_path))
 
+    # 清空旧边（每次全量重建）
+    storage.write_edges([])
+
     logger.info(f"=== Pontis Extractor: {target_path} ===\n")
 
     # ========== Phase 1: 骨架生成 ==========

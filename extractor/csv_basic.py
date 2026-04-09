@@ -58,12 +58,23 @@ def _expand_table(node: NodeRef, storage: VFSStorage, delimiter: str = ',') -> N
     storage.ensure_dir(entity_node.full_path)
 
     stem = node.stem
+    col_edges = []
     for col_name in headers:
         safe_col = col_name.replace("/", "_").replace("\\", "_").replace(".", "_")
         col_rel = os.path.join(entity_rel, f"{stem}.{safe_col}.TEXT.col")
         col_node = NodeRef(col_rel, storage.pontis_root)
         storage.ensure_dir(col_node.full_path)
         storage.write_meta(col_node, {"created_at": __import__('datetime').datetime.now().isoformat()})
+
+        col_entity_name = f"{stem}.{safe_col}.TEXT.col"
+        col_edges.append({
+            "from": node.name,
+            "type": "columns",
+            "to": f"{node.name}::{col_entity_name}",
+        })
+
+    if col_edges:
+        storage.add_edges(col_edges)
 
     logger.info(f"  Entity: {node.name}/_entity/ ({len(headers)} columns)")
 

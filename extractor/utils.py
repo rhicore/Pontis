@@ -124,58 +124,12 @@ class VFSStorage:
     def ensure_dir(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
 
-    def write_bin(self, node: NodeRef, filename: str, data: bytes) -> None:
-        """Write binary data (deprecated, use write_raw for JSON data)."""
-        self.ensure_dir(node.full_path)
-        with open(os.path.join(node.full_path, filename), 'wb') as f:
-            f.write(data)
-
-    def read_bin(self, node: NodeRef, filename: str) -> Optional[bytes]:
-        """Read binary data."""
-        path = os.path.join(node.full_path, filename)
-        if not os.path.exists(path):
-            return None
-        with open(path, 'rb') as f:
-            return f.read()
-
-    def write_raw(self, node: NodeRef, data: Any) -> None:
-        """Write JSON-serializable data to _raw file."""
-        import json
-        self.ensure_dir(node.full_path)
-        raw_path = os.path.join(node.full_path, "_raw")
-        with open(raw_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-    def read_raw(self, node: NodeRef) -> Optional[Any]:
-        """Read JSON data from _raw file."""
-        import json
-        raw_path = os.path.join(node.full_path, "_raw")
-        if not os.path.exists(raw_path):
-            return None
-        with open(raw_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-
-    def write_text(self, node: NodeRef, content: str) -> None:
-        """Write raw text content to _raw file (without JSON wrapping)."""
-        self.ensure_dir(node.full_path)
-        raw_path = os.path.join(node.full_path, "_raw")
-        with open(raw_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-
-    def read_text(self, node: NodeRef) -> Optional[str]:
-        """Read raw text content from _raw file."""
-        raw_path = os.path.join(node.full_path, "_raw")
-        if not os.path.exists(raw_path):
-            return None
-        with open(raw_path, 'r', encoding='utf-8') as f:
-            return f.read()
-
     def list_children(self, node: NodeRef) -> List[NodeRef]:
         if not os.path.isdir(node.full_path):
             return []
         children = []
         for name in os.listdir(node.full_path):
-            if name.startswith('_') or name.startswith('.'):
+            if name.startswith('.'):
                 continue
             child_path = os.path.join(node.full_path, name)
             if os.path.isdir(child_path):
@@ -185,7 +139,8 @@ class VFSStorage:
     def find_nodes(self, pattern: str) -> List[NodeRef]:
         results = []
         for root, dirs, files in os.walk(self.pontis_root):
-            dirs[:] = [d for d in dirs if not d.startswith('_') and not d.startswith('.')]
+            # Only skip hidden dirs (.git, etc.), NOT _entity/_meta internal dirs
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
             for d in dirs:
                 full_path = os.path.join(root, d)
                 rel_path = os.path.relpath(full_path, self.pontis_root)
@@ -196,6 +151,54 @@ class VFSStorage:
     def exists(self, node: NodeRef) -> bool:
         """Check if a node exists in the VFS."""
         return os.path.exists(node.full_path)
+
+    # ==================== Edge Storage ====================
+
+    def _edges_path(self) -> str:
+        return os.path.join(self.pontis_root, "_edges.yml")
+
+    def read_edges(self) -> List[Dict[str, str]]:
+        """读取所有边"""
+        path = self._edges_path()
+        if not os.path.exists(path):
+            return []
+        with open(path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f) or {}
+        return data.get("edges", [])
+
+    def write_edges(self, edges: List[Dict[str, str]]) -> None:
+        """写入所有边"""
+        os.makedirs(self.pontis_root, exist_ok=True)
+        with open(self._edges_path(), 'w', encoding='utf-8') as f:
+            yaml.dump({"edges": edges}, f, default_flow_style=False, allow_unicode=True)
+
+    def add_edge(self, from_ref: str, edge_type: str, to_ref: str) -> None:
+        """添加一条边"""
+        edges = self.read_edges()
+        key = (from_ref, edge_type, to_ref)
+        if any((e["from"], e["type"], e["to"]) == key for e in edges):
+            return
+        edges.append({"from": from_ref, "type": edge_type, "to": to_ref})
+        self.write_edges(edges)
+
+    def add_edges(self, edge_list: List[Dict[str, str]]) -> None:
+        """批量添加边"""
+        edges = self.read_edges()
+        existing = {(e["from"], e["type"], e["to"]) for e in edges}
+        for e in edge_list:
+            key = (e["from"], e["type"], e["to"])
+            if key not in existing:
+                edges.append(e)
+                existing.add(key)
+        self.write_edges(edges)
+
+    def find_edges(self, from_ref: str = None, edge_type: str = None, to_ref: str = None) -> List[Dict[str, str]]:
+        """查询边"""
+        edges = self.read_edges()
+        return [e for e in edges
+                if (from_ref is None or e["from"] == from_ref)
+                and (edge_type is None or e["type"] == edge_type)
+                and (to_ref is None or e["to"] == to_ref)]
 
 
 # ==================== LLM Client ====================

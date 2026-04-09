@@ -55,8 +55,11 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, k: int) -> bool:
 
     db_rel_path = os.sep.join(path_parts[:db_idx+1])
 
-    # 解析列节点名: [表名].[列名].[类型].col
-    col_node_name = path_parts[db_idx + 1].replace(".col", "")
+    # 解析列节点名: 支持 _entity/ 子目录结构
+    if db_idx + 1 < len(path_parts) and path_parts[db_idx + 1] == '_entity':
+        col_node_name = path_parts[db_idx + 2].replace(".col", "")
+    else:
+        col_node_name = path_parts[db_idx + 1].replace(".col", "")
     col_parts = col_node_name.split(".")
     if len(col_parts) < 3:
         return False

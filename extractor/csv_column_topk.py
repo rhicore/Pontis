@@ -21,14 +21,14 @@ def generate(storage: VFSStorage, k: int = 5) -> None:
     """为所有CSV/TSV列生成TopK值"""
     logger.info("=== Generating CSV column TopK values ===")
 
-    # 扁平结构: *.csv/*.*.*.col 或 *.tsv/*.*.*.col
-    for node in storage.find_nodes("*.csv/*.*.*.col"):
+    # Entity structure: *.csv/_entity/*.*.*.col
+    for node in storage.find_nodes("*.csv/_entity/*.*.*.col"):
         try:
             _generate_for_column(node, storage, ',', k)
         except Exception as e:
             logger.warning(f"Failed to generate topk for {node.name}: {e}")
 
-    for node in storage.find_nodes("*.tsv/*.*.*.col"):
+    for node in storage.find_nodes("*.tsv/_entity/*.*.*.col"):
         try:
             _generate_for_column(node, storage, '\t', k)
         except Exception as e:
@@ -61,9 +61,12 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, delimiter: str, k: 
 
     csv_rel_path = os.sep.join(path_parts[:csv_idx+1])
 
-    # 解析列名：扁平结构 [文件名].[列名].TEXT.col
-    col_node_name = path_parts[csv_idx + 1]  # e.g., "data.name.TEXT.col"
-    col_name = col_node_name.split('.')[1]  # 提取列名
+    # 解析列名：支持 _entity/ 子目录结构
+    if csv_idx + 1 < len(path_parts) and path_parts[csv_idx + 1] == '_entity':
+        col_node_name = path_parts[csv_idx + 2]
+    else:
+        col_node_name = path_parts[csv_idx + 1]
+    col_name = col_node_name.split('.')[1]
 
     csv_node = NodeRef(csv_rel_path, node.pontis_root)
     csv_meta = storage.read_meta(csv_node)

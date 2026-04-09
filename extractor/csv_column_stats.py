@@ -20,14 +20,14 @@ def generate(storage: VFSStorage) -> None:
     """为所有CSV/TSV文件的列生成统计"""
     logger.info("=== Generating CSV column statistics ===")
 
-    # 扁平结构: *.csv/*.*.TEXT.col 或 *.tsv/*.*.TEXT.col
-    for node in storage.find_nodes("*.csv/*.*.*.col"):
+    # Entity structure: *.csv/_entity/*.*.*.col
+    for node in storage.find_nodes("*.csv/_entity/*.*.*.col"):
         try:
             _generate_for_column(node, storage, delimiter=',')
         except Exception as e:
             logger.warning(f"Failed to generate stats for {node.name}: {e}")
 
-    for node in storage.find_nodes("*.tsv/*.*.*.col"):
+    for node in storage.find_nodes("*.tsv/_entity/*.*.*.col"):
         try:
             _generate_for_column(node, storage, delimiter='\t')
         except Exception as e:
@@ -61,8 +61,12 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage, delimiter: str) -> 
 
     csv_rel_path = os.sep.join(path_parts[:csv_idx+1])
 
-    # 解析列名：扁平结构 [文件名].[列名].TEXT.col
-    col_node_name = path_parts[csv_idx + 1]  # e.g., "data.name.TEXT.col"
+    # 解析列名：支持 _entity/ 子目录结构
+    # 路径: [csv].csv/_entity/[csv].[col_name].TEXT.col
+    if csv_idx + 1 < len(path_parts) and path_parts[csv_idx + 1] == '_entity':
+        col_node_name = path_parts[csv_idx + 2]  # e.g., "employees.name.TEXT.col"
+    else:
+        col_node_name = path_parts[csv_idx + 1]
     col_name = col_node_name.split('.')[1]  # 提取列名
 
     # 获取CSV源路径

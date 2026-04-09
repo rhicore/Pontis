@@ -330,6 +330,25 @@ def _create_overlap_file(db_node: NodeRef, overlap: Dict, storage: VFSStorage) -
         storage.ensure_dir(overlap_node.full_path)
         storage.write_meta(overlap_node, overlap_meta)
 
+        # 添加边: from_col → overlap, to_col → overlap
+        from_col_type = overlap.get('from_type', 'TEXT')
+        to_col_type = overlap.get('to_type', 'TEXT')
+        safe_from_col2 = from_column.replace("/", "_").replace("\\", "_")
+        safe_to_col2 = to_column.replace("/", "_").replace("\\", "_")
+
+        storage.add_edges([
+            {
+                "from": f"{db_node.name}::{from_table}.{safe_from_col2}.{from_col_type}.col",
+                "type": "overlaps",
+                "to": f"{db_node.name}::{overlap_filename}",
+            },
+            {
+                "from": f"{db_node.name}::{to_table}.{safe_to_col2}.{to_col_type}.col",
+                "type": "overlaps",
+                "to": f"{db_node.name}::{overlap_filename}",
+            },
+        ])
+
         return True
 
     except Exception as e:

@@ -29,7 +29,10 @@
       "Read(//tmp/test_pontis_pattern/.pontis/test.json/_entity/**)",
       "Read(//tmp/test_pontis_pattern/**)",
       "Bash(PYTHONPATH=/nfsdat2/home/bcchenslm/Projects/Pontis python -m extractor .)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(mkdir:*)",
+      "Read(//nfsdat2/home/bcchenslm/**)",
+      "Read(//tmp/**)"
     ]
   }
 }

@@ -222,6 +222,14 @@ def _create_relation_file(db_node: NodeRef, from_table: str, relation: Dict, sto
         storage.ensure_dir(fk_node.full_path)
         storage.write_meta(fk_node, fk_meta)
 
+        # 添加边: table → fk
+        fk_entity_name = fk_filename.replace(".fk", ".fk")
+        storage.add_edge(
+            from_ref=f"{db_node.name}::{from_table}.table",
+            edge_type="foreign_keys",
+            to_ref=f"{db_node.name}::{fk_entity_name}",
+        )
+
         return True
 
     except Exception as e:
