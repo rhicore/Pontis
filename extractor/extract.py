@@ -15,7 +15,14 @@ from pathlib import Path
 from extractor.utils import VFSStorage, load_config
 from extractor.skeleton import generate_skeleton
 
-# ========== 第二阶段：单节点信息生成 ==========
+# ========== Phase 1.5: 实体展开 ==========
+
+from extractor.db_basic import generate as db_basic
+from extractor.csv_basic import generate as csv_basic
+from extractor.serialized_basic import generate as serialized_basic
+from extractor.text_basic import generate as text_basic
+
+# ========== Phase 2: 单节点信息生成 ==========
 
 # DB相关
 from extractor.db_info import generate as db_info
@@ -29,16 +36,14 @@ from extractor.csv_info import generate as csv_info
 from extractor.csv_column_stats import generate as csv_column_stats
 from extractor.csv_column_sample import generate as csv_column_sample
 from extractor.csv_column_topk import generate as csv_column_topk
-from extractor.csv_semantic import generate as csv_semantic
 
-# 序列化文件相关 (JSON/YAML/XML/TOML/HCL)
-from extractor.serialized_info import generate as serialized_info
+# 序列化文件相关
+from extractor.json_pattern import generate as json_pattern
 
-# Text文件相关（通用）
+# Text文件相关
 from extractor.text_info import generate as text_info
-from extractor.txt_chunk import generate as txt_chunk
 
-# ========== 第三阶段：跨节点 + 语义生成 ==========
+# ========== Phase 3: 跨节点 + 语义生成 ==========
 
 # DB关系与语义
 from extractor.db_table_relations import generate as db_table_relations
@@ -47,12 +52,8 @@ from extractor.db_column_rel import generate as db_column_rel
 from extractor.db_table_semantic import generate as db_table_semantic
 from extractor.db_column_semantic import generate as db_column_semantic
 
-# 序列化文件语义（仅导入存在的模块）
+# 序列化文件语义
 from extractor.json_semantic import generate as json_semantic
-
-# 文档语义
-from extractor.md_semantic import generate as md_semantic
-from extractor.txt_semantic import generate as txt_semantic
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,14 @@ def extract(target: str, config_path: str = None, verbose: bool = False) -> None
     generate_skeleton(str(target_path), storage, config)
     logger.info("")
 
+    # ========== Phase 1.5: 实体展开 ==========
+    logger.info("[Phase 1.5] Expanding entities...")
+    db_basic(storage)
+    csv_basic(storage)
+    serialized_basic(storage)
+    text_basic(storage)
+    logger.info("")
+
     # ========== Phase 2: DB信息 ==========
     logger.info("[Phase 2] Generating DB info...")
     db_info(storage)
@@ -105,7 +114,7 @@ def extract(target: str, config_path: str = None, verbose: bool = False) -> None
 
     # ========== Phase 4: 序列化文件信息 ==========
     logger.info("[Phase 4] Generating serialized file info...")
-    serialized_info(storage)
+    json_pattern(storage)
     logger.info("")
 
     # ========== Phase 5: 文本文件信息 ==========
@@ -113,34 +122,26 @@ def extract(target: str, config_path: str = None, verbose: bool = False) -> None
     text_info(storage)
     logger.info("")
 
-    # ========== Phase 6: Text分片 ==========
-    logger.info("[Phase 6] Generating Text chunks...")
-    txt_chunk(storage)
-    logger.info("")
-
-    # ========== Phase 7: 跨节点关系 ==========
-    logger.info("[Phase 7] Generating table relations...")
+    # ========== Phase 6: 跨节点关系 ==========
+    logger.info("[Phase 6] Generating table relations...")
     db_table_relations(storage)
     logger.info("")
 
-    # ========== Phase 8: 列值重叠检测（硬性规则） ==========
-    logger.info("[Phase 8] Detecting column overlaps...")
+    # ========== Phase 7: 列值重叠检测 ==========
+    logger.info("[Phase 7] Detecting column overlaps...")
     db_column_overlap(storage, config)
     logger.info("")
 
-    # ========== Phase 9: 列关系打分（LLM软筛选） ==========
-    logger.info("[Phase 9] Scoring column relations...")
+    # ========== Phase 8: 列关系打分 ==========
+    logger.info("[Phase 8] Scoring column relations...")
     db_column_rel(storage, config)
     logger.info("")
 
-    # ========== Phase 10: 语义分析（AI） ==========
-    logger.info("[Phase 8] Generating semantics...")
+    # ========== Phase 9: 语义分析 ==========
+    logger.info("[Phase 9] Generating semantics...")
     db_table_semantic(storage)
     db_column_semantic(storage)
-    csv_semantic(storage)
     json_semantic(storage)
-    md_semantic(storage)
-    txt_semantic(storage)
     logger.info("")
 
     logger.info("=== Extraction complete ===")

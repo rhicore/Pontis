@@ -220,9 +220,6 @@ def _generate_for_text(node: NodeRef, storage: VFSStorage) -> bool:
 
         storage.write_meta(node, meta)
 
-        # 存储原始内容到 _raw
-        storage.write_text(node, content)
-
         logger.info(f"  Text info: {node.rel_path} ({line_count} lines, {char_count} chars)")
         return True
 

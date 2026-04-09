@@ -24,7 +24,12 @@
       "Bash(sed -i 's/\"name\": \".topk\",//g; s/\"type\": \"TopK\",//g' csv_column_topk.py)",
       "Bash(grep -n \"source_table\\\\|source_column\\\\|data_type\\\\|\\\\\"type\\\\\":\\\\|\\\\\"suffix\\\\\":\" /nfsdat2/home/bcchenslm/Projects/Pontis/extractor/*.py)",
       "Bash(printf 'ls\\\\nexit\\\\n')",
-      "Bash(xargs -I {} basename {})"
+      "Bash(xargs -I {} basename {})",
+      "Bash(rm -rf /tmp/test_pontis_pattern/.pontis/test.json/_entity)",
+      "Read(//tmp/test_pontis_pattern/.pontis/test.json/_entity/**)",
+      "Read(//tmp/test_pontis_pattern/**)",
+      "Bash(PYTHONPATH=/nfsdat2/home/bcchenslm/Projects/Pontis python -m extractor .)",
+      "Bash(find:*)"
     ]
   }
 }
