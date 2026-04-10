@@ -14,13 +14,13 @@ path::entity 语法：
 参数：
 - path (必填): 文件或 path::entity 路径
 - all: 设为 true 显示所有元数据字段
-- property: 查看特定属性，如 "sample", "topk", "cardinality", "semantic_summary"
+- property: 查看特定属性，如 "sample", "topk", "cardinality", "detail", "brief"
 
 典型用法：
 - "这个表有多少行多少列？" → meta(path="event.db::event.table")
 - "这列的取值分布？" → meta(path="event.db::event.status.TEXT.col", property="topk")
 - "这列的采样值？" → meta(path="event.db::event.status.TEXT.col", property="sample")
-- "这个表的语义描述？" → meta(path="event.db::event.table", property="semantic_summary")
+- "AI 总结？" → meta(path="event.db::event.table", property="detail")
 - "JSON 文件的结构？" → meta(path="json/budget.json")\
 """
 

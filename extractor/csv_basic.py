@@ -32,12 +32,51 @@ def generate(storage: VFSStorage) -> None:
             logger.warning(f"Failed to expand TSV {node.name}: {e}")
 
 
+def _infer_type(sample_rows: list, col_idx: int) -> str:
+    """从前 N 行推断列类型：INT / FLOAT / TEXT"""
+    non_empty = []
+    for row in sample_rows:
+        if col_idx < len(row):
+            val = row[col_idx].strip()
+            if val:
+                non_empty.append(val)
+
+    if not non_empty:
+        return "TEXT"
+
+    all_int = True
+    all_float = True
+
+    for val in non_empty:
+        # 试 int
+        if all_int:
+            try:
+                int(val)
+            except ValueError:
+                all_int = False
+        # 试 float
+        if all_float:
+            try:
+                float(val)
+            except ValueError:
+                all_float = False
+
+        if not all_int and not all_float:
+            break
+
+    if all_int:
+        return "INT"
+    if all_float:
+        return "FLOAT"
+    return "TEXT"
+
+
 def _expand_table(node: NodeRef, storage: VFSStorage, delimiter: str = ',') -> None:
     """展开 CSV/TSV 为列实体
 
     结构：
     _entity/
-        [文件名].[列名].TEXT.col/
+        [文件名].[列名].[推断类型].col/
     """
     meta = storage.read_meta(node)
     rel_path = meta.get("path") if meta else None
@@ -49,32 +88,27 @@ def _expand_table(node: NodeRef, storage: VFSStorage, delimiter: str = ',') -> N
     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
         reader = csv.reader(f, delimiter=delimiter)
         headers = next(reader, None)
-
-    if not headers:
-        return
+        if not headers:
+            return
+        # 采样前 100 行用于类型推断
+        sample_rows = []
+        for i, row in enumerate(reader):
+            if i >= 100:
+                break
+            sample_rows.append(row)
 
     entity_rel = os.path.join(node.rel_path, "_entity")
     entity_node = NodeRef(entity_rel, storage.pontis_root)
     storage.ensure_dir(entity_node.full_path)
 
     stem = node.stem
-    col_edges = []
-    for col_name in headers:
+    for col_idx, col_name in enumerate(headers):
         safe_col = col_name.replace("/", "_").replace("\\", "_").replace(".", "_")
-        col_rel = os.path.join(entity_rel, f"{stem}.{safe_col}.TEXT.col")
+        col_type = _infer_type(sample_rows, col_idx)
+        col_rel = os.path.join(entity_rel, f"{stem}.{safe_col}.{col_type}.col")
         col_node = NodeRef(col_rel, storage.pontis_root)
         storage.ensure_dir(col_node.full_path)
         storage.write_meta(col_node, {"created_at": __import__('datetime').datetime.now().isoformat()})
-
-        col_entity_name = f"{stem}.{safe_col}.TEXT.col"
-        col_edges.append({
-            "from": node.name,
-            "type": "columns",
-            "to": f"{node.name}::{col_entity_name}",
-        })
-
-    if col_edges:
-        storage.add_edges(col_edges)
 
     logger.info(f"  Entity: {node.name}/_entity/ ({len(headers)} columns)")
 

@@ -69,7 +69,7 @@ def _keyword_search_meta(pontis_root: str, query: str, path_pattern: str = "") -
                 file_type = get_file_type_from_name(name, node_type)
                 config = get_type_config(file_type)
                 info = format_info_from_meta(meta, config)
-                brief = meta.get(config.brief_field, '')
+                brief = meta.get("brief", "")
 
                 display = rel_dir
                 combined_info = f"{info}, {brief}" if brief and info != "-" else (brief or info)

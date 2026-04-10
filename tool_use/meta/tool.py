@@ -93,15 +93,35 @@ def meta_command(
     if property:
         value = meta.get(property)
         if value is None:
-            return f"Property '{property}' not found"
-        return f"{property}: {value}"
+            available = sorted(meta.keys())
+            return f"Property '{property}' not found. Available: {', '.join(available)}"
+        from tool_use.utils.formatters import _format_meta_value
+        return f"{property}: {_format_meta_value(value, None)}"
 
-    # Get type config for formatting
-    node_type = meta.get('type', 'Unknown')
-    config = get_meta_type_config(node_type)
+    # Get type config for formatting — purely by extension
+    if parsed.entity_pattern:
+        # Entity: check entity name suffix (e.g. "users.table" → ".table")
+        entity_name = os.path.basename(parsed.entity_pattern)
+        if "." in entity_name:
+            file_ext = "." + entity_name.split(".")[-1].lower()
+        else:
+            file_ext = ""
+    else:
+        # File-level: use file extension
+        file_ext = os.path.splitext(resolved_file)[1].lower()
+    config = get_meta_type_config(file_ext)
 
     # Format output
-    return format_meta_output(meta, config, show_all=all, specific_key=property)
+    result = format_meta_output(meta, config, show_all=all, specific_key=property)
+
+    # Fallback: if default_keys matched nothing, show all fields
+    if not result and not all and not property:
+        lines = []
+        for key, value in sorted(meta.items()):
+            lines.append(f"{key}: {value}")
+        result = "\n".join(lines)
+
+    return result
 
 
 if __name__ == "__main__":

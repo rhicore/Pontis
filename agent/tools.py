@@ -221,12 +221,12 @@ def execute_tool(name: str, arguments: dict, project_path: str) -> str:
 
         elif name == "read":
             from tool_use.read.tool import read_command
-            return read_command(
-                project_path,
-                path=arguments["file_path"],
-                offset=arguments.get("offset"),
-                limit=arguments.get("limit"),
-            )
+            kwargs = {"project_path": project_path, "file_path": arguments["file_path"]}
+            if "offset" in arguments:
+                kwargs["offset"] = arguments["offset"]
+            if "limit" in arguments:
+                kwargs["limit"] = arguments["limit"]
+            return read_command(**kwargs)
 
         elif name == "meta":
             from tool_use.meta.tool import meta_command
@@ -260,7 +260,7 @@ def execute_tool(name: str, arguments: dict, project_path: str) -> str:
             return bash_command(
                 command=arguments["command"],
                 cwd=project_path,
-                timeout=arguments.get("timeout", 120),
+                timeout_ms=arguments.get("timeout", 120) * 1000,
             )
 
         else:

@@ -264,37 +264,22 @@ def _read_chunk(pontis_root: str, file_rel_path: str, chunk_name: str) -> str:
 
 
 def _read_json_entity(pontis_root: str, file_rel_path: str, entity_path: str) -> str:
-    """Read a JSON/YAML entity via SerializedVFS."""
-    try:
-        import yaml as _yaml
-        from tool_use.utils.serialized_vfs import SerializedVFSEngine
+    """Read a JSON/YAML pattern entity's metadata."""
+    import yaml as _yaml
 
-        # Resolve source file path from _meta.yml
-        meta_path = os.path.join(pontis_root, file_rel_path, "_meta.yml")
-        if os.path.exists(meta_path):
-            with open(meta_path, 'r') as f:
-                meta = _yaml.safe_load(f) or {}
-            source_rel = meta.get("path", "")
-        else:
-            source_rel = file_rel_path
+    entity_dir = os.path.join(pontis_root, file_rel_path, "_entity", entity_path)
+    meta_path = os.path.join(entity_dir, "_meta.yml")
 
-        project_root = os.path.dirname(pontis_root)
-        source_file = os.path.join(project_root, source_rel)
-        if not os.path.exists(source_file):
-            return f"Source file not found: {source_rel}"
+    if not os.path.exists(meta_path):
+        return f"Entity not found: {entity_path}"
 
-        handler = SerializedVFSEngine(source_file)
-        node = handler.resolve_path(entity_path)
-        if node is None:
-            return f"Entity not found: {entity_path}"
+    with open(meta_path, 'r', encoding='utf-8') as f:
+        meta = _yaml.safe_load(f) or {}
 
-        import json
-        if node.node_type.is_scalar():
-            return str(node.value) if node.value is not None else "null"
-        else:
-            return json.dumps(node.value, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return f"Error reading entity: {e}"
+    lines = []
+    for key, value in sorted(meta.items()):
+        lines.append(f"{key}: {value}")
+    return "\n".join(lines)
 
 
 def read_command(

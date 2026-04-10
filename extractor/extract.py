@@ -45,15 +45,17 @@ from extractor.text_info import generate as text_info
 
 # ========== Phase 3: 跨节点 + 语义生成 ==========
 
-# DB关系与语义
+# DB关系
 from extractor.db_table_relations import generate as db_table_relations
 from extractor.db_column_overlap import generate as db_column_overlap
 from extractor.db_column_rel import generate as db_column_rel
-from extractor.db_table_semantic import generate as db_table_semantic
-from extractor.db_column_semantic import generate as db_column_semantic
 
-# 序列化文件语义
-from extractor.json_semantic import generate as json_semantic
+# AI 总结
+from extractor.ai_db_summary import generate as ai_db_summary
+from extractor.ai_db_table_summary import generate as ai_db_table_summary
+from extractor.ai_db_column_summary import generate as ai_db_column_summary
+from extractor.ai_json_summary import generate as ai_json_summary
+from extractor.ai_text_summary import generate as ai_text_summary
 
 logger = logging.getLogger(__name__)
 
@@ -140,11 +142,13 @@ def extract(target: str, config_path: str = None, verbose: bool = False) -> None
     db_column_rel(storage, config)
     logger.info("")
 
-    # ========== Phase 9: 语义分析 ==========
-    logger.info("[Phase 9] Generating semantics...")
-    db_table_semantic(storage)
-    db_column_semantic(storage)
-    json_semantic(storage)
+    # ========== Phase 9: AI 总结 ==========
+    logger.info("[Phase 9] AI summaries...")
+    ai_db_summary(storage)
+    ai_db_table_summary(storage)
+    ai_db_column_summary(storage)
+    ai_json_summary(storage)
+    ai_text_summary(storage)
     logger.info("")
 
     logger.info("=== Extraction complete ===")

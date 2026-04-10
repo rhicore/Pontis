@@ -34,7 +34,8 @@
       "Read(//nfsdat2/home/bcchenslm/**)",
       "Read(//tmp/**)",
       "Bash(pip install:*)",
-      "Bash(/nfsdat2/home/bcchenslm/Projects/Pontis/.venv/bin/pip install:*)"
+      "Bash(/nfsdat2/home/bcchenslm/Projects/Pontis/.venv/bin/pip install:*)",
+      "Bash(grep:*)"
     ]
   }
 }

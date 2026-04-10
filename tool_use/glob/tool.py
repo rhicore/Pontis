@@ -124,42 +124,56 @@ def _get_entity_info(pontis_root: str, file_rel_path: str, entity_rel: str) -> s
     info = format_info_from_meta(meta, config)
 
     # Also try to get brief
-    brief = meta.get(config.brief_field, '')
+    brief = meta.get("brief", "")
     if brief:
         return f"{info}, {brief}" if info != "-" else brief
     return info
 
 
 def _get_file_info(project_path: str, file_rel_path: str) -> str:
-    """Get brief info for a physical file."""
+    """Get brief info for a physical file using INFO_TYPE_CONFIG."""
+    import yaml
+    from tool_use.utils.formatters import get_type_config, format_info_from_meta, _format_file_size
+
     full_path = os.path.join(project_path, file_rel_path)
 
     if os.path.isdir(full_path):
         try:
             children = [e for e in os.listdir(full_path) if not e.startswith('.')]
-            return f"{len(children)} children"
+            config = get_type_config("directory")
+            meta = {"child_count": len(children)}
+            return format_info_from_meta(meta, config)
         except Exception:
             return "-"
 
-    try:
-        size = os.path.getsize(full_path)
-        ext = os.path.splitext(file_rel_path)[1].lower()
+    # Read meta from .pontis
+    pontis_root = os.path.join(project_path, ".pontis")
+    meta_path = os.path.join(pontis_root, file_rel_path, "_meta.yml")
+    meta = {}
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, 'r') as f:
+                meta = yaml.safe_load(f) or {}
+        except Exception:
+            pass
 
-        # Check if it has a pontis directory (has entities)
-        pontis_root = os.path.join(project_path, ".pontis")
-        entity_dir = os.path.join(pontis_root, file_rel_path, "_entity")
-        if os.path.exists(entity_dir):
-            entities = [e for e in os.listdir(entity_dir) if not e.startswith('.')]
-            return f"{len(entities)} entities"
+    # Enrich with file_size if not in meta
+    if "file_size" not in meta:
+        try:
+            meta["file_size"] = os.path.getsize(full_path)
+        except Exception:
+            pass
 
-        # Format file size
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size < 1024:
-                return f"{size:.0f} {unit}"
-            size /= 1024
-        return f"{size:.0f} TB"
-    except Exception:
-        return "-"
+    # Use INFO_TYPE_CONFIG template
+    ext = os.path.splitext(file_rel_path)[1].lower()
+    config = get_type_config(ext)
+    info = format_info_from_meta(meta, config)
+
+    # Append brief if available
+    brief = meta.get("brief", "")
+    if brief:
+        return f"{info}, {brief}"
+    return info
 
 
 def glob_command(

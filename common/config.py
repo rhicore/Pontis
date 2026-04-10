@@ -10,7 +10,7 @@ Config sources (priority order):
 3. Environment variables
 """
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import yaml
@@ -18,10 +18,10 @@ import yaml
 
 @dataclass
 class LLMConfig:
-    """LLM connection config for a single profile."""
-    provider: str = "https://api.deepseek.com"
-    model: str = "deepseek-chat"
-    api_key: str = "sk-9cf27bbb303c44709d26b60c691e5edb"
+    """LLM connection config — returned by PontisConfig.extractor_llm() / agent_llm()."""
+    provider: str = ""
+    model: str = ""
+    api_key: str = ""
     max_tokens: int = 4096
     temperature: float = 0.3
 
@@ -43,7 +43,7 @@ class PontisConfig:
 
     # Agent profile (capable model)
     agent_provider: str = "https://api.deepseek.com"
-    agent_model: str = "deepseek-chat"
+    agent_model: str = "deepseek-reasoner"
     agent_api_key: str = "sk-9cf27bbb303c44709d26b60c691e5edb"
     agent_max_tokens: int = 4096
     agent_temperature: float = 0.3
@@ -56,7 +56,6 @@ class PontisConfig:
     log_level: str = "INFO"
 
     def extractor_llm(self) -> LLMConfig:
-        """Get LLM config for the extractor."""
         return LLMConfig(
             provider=self.extractor_provider,
             model=self.extractor_model,
@@ -66,7 +65,6 @@ class PontisConfig:
         )
 
     def agent_llm(self) -> LLMConfig:
-        """Get LLM config for the agent."""
         return LLMConfig(
             provider=self.agent_provider,
             model=self.agent_model,
@@ -97,7 +95,7 @@ def load_config(project_path: str = None) -> PontisConfig:
                 config = _apply_dict(config, data)
                 break
 
-    # 3. Environment variable overrides (shared api_key fallback)
+    # 3. Environment variable overrides
     shared_key = os.environ.get("OPENAI_API_KEY", "")
     base_url = os.environ.get("OPENAI_BASE_URL", "")
 
