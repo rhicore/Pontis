@@ -1,0 +1,235 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: #1a1a2e;
+  --surface: #16213e;
+  --surface2: #0f3460;
+  --text: #e0e0e0;
+  --text-muted: #888;
+  --accent: #4fc3f7;
+  --user-bg: #1b5e20;
+  --tool-bg: #263238;
+  --tool-border: #455a64;
+  --error-bg: #b71c1c;
+  --input-bg: #1e1e2f;
+}
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+/* --- Header --- */
+#header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #333;
+  background: var(--surface);
+}
+
+#header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.header-left, .header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+#clear-btn {
+  padding: 4px 12px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid #555;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+#clear-btn:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+/* --- Error Banner --- */
+#error-banner {
+  padding: 10px 20px;
+  background: var(--error-bg);
+  color: white;
+  font-size: 14px;
+}
+.hidden { display: none; }
+
+/* --- Messages --- */
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* --- Chat Bubbles --- */
+.msg {
+  max-width: 85%;
+  line-height: 1.6;
+  font-size: 14px;
+}
+.msg pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-user {
+  align-self: flex-end;
+  background: var(--user-bg);
+  padding: 10px 16px;
+  border-radius: 12px 12px 2px 12px;
+}
+
+.msg-assistant {
+  align-self: flex-start;
+  background: var(--surface2);
+  padding: 12px 16px;
+  border-radius: 12px 12px 12px 2px;
+}
+
+/* --- Tool Calls --- */
+.tool-block {
+  align-self: flex-start;
+  max-width: 85%;
+  width: 100%;
+}
+
+.tool-block details {
+  background: var(--tool-bg);
+  border-left: 3px solid var(--tool-border);
+  border-radius: 4px;
+  margin-bottom: 4px;
+}
+
+.tool-block summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+
+.tool-block summary .tool-name {
+  font-weight: 600;
+}
+
+.tool-block summary .tool-args {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-result {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #ccc;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-top: 1px solid #333;
+}
+
+.tool-loading {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* --- Typing indicator --- */
+.typing {
+  align-self: flex-start;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 8px 12px;
+}
+.typing::after {
+  content: '...';
+  animation: dots 1.5s steps(4, end) infinite;
+}
+@keyframes dots {
+  0%, 20% { content: ''; }
+  40% { content: '.'; }
+  60% { content: '..'; }
+  80%, 100% { content: '...'; }
+}
+
+/* --- Input Bar --- */
+#input-bar {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid #333;
+  background: var(--surface);
+}
+
+#user-input {
+  flex: 1;
+  padding: 10px 16px;
+  background: var(--input-bg);
+  border: 1px solid #444;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+}
+#user-input:focus {
+  border-color: var(--accent);
+}
+#user-input:disabled {
+  opacity: 0.5;
+}
+
+#send-btn {
+  padding: 10px 20px;
+  background: var(--accent);
+  color: #111;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 14px;
+}
+#send-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+#send-btn:not(:disabled):hover {
+  filter: brightness(1.1);
+}

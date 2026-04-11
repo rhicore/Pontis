@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pontis Agent</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="header">
+      <div class="header-left">
+        <h1>Pontis</h1>
+        <span id="project-path" class="muted"></span>
+      </div>
+      <div class="header-right">
+        <span id="model-info" class="muted"></span>
+        <button id="clear-btn" title="清除会话">清除会话</button>
+      </div>
+    </header>
+
+    <div id="error-banner" class="hidden"></div>
+
+    <main id="messages"></main>
+
+    <footer id="input-bar">
+      <input type="text" id="user-input" placeholder="输入问题..." autocomplete="off" disabled>
+      <button id="send-btn" disabled>发送</button>
+    </footer>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

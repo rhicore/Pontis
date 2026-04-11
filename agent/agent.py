@@ -1,6 +1,7 @@
 """Pontis Agent - Interactive data analysis agent with tool calling."""
 import json
 import sys
+from typing import Iterator
 
 from openai import OpenAI
 
@@ -69,6 +70,63 @@ class PontisAgent:
                 # Truncate very long results to avoid context overflow
                 if len(result) > 8000:
                     result = result[:8000] + "\n... (truncated)"
+
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                })
+
+    def chat_stream(self, user_input: str) -> Iterator[dict]:
+        """Stream chat events: tool calls, tool results, and final text.
+
+        Yields dicts with:
+          {"type": "tool_call", "name": ..., "arguments": ..., "id": ...}
+          {"type": "tool_result", "name": ..., "result": ..., "id": ...}
+          {"type": "done", "content": ...}
+        """
+        self.messages.append({"role": "user", "content": user_input})
+
+        while True:
+            response = self.client.chat.completions.create(
+                model=self.config.model,
+                messages=self.messages,
+                tools=TOOL_DEFINITIONS,
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+            )
+
+            msg = response.choices[0].message
+            self.messages.append(msg.to_dict())
+
+            if not msg.tool_calls:
+                yield {"type": "done", "content": msg.content or ""}
+                return
+
+            for tool_call in msg.tool_calls:
+                name = tool_call.function.name
+                try:
+                    arguments = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
+
+                yield {
+                    "type": "tool_call",
+                    "name": name,
+                    "arguments": arguments,
+                    "id": tool_call.id,
+                }
+
+                result = execute_tool(name, arguments, self.store)
+                if len(result) > 8000:
+                    result = result[:8000] + "\n... (truncated)"
+
+                yield {
+                    "type": "tool_result",
+                    "name": name,
+                    "result": result,
+                    "id": tool_call.id,
+                }
 
                 self.messages.append({
                     "role": "tool",
