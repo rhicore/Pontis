@@ -17,28 +17,14 @@ Output formats:
 """
 import os
 import re
-import sys
-import glob as pyglob
 import sqlite3
 from typing import Optional, List, Tuple
 
-import yaml
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from tool_use.utils.path_parser import parse_path_pattern
+from tool_use.utils.config import TOOL_PAGINATION
 
 
 def _parse_predicate(predicate: str) -> Tuple[str, str, object]:
-    """
-    Parse a predicate expression into (field_ref, operator, value).
-
-    Examples:
-        "INT > 100" -> ("", ">", 100)
-        "STR = 'active'" -> ("", "=", "active")
-        "id > 5" -> ("id", ">", 5)
-    """
-    # Match: optional_field OP value
+    """Parse a predicate expression into (field_ref, operator, value)."""
     patterns = [
         r"(\w+)?\s*(>=|<=|!=|>|<|=)\s*(.+)",
     ]
@@ -50,7 +36,6 @@ def _parse_predicate(predicate: str) -> Tuple[str, str, object]:
             op = m.group(2)
             val_str = m.group(3).strip()
 
-            # Parse value
             if val_str.startswith("'") and val_str.endswith("'"):
                 val = val_str[1:-1]
             elif val_str.startswith('"') and val_str.endswith('"'):
@@ -82,7 +67,6 @@ def _apply_predicate(value, op: str, target) -> bool:
                 return not (value is None and target is None)
             return False
 
-        # Try numeric comparison
         if isinstance(target, (int, float)):
             num_val = float(value) if not isinstance(value, (int, float)) else value
             if op == '>': return num_val > target
@@ -92,7 +76,6 @@ def _apply_predicate(value, op: str, target) -> bool:
             if op == '=': return num_val == target
             if op == '!=': return num_val != target
 
-        # String comparison
         str_val = str(value)
         str_target = str(target)
         if op == '=': return str_val == str_target
@@ -107,107 +90,73 @@ def _apply_predicate(value, op: str, target) -> bool:
 
 
 def _lookup_db_columns(
-    project_path: str,
+    store,
     file_pattern: str,
     data_type: str,
     predicate: str,
     output_mode: str,
     cwd: str = ""
 ) -> str:
-    """
-    Lookup values in database columns matching the predicate.
-
-    Scans all .col entities under matching .db files.
-    """
+    """Lookup values in database columns matching the predicate."""
     results = []
-    pontis_root = os.path.join(project_path, ".pontis")
 
-    if not os.path.exists(pontis_root):
+    if not store.pontis_exists:
         return "No .pontis directory found"
 
     # Find matching DB files
-    search_root = os.path.join(project_path, cwd) if cwd else project_path
-    db_files = pyglob.glob(os.path.join(search_root, file_pattern), recursive=True)
+    db_files = store.glob_physical_files(file_pattern, cwd)
 
     field, op, target_val = _parse_predicate(predicate)
 
-    for db_file in db_files:
-        db_rel = os.path.relpath(db_file, project_path)
-        entity_root = os.path.join(pontis_root, db_rel, "_entity")
+    for db_rel in db_files:
+        # Find .col entities via store
+        entities = store.glob_entities(db_rel, "*.col")
 
-        if not os.path.exists(entity_root):
+        db_path = store.resolve_db_path(db_rel)
+        if not db_path:
             continue
 
-        # Walk to find .col entities
-        for root, dirs, files in os.walk(entity_root):
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for entity_rel in entities:
+            # Parse column entity name: table.col_name.data_type.col
+            basename = os.path.basename(entity_rel)
+            parts = basename.replace('.col', '').split('.')
+            if len(parts) < 2:
+                continue
+            table_name = parts[0]
+            col_name = parts[1]
+            col_type = parts[2].upper() if len(parts) > 2 else ""
 
-            for d in dirs:
-                if not d.endswith('.col'):
-                    continue
+            # Check data type match from entity name
+            type_match = (
+                data_type.upper() in col_type or
+                data_type.upper() == col_type or
+                data_type.upper() == 'NUMBER' and col_type in ('INT', 'INTEGER', 'REAL', 'FLOAT', 'DOUBLE')
+            )
+            if not type_match:
+                continue
 
-                # Check data type match
-                col_meta_path = os.path.join(root, d, "_meta.yml")
-                if os.path.exists(col_meta_path):
-                    with open(col_meta_path, 'r') as f:
-                        col_meta = yaml.safe_load(f) or {}
+            # Query column values
+            try:
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                cursor.execute(f'SELECT DISTINCT "{col_name}" FROM "{table_name}"')
+                distinct_values = cursor.fetchall()
+                conn.close()
 
-                    col_data_type = col_meta.get('data_type', '').upper()
-                    type_match = (
-                        data_type.upper() in col_data_type or
-                        data_type.upper() == col_data_type or
-                        data_type.upper() == 'NUMBER' and col_data_type in ('INT', 'INTEGER', 'REAL', 'FLOAT', 'DOUBLE')
-                    )
-                    if not type_match:
-                        continue
+                matching = []
+                for (val,) in distinct_values:
+                    if _apply_predicate(val, op, target_val):
+                        matching.append(val)
 
-                # Parse column entity name: table.col_name.data_type.col
-                parts = d.replace('.col', '').split('.')
-                if len(parts) < 2:
-                    continue
-                table_name = parts[0]
-                col_name = parts[1]
+                if matching:
+                    if output_mode == 'distinct_count':
+                        for val in matching:
+                            results.append(f"{db_rel}::{entity_rel}:{len(matching)}:{val}")
+                    else:
+                        results.append(f"{db_rel}::{entity_rel}:{len(matching)}")
 
-                # Resolve actual DB path
-                db_meta_path = os.path.join(pontis_root, db_rel, "_meta.yml")
-                if not os.path.exists(db_meta_path):
-                    continue
-
-                with open(db_meta_path, 'r') as f:
-                    db_meta = yaml.safe_load(f) or {}
-
-                source_path = db_meta.get('path')
-                if not source_path:
-                    continue
-
-                db_path = os.path.join(project_path, source_path)
-                if not os.path.exists(db_path):
-                    continue
-
-                # Query column values
-                try:
-                    conn = sqlite3.connect(db_path)
-                    cursor = conn.cursor()
-
-                    cursor.execute(f'SELECT DISTINCT "{col_name}" FROM "{table_name}"')
-                    distinct_values = cursor.fetchall()
-                    conn.close()
-
-                    matching = []
-                    for (val,) in distinct_values:
-                        if _apply_predicate(val, op, target_val):
-                            matching.append(val)
-
-                    if matching:
-                        entity_rel = os.path.relpath(os.path.join(root, d), entity_root)
-                        if output_mode == 'distinct_count':
-                            for val in matching[:50]:
-                                results.append(f"{db_rel}::{entity_rel}:{len(matching)}:{val}")
-                        else:  # file_count
-                            results.append(f"{db_rel}::{entity_rel}:{len(matching)}")
-
-                except Exception:
-                    continue
+            except Exception:
+                continue
 
     if not results:
         return "No matching values found"
@@ -216,27 +165,21 @@ def _lookup_db_columns(
 
 
 def _lookup_json_values(
-    project_path: str,
+    store,
     file_pattern: str,
     data_type: str,
     predicate: str,
     output_mode: str,
     cwd: str = ""
 ) -> str:
-    """
-    Lookup values in JSON files.
-
-    Searches non-nested primitive types and keys.
-    """
+    """Lookup values in JSON files."""
     import json
 
     results = []
-    search_root = os.path.join(project_path, cwd) if cwd else project_path
-    json_files = pyglob.glob(os.path.join(search_root, file_pattern), recursive=True)
+    json_files = store.glob_physical_files(file_pattern, cwd)
 
     _, op, target_val = _parse_predicate(predicate)
 
-    # Map type to Python types
     type_map = {
         'STR': (str,),
         'STRING': (str,),
@@ -249,9 +192,9 @@ def _lookup_json_values(
     target_types = type_map.get(data_type.upper(), (str, int, float, bool, type(None)))
 
     for json_file in json_files:
-        json_rel = os.path.relpath(json_file, project_path)
+        full_path = os.path.join(store.project_path, json_file)
         try:
-            with open(json_file, 'r', encoding='utf-8') as f:
+            with open(full_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except Exception:
             continue
@@ -259,15 +202,12 @@ def _lookup_json_values(
         matching = []
 
         def _walk_json(obj, path=""):
-            """Walk JSON structure collecting matching primitive values and keys."""
             if isinstance(obj, dict):
                 for key, val in obj.items():
                     child_path = f"{path}.{key}" if path else key
-                    # Check key (keys are always strings)
                     if data_type.upper() in ('STR', 'STRING') and isinstance(target_val, str):
                         if _apply_predicate(key, op, target_val):
                             matching.append((f"{child_path}(key)", key))
-                    # Check value if it's a primitive
                     if isinstance(val, target_types) or (val is None and type(None) in target_types):
                         if _apply_predicate(val, op, target_val):
                             matching.append((child_path, val))
@@ -287,10 +227,10 @@ def _lookup_json_values(
 
         if matching:
             if output_mode == 'distinct_count':
-                for path_str, val in matching[:50]:
-                    results.append(f"{json_rel}::{path_str}:{len(matching)}:{val}")
-            else:  # file_count
-                results.append(f"{json_rel}:{len(matching)}")
+                for path_str, val in matching:
+                    results.append(f"{json_file}::{path_str}:{len(matching)}:{val}")
+            else:
+                results.append(f"{json_file}:{len(matching)}")
 
     if not results:
         return "No matching values found"
@@ -299,63 +239,90 @@ def _lookup_json_values(
 
 
 def lookup_command(
-    project_path: str,
+    store,
     file_pattern: str,
     type: str,
     predicate: str,
     output_mode: str = "distinct_count",
+    offset: int = 0,
+    limit: Optional[int] = None,
     current_cwd: str = ""
 ) -> str:
     """
     Value-based search for data entities.
 
     Args:
-        project_path: Path to project root
+        store: ProjectStore instance
         file_pattern: Glob pattern for files
         type: Data type ("INT", "STR", "BOOL", "NUMBER", "NULL")
         predicate: Filter expression
         output_mode: "distinct_count" or "file_count"
+        offset: Starting index (0-based)
+        limit: Max results per page
         current_cwd: Current working directory
 
     Returns:
         Formatted results
     """
-    # Determine file type from pattern
+    page_conf = TOOL_PAGINATION["lookup"]
+    if limit is None:
+        limit = page_conf.default_limit
+    limit = min(limit, page_conf.max_limit)
+
     ext_pattern = os.path.splitext(file_pattern)[1].lower()
 
+    all_results = []
+
+    def _collect(result_str: str):
+        if result_str != "No matching values found":
+            for line in result_str.split('\n'):
+                all_results.append(line)
+
     if ext_pattern in ('.db', '.sqlite', '.sqlite3'):
-        return _lookup_db_columns(
-            project_path, file_pattern, type, predicate, output_mode, current_cwd
-        )
+        _collect(_lookup_db_columns(
+            store, file_pattern, type, predicate, output_mode, current_cwd
+        ))
     elif ext_pattern in ('.json', '.jsonl'):
-        return _lookup_json_values(
-            project_path, file_pattern, type, predicate, output_mode, current_cwd
-        )
+        _collect(_lookup_json_values(
+            store, file_pattern, type, predicate, output_mode, current_cwd
+        ))
     else:
-        # Try both
-        db_result = _lookup_db_columns(
-            project_path, file_pattern, type, predicate, output_mode, current_cwd
-        )
-        json_result = _lookup_json_values(
-            project_path, file_pattern, type, predicate, output_mode, current_cwd
-        )
-        results = []
-        if db_result != "No matching values found":
-            results.append(db_result)
-        if json_result != "No matching values found":
-            results.append(json_result)
-        return '\n'.join(results) if results else "No matching values found"
+        _collect(_lookup_db_columns(
+            store, file_pattern, type, predicate, output_mode, current_cwd
+        ))
+        _collect(_lookup_json_values(
+            store, file_pattern, type, predicate, output_mode, current_cwd
+        ))
+
+    if not all_results:
+        return "No matching values found"
+
+    total = len(all_results)
+    page = all_results[offset:offset + limit]
+
+    if not page:
+        return f"No results at offset {offset}. Total results: {total}"
+
+    output = '\n'.join(page)
+
+    end = offset + len(page)
+    if end < total:
+        output += f"\n(共 {total} 条结果，当前显示第 {offset + 1}-{end} 条。使用 offset={end} 查看后续结果)"
+
+    return output
 
 
 if __name__ == "__main__":
+    import sys
     if len(sys.argv) < 5:
         print("Usage: python -m tool_use.lookup.tool <project_path> <file_pattern> <type> <predicate> [output_mode] [cwd]")
         sys.exit(1)
 
-    _project = sys.argv[1]
+    from storage import ProjectStore
+    _store = ProjectStore(sys.argv[1])
     _pattern = sys.argv[2]
     _type = sys.argv[3]
     _predicate = sys.argv[4]
     _mode = sys.argv[5] if len(sys.argv) > 5 else "distinct_count"
     _cwd = sys.argv[6] if len(sys.argv) > 6 else ""
-    print(lookup_command(_project, _pattern, _type, _predicate, _mode, _cwd))
+    print(lookup_command(_store, _pattern, _type, _predicate, _mode, _cwd))

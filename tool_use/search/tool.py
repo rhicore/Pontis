@@ -12,75 +12,50 @@ NOTE: This is a placeholder implementation. Full implementation requires:
 Currently falls back to keyword matching in metadata.
 """
 import os
-import sys
-import fnmatch
-from typing import Optional, List
+from typing import List, Optional
 
-import yaml
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from tool_use.utils.path_parser import parse_path_pattern
 from tool_use.utils.formatters import get_type_config, format_info_from_meta, get_file_type_from_name
+from tool_use.utils.config import TOOL_PAGINATION
 
-MAX_RESULTS = 100
 
-
-def _keyword_search_meta(pontis_root: str, query: str, path_pattern: str = "") -> List[tuple]:
+def _keyword_search(store, query: str, path_pattern: str = "") -> List[tuple]:
     """
-    Fallback keyword search in _meta.yml files.
-
-    Searches short_summary, name, and type fields for keyword matches.
+    Fallback keyword search in metadata via store.
     """
     results = []
     query_lower = query.lower()
     query_words = set(query_lower.split())
 
-    parsed = parse_path_pattern(path_pattern) if path_pattern else None
+    for rel_dir, meta in store.walk_all_metas():
+        name = meta.get('name', os.path.basename(rel_dir))
+        summary = meta.get('short_summary', '') or ''
+        long_summary = meta.get('long_summary', '') or ''
+        node_type = meta.get('type', '')
+        semantic_summary = meta.get('semantic_summary', '') or ''
 
-    for root, dirs, files in os.walk(pontis_root):
-        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        # Score based on keyword matches
+        searchable = f"{name} {summary} {long_summary} {node_type} {semantic_summary}".lower()
+        score = sum(1 for w in query_words if w in searchable)
 
-        for fname in files:
-            if fname != '_meta.yml':
-                continue
+        if score > 0:
+            # Get file type and info
+            file_type = get_file_type_from_name(name, node_type)
+            config = get_type_config(file_type)
+            info = format_info_from_meta(meta, config)
+            brief = meta.get("brief", "")
 
-            meta_path = os.path.join(root, fname)
-            rel_dir = os.path.relpath(root, pontis_root)
-
-            try:
-                with open(meta_path, 'r') as f:
-                    meta = yaml.safe_load(f) or {}
-            except Exception:
-                continue
-
-            name = meta.get('name', os.path.basename(rel_dir))
-            summary = meta.get('short_summary', '') or ''
-            long_summary = meta.get('long_summary', '') or ''
-            node_type = meta.get('type', '')
-            semantic_summary = meta.get('semantic_summary', '') or ''
-
-            # Score based on keyword matches
-            searchable = f"{name} {summary} {long_summary} {node_type} {semantic_summary}".lower()
-            score = sum(1 for w in query_words if w in searchable)
-
-            if score > 0:
-                # Get file type and info
-                file_type = get_file_type_from_name(name, node_type)
-                config = get_type_config(file_type)
-                info = format_info_from_meta(meta, config)
-                brief = meta.get("brief", "")
-
-                display = rel_dir
-                combined_info = f"{info}, {brief}" if brief and info != "-" else (brief or info)
-                results.append((score, display, combined_info))
+            display = rel_dir
+            combined_info = f"{info}, {brief}" if brief and info != "-" else (brief or info)
+            results.append((score, display, combined_info))
     return results
 
 
 def search_command(
-    project_path: str,
+    store,
     path_pattern: str,
     query: str,
+    offset: int = 0,
+    limit: Optional[int] = None,
     structure_enhance: bool = True,
     BM25: bool = True,
     current_cwd: str = ""
@@ -89,9 +64,11 @@ def search_command(
     Semantic search across files and entities.
 
     Args:
-        project_path: Path to project root
+        store: ProjectStore instance
         path_pattern: Glob pattern for narrowing search scope
         query: Natural language search query
+        offset: Starting index (0-based)
+        limit: Max results per page
         structure_enhance: Whether to use KG structure (not yet implemented)
         BM25: Whether to use BM25 keyword search (not yet implemented)
         current_cwd: Current working directory
@@ -99,16 +76,16 @@ def search_command(
     Returns:
         Formatted results: [name] | [Info]
     """
-    pontis_root = os.path.join(project_path, ".pontis")
+    if not store.pontis_exists:
+        return f"Error: .pontis directory not found in {store.project_path}"
 
-    if not os.path.exists(pontis_root):
-        return f"Error: .pontis directory not found in {project_path}"
-
-    # TODO: Implement KG-enhanced search when KG infrastructure is available
-    # TODO: Implement BM25 search when index infrastructure is available
+    page_conf = TOOL_PAGINATION["search"]
+    if limit is None:
+        limit = page_conf.default_limit
+    limit = min(limit, page_conf.max_limit)
 
     # Fallback: keyword search in metadata
-    results = _keyword_search_meta(pontis_root, query, path_pattern)
+    results = _keyword_search(store, query, path_pattern)
 
     if not results:
         return "No objects found"
@@ -116,25 +93,30 @@ def search_command(
     # Sort by score (descending)
     results.sort(key=lambda x: -x[0])
 
-    # Format output
-    lines = []
-    truncated = len(results) > MAX_RESULTS
-    for score, display, info in results[:MAX_RESULTS]:
-        lines.append(f"{display} | {info}")
+    total = len(results)
+    page = results[offset:offset + limit]
 
+    if not page:
+        return f"No results at offset {offset}. Total results: {total}"
+
+    lines = [f"{display} | {info}" for score, display, info in page]
     output = '\n'.join(lines)
-    if truncated:
-        output += "\n(Results are truncated. Consider using a more specific path or pattern.)"
+
+    end = offset + len(page)
+    if end < total:
+        output += f"\n(共 {total} 条结果，当前显示第 {offset + 1}-{end} 条。使用 offset={end} 查看后续结果)"
 
     return output
 
 
 if __name__ == "__main__":
+    import sys
     if len(sys.argv) < 4:
         print("Usage: python -m tool_use.search.tool <project_path> <path_pattern> <query>")
         sys.exit(1)
 
-    _project = sys.argv[1]
+    from storage import ProjectStore
+    _store = ProjectStore(sys.argv[1])
     _pattern = sys.argv[2]
     _query = sys.argv[3]
-    print(search_command(_project, _pattern, _query))
+    print(search_command(_store, _pattern, _query))

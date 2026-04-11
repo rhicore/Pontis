@@ -4,6 +4,7 @@ import sys
 
 from openai import OpenAI
 
+from storage import ProjectStore
 from agent.config import load_agent_config
 from agent.tools import TOOL_DEFINITIONS, execute_tool
 from agent.system_prompt import build_system_prompt
@@ -14,6 +15,7 @@ class PontisAgent:
 
     def __init__(self, project_path: str):
         self.project_path = project_path
+        self.store = ProjectStore(project_path)
         self.config = load_agent_config(project_path)
 
         if not self.config.api_key:
@@ -62,7 +64,7 @@ class PontisAgent:
                     arguments = {}
 
                 print(f"  \033[90m[{name}({arguments})]\033[0m")
-                result = execute_tool(name, arguments, self.project_path)
+                result = execute_tool(name, arguments, self.store)
 
                 # Truncate very long results to avoid context overflow
                 if len(result) > 8000:

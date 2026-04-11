@@ -13,8 +13,10 @@ path::entity 语法：
 
 参数：
 - path (必填): 文件或 path::entity 路径
-- all: 设为 true 显示所有元数据字段
+- all: 设为 true 显示所有元数据字段（包括 sample、topk 等）
 - property: 查看特定属性，如 "sample", "topk", "cardinality", "detail", "brief"
+
+注意：直接调用 meta(path="X") 不指定 property 时，会显示该类型的默认字段集（通常包含 brief 和 detail）。大部分情况下一次调用即可获取概况，无需分别查询 detail 和 brief。
 
 典型用法：
 - "这个表有多少行多少列？" → meta(path="event.db::event.table")

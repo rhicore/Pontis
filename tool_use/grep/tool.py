@@ -12,15 +12,13 @@ Output formats follow CC spec:
 import os
 import re
 import subprocess
-import sys
+import fnmatch
 from typing import Optional, List, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tool_use.utils.path_parser import parse_path_pattern
+from tool_use.utils.config import TOOL_PAGINATION
 
-from tool_use.utils.path_parser import parse_path_pattern, ParsedPath
-
-DEFAULT_HEAD_LIMIT = 250
 MAX_RESULT_SIZE_CHARS = 20_000
 
 # VCS dirs to exclude from search
@@ -40,31 +38,23 @@ class GrepParams:
     show_line_numbers: bool = True        # -n
     case_insensitive: bool = False        # -i
     type_filter: Optional[str] = None     # --type
-    head_limit: int = DEFAULT_HEAD_LIMIT
+    head_limit: int = TOOL_PAGINATION["grep"].default_limit
     offset: int = 0
     multiline: bool = False
 
 
-def _parse_grep_params(params: dict) -> GrepParams:
-    """Parse a dict of grep parameters into GrepParams."""
-    context = params.get('context') or params.get('-C')
-    context_before = params.get('-B') if context is None else None
-    context_after = params.get('-A') if context is None else None
-
+def _parse_grep_params(pattern: str, **kwargs) -> GrepParams:
+    """Parse grep parameters into GrepParams."""
+    grep_conf = TOOL_PAGINATION["grep"]
     return GrepParams(
-        pattern=params['pattern'],
-        path=params.get('path'),
-        glob=params.get('glob'),
-        output_mode=params.get('output_mode', 'files_with_matches'),
-        context_before=context_before,
-        context_after=context_after,
-        context=context,
-        show_line_numbers=params.get('-n', True),
-        case_insensitive=params.get('-i', False),
-        type_filter=params.get('type'),
-        head_limit=params.get('head_limit', DEFAULT_HEAD_LIMIT),
-        offset=params.get('offset', 0),
-        multiline=params.get('multiline', False),
+        pattern=pattern,
+        path=kwargs.get('path'),
+        glob=kwargs.get('glob'),
+        output_mode=kwargs.get('output_mode', 'files_with_matches'),
+        case_insensitive=kwargs.get('ignore_case', False),
+        type_filter=kwargs.get('type'),
+        head_limit=kwargs.get('head_limit', grep_conf.default_limit),
+        offset=kwargs.get('offset', 0),
     )
 
 
@@ -79,44 +69,28 @@ def _apply_head_limit(items: list, limit: int, offset: int = 0) -> Tuple[list, O
 
 
 def _run_ripgrep(params: GrepParams, search_path: str) -> List[str]:
-    """
-    Execute ripgrep via subprocess and return raw output lines.
-
-    Args:
-        params: Parsed grep parameters
-        search_path: Absolute path to search in
-
-    Returns:
-        List of output lines from ripgrep
-    """
+    """Execute ripgrep via subprocess and return raw output lines."""
     args = ['rg', '--hidden']
 
-    # Exclude VCS dirs
     for d in VCS_EXCLUDE:
         args.extend(['--glob', f'!{d}'])
 
-    # Max column width to avoid bloated output
     args.extend(['--max-columns', '500'])
 
-    # Multiline
     if params.multiline:
         args.extend(['-U', '--multiline-dotall'])
 
-    # Case insensitive
     if params.case_insensitive:
         args.append('-i')
 
-    # Output mode
     if params.output_mode == 'files_with_matches':
         args.append('-l')
     elif params.output_mode == 'count':
         args.append('-c')
 
-    # Line numbers (content mode only)
     if params.show_line_numbers and params.output_mode == 'content':
         args.append('-n')
 
-    # Context lines (content mode only)
     if params.output_mode == 'content':
         if params.context is not None:
             args.extend(['-C', str(params.context)])
@@ -125,24 +99,20 @@ def _run_ripgrep(params: GrepParams, search_path: str) -> List[str]:
         if params.context_after is not None:
             args.extend(['-A', str(params.context_after)])
 
-    # Pattern (use -e if pattern starts with -)
     if params.pattern.startswith('-'):
         args.extend(['-e', params.pattern])
     else:
         args.append(params.pattern)
 
-    # Type filter
     if params.type_filter:
         args.extend(['--type', params.type_filter])
 
-    # Glob filter
     if params.glob:
         for p in params.glob.split(','):
             p = p.strip()
             if p:
                 args.extend(['--glob', p])
 
-    # Search path
     args.append(search_path)
 
     try:
@@ -152,9 +122,8 @@ def _run_ripgrep(params: GrepParams, search_path: str) -> List[str]:
         )
         if result.returncode == 0:
             return result.stdout.rstrip('\n').split('\n') if result.stdout.strip() else []
-        return []  # rg returns 1 for no matches
+        return []
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        # Fallback: if rg not available, use Python re
         return _python_grep_fallback(params, search_path)
 
 
@@ -203,7 +172,6 @@ def _to_relative_paths(lines: List[str], base_path: str) -> List[str]:
     """Convert absolute paths in output lines to relative paths."""
     results = []
     for line in lines:
-        # Try to find the first colon to extract file path
         colon_idx = line.find(':')
         if colon_idx > 0:
             file_part = line[:colon_idx]
@@ -221,7 +189,6 @@ def _to_relative_paths(lines: List[str], base_path: str) -> List[str]:
 
 def _format_content_output(lines: List[str], applied_limit: Optional[int],
                            applied_offset: int) -> str:
-    """Format content mode output."""
     content = '\n'.join(lines)
     if applied_limit is not None or applied_offset > 0:
         parts = []
@@ -235,7 +202,6 @@ def _format_content_output(lines: List[str], applied_limit: Optional[int],
 
 def _format_count_output(lines: List[str], applied_limit: Optional[int],
                          applied_offset: int) -> str:
-    """Format count mode output."""
     total_matches = 0
     file_count = 0
     for line in lines:
@@ -259,7 +225,6 @@ def _format_count_output(lines: List[str], applied_limit: Optional[int],
 
 def _format_files_output(filenames: List[str], num_files: int,
                          applied_limit: Optional[int]) -> str:
-    """Format files_with_matches mode output."""
     if num_files == 0:
         return "No files found"
 
@@ -268,62 +233,7 @@ def _format_files_output(filenames: List[str], num_files: int,
     return result
 
 
-def grep_command(
-    project_path: str,
-    params: dict,
-    current_cwd: str = ""
-) -> str:
-    """
-    Search content in files and entities.
-
-    Args:
-        project_path: Path to project root
-        params: Dict with grep parameters (pattern, path, glob, output_mode, etc.)
-        current_cwd: Current working directory
-
-    Returns:
-        Formatted search results
-    """
-    p = _parse_grep_params(params)
-
-    if not p.pattern:
-        return "Error: No pattern specified"
-
-    # Resolve search path
-    search_base = os.path.join(project_path, current_cwd) if current_cwd else project_path
-    if p.path:
-        search_base = os.path.join(search_base, p.path) if not os.path.isabs(p.path) else p.path
-
-    if not os.path.exists(search_base):
-        return f"Path does not exist: {p.path or '.'}"
-
-    # Check if path contains :: (entity grep)
-    if p.path and '::' in p.path:
-        return _grep_entity(project_path, p, current_cwd)
-
-    # Physical file grep via ripgrep
-    raw_results = _run_ripgrep(p, search_base)
-
-    if p.output_mode == 'content':
-        limited, applied_limit = _apply_head_limit(raw_results, p.head_limit, p.offset)
-        limited = _to_relative_paths(limited, project_path)
-        return _format_content_output(limited, applied_limit, p.offset)
-
-    elif p.output_mode == 'count':
-        limited, applied_limit = _apply_head_limit(raw_results, p.head_limit, p.offset)
-        limited = _to_relative_paths(limited, project_path)
-        return _format_count_output(limited, applied_limit, p.offset)
-
-    else:  # files_with_matches (default)
-        # Sort by mtime
-        sorted_results = _sort_by_mtime(raw_results)
-        limited, applied_limit = _apply_head_limit(sorted_results, p.head_limit, p.offset)
-        limited = _to_relative_paths(limited, project_path)
-        return _format_files_output(limited, len(limited), applied_limit)
-
-
 def _sort_by_mtime(files: List[str]) -> List[str]:
-    """Sort file paths by modification time (newest first)."""
     def mtime_key(f):
         try:
             return -os.path.getmtime(f)
@@ -332,57 +242,37 @@ def _sort_by_mtime(files: List[str]) -> List[str]:
     return sorted(files, key=mtime_key)
 
 
-def _grep_entity(project_path: str, params: GrepParams, cwd: str) -> str:
-    """
-    Grep within a logical entity (currently supports .chunk).
-    """
+def _grep_entity(store, params: GrepParams, cwd: str) -> str:
+    """Grep within a logical entity (currently supports .chunk)."""
     parsed = parse_path_pattern(params.path)
-    pontis_root = os.path.join(project_path, ".pontis")
 
-    if not os.path.exists(pontis_root):
+    if not store.pontis_exists:
         return "No .pontis directory found"
-
-    # Resolve physical file
-    file_path = os.path.join(project_path, cwd, parsed.file_pattern) if cwd else os.path.join(project_path, parsed.file_pattern)
-    if not os.path.exists(file_path):
-        file_path = os.path.join(project_path, parsed.file_pattern)
 
     entity_pattern = parsed.entity_pattern or "*"
 
-    # Currently only support .chunk entity grep
-    results = []
-
-    # Walk entity directories looking for .chunk
-    entity_root = os.path.join(pontis_root, parsed.file_pattern, "_entity")
-    if not os.path.exists(entity_root):
-        return "No entities found"
+    # Find .chunk entities via store
+    entities = store.glob_entities(parsed.file_pattern, entity_pattern)
 
     flags = re.IGNORECASE if params.case_insensitive else 0
     pattern = re.compile(params.pattern, flags)
 
-    for root, dirs, files in os.walk(entity_root):
-        dirs[:] = [d for d in dirs if not d.startswith('.')]
-        for d in dirs:
-            if d.endswith('.chunk') and fnmatch.fnmatch(d, entity_pattern):
-                chunk_dir = os.path.join(root, d)
-                raw_file = os.path.join(chunk_dir, "_raw")
-                meta_file = os.path.join(chunk_dir, "_meta.yml")
+    results = []
+    for entity_rel in entities:
+        if not entity_rel.endswith('.chunk'):
+            continue
+        if not fnmatch.fnmatch(os.path.basename(entity_rel), entity_pattern):
+            continue
 
-                if os.path.exists(raw_file):
-                    try:
-                        with open(raw_file, 'r', encoding='utf-8', errors='ignore') as f:
-                            lines = f.readlines()
-                        for i, line in enumerate(lines, 1):
-                            if pattern.search(line):
-                                rel = os.path.relpath(chunk_dir, os.path.join(pontis_root, parsed.file_pattern, "_entity"))
-                                results.append(f"{parsed.file_pattern}::{rel}:{i}:{line.rstrip()}")
-                    except Exception:
-                        pass
+        raw = store.read_raw_content(parsed.file_pattern, entity_rel)
+        if raw:
+            for i, line in enumerate(raw.split('\n'), 1):
+                if pattern.search(line):
+                    results.append(f"{parsed.file_pattern}::{entity_rel}:{i}:{line}")
 
     if not results:
         return "No matches found"
 
-    # Apply head_limit
     limited, applied_limit = _apply_head_limit(results, params.head_limit, params.offset)
     content = '\n'.join(limited)
     if applied_limit is not None:
@@ -390,14 +280,94 @@ def _grep_entity(project_path: str, params: GrepParams, cwd: str) -> str:
     return content
 
 
+def grep_command(
+    store,
+    pattern: str = "",
+    path: str = "",
+    output_mode: str = "files_with_matches",
+    glob: Optional[str] = None,
+    ignore_case: bool = False,
+    head_limit: int = 250,
+    offset: int = 0,
+    current_cwd: str = "",
+    **kwargs
+) -> str:
+    """
+    Search content in files and entities.
+
+    Args:
+        store: ProjectStore instance
+        pattern: Regex pattern (ripgrep syntax)
+        path: File or directory to search
+        output_mode: "content", "files_with_matches", or "count"
+        glob: File name filter
+        ignore_case: Case insensitive search
+        head_limit: Max output entries
+        offset: Starting index (0-based)
+        current_cwd: Current working directory
+
+    Returns:
+        Formatted search results
+    """
+    if not pattern:
+        return "Error: No pattern specified"
+
+    grep_conf = TOOL_PAGINATION["grep"]
+    if head_limit == 250:
+        head_limit = grep_conf.default_limit
+    head_limit = min(head_limit, grep_conf.max_limit)
+
+    params = _parse_grep_params(
+        pattern=pattern,
+        path=path,
+        output_mode=output_mode,
+        glob=glob,
+        ignore_case=ignore_case,
+        head_limit=head_limit,
+        offset=offset,
+    )
+
+    # Resolve search path
+    search_base = os.path.join(store.project_path, current_cwd) if current_cwd else store.project_path
+    if params.path:
+        search_base = os.path.join(search_base, params.path) if not os.path.isabs(params.path) else params.path
+
+    if not os.path.exists(search_base):
+        return f"Path does not exist: {params.path or '.'}"
+
+    # Check if path contains :: (entity grep)
+    if params.path and '::' in params.path:
+        return _grep_entity(store, params, current_cwd)
+
+    # Physical file grep via ripgrep
+    raw_results = _run_ripgrep(params, search_base)
+
+    if params.output_mode == 'content':
+        limited, applied_limit = _apply_head_limit(raw_results, params.head_limit, params.offset)
+        limited = _to_relative_paths(limited, store.project_path)
+        return _format_content_output(limited, applied_limit, params.offset)
+
+    elif params.output_mode == 'count':
+        limited, applied_limit = _apply_head_limit(raw_results, params.head_limit, params.offset)
+        limited = _to_relative_paths(limited, store.project_path)
+        return _format_count_output(limited, applied_limit, params.offset)
+
+    else:  # files_with_matches (default)
+        sorted_results = _sort_by_mtime(raw_results)
+        limited, applied_limit = _apply_head_limit(sorted_results, params.head_limit, params.offset)
+        limited = _to_relative_paths(limited, store.project_path)
+        return _format_files_output(limited, len(limited), applied_limit)
+
+
 if __name__ == "__main__":
     import json
+    import sys
     if len(sys.argv) < 3:
         print("Usage: python -m tool_use.grep.tool <project_path> <json_params> [cwd]")
-        print('  json_params: {"pattern": "TODO", "output_mode": "content"}')
         sys.exit(1)
 
-    _project = sys.argv[1]
+    from storage import ProjectStore
+    _store = ProjectStore(sys.argv[1])
     _params = json.loads(sys.argv[2])
     _cwd = sys.argv[3] if len(sys.argv) > 3 else ""
-    print(grep_command(_project, _params, _cwd))
+    print(grep_command(_store, **_params, current_cwd=_cwd))

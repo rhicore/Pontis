@@ -21,7 +21,7 @@ def get_type_config(file_type: str) -> InfoTypeConfig:
     file_type = file_type.lower()
     if not file_type.startswith("."):
         file_type = "." + file_type
-    return INFO_TYPE_CONFIG.get(file_type, INFO_TYPE_CONFIG["file"])
+    return INFO_TYPE_CONFIG.get(file_type, INFO_TYPE_CONFIG[".file"])
 
 
 def get_meta_type_config(file_ext: str) -> MetaTypeConfig:

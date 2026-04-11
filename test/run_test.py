@@ -94,7 +94,7 @@ class CallLogger:
                 except json.JSONDecodeError:
                     arguments = {}
 
-                result = execute_tool(name, arguments, self.agent.project_path)
+                result = execute_tool(name, arguments, self.agent.store)
                 if len(result) > 8000:
                     result = result[:8000] + "\n... (truncated)"
 

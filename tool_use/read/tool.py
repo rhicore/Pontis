@@ -14,13 +14,8 @@ Parameters match the spec:
     pages: PDF page range
 """
 import os
-import sys
 import sqlite3
 from typing import Optional
-
-import yaml
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tool_use.utils.path_parser import parse_path_pattern
 
@@ -28,9 +23,6 @@ from tool_use.utils.path_parser import parse_path_pattern
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
 PDF_EXTENSION = '.pdf'
 NOTEBOOK_EXTENSION = '.ipynb'
-
-# Entity suffixes
-ENTITY_SUFFIXES = {'.table', '.view', '.col', '.fk', '.rel', '.overlap', '.chunk', '.summary'}
 
 
 def _read_text_file(file_path: str, offset: int = 1, limit: Optional[int] = None) -> str:
@@ -121,25 +113,6 @@ def _read_notebook(file_path: str, offset: int = 1, limit: Optional[int] = None)
         return f"Error reading notebook: {e}"
 
 
-def _resolve_db_path(pontis_root: str, file_rel_path: str) -> Optional[str]:
-    """Resolve the actual database file path from pontis metadata."""
-    meta_path = os.path.join(pontis_root, file_rel_path, "_meta.yml")
-    if not os.path.exists(meta_path):
-        return None
-
-    with open(meta_path, 'r') as f:
-        meta = yaml.safe_load(f) or {}
-
-    source_path = meta.get('path')
-    if not source_path:
-        return None
-
-    # source_path is relative to project root
-    # pontis_root is <project>/.pontis, so project root is parent
-    db_path = os.path.join(os.path.dirname(pontis_root), source_path)
-    return db_path if os.path.exists(db_path) else None
-
-
 def _read_db_table(db_path: str, table_name: str,
                    offset: int = 0, limit: Optional[int] = None,
                    sample: Optional[int] = None) -> str:
@@ -162,7 +135,6 @@ def _read_db_table(db_path: str, table_name: str,
             limit = 50
 
         if sample:
-            # Random sampling
             cursor.execute(
                 f'SELECT * FROM "{table_name}" ORDER BY RANDOM() LIMIT ?',
                 (sample,)
@@ -185,10 +157,8 @@ def _read_db_table(db_path: str, table_name: str,
             return "(no data or offset beyond table length)"
 
         output = []
-        # Header
         header = "\t".join(column_names)
         output.append(header)
-        # Data
         for row in rows:
             values = ["NULL" if v is None else str(v) for v in row]
             output.append("\t".join(values))
@@ -248,42 +218,42 @@ def _read_db_column(db_path: str, table_name: str, column_name: str,
         return f"Error reading column: {e}"
 
 
-def _read_chunk(pontis_root: str, file_rel_path: str, chunk_name: str) -> str:
-    """Read a .chunk entity's raw content."""
-    chunk_dir = os.path.join(pontis_root, file_rel_path, "_entity", chunk_name)
-    raw_file = os.path.join(chunk_dir, "_raw")
+def _read_entity(store, file_rel_path: str, entity_path: str,
+                 offset: int, limit: Optional[int], sample: Optional[int]) -> str:
+    """Read a logical entity."""
+    if entity_path.endswith('.chunk'):
+        content = store.read_raw_content(file_rel_path, entity_path)
+        return content if content is not None else f"Chunk content not found: {entity_path}"
 
-    if not os.path.exists(raw_file):
-        return f"Chunk content not found: {chunk_name}"
+    if entity_path.endswith('.table') or entity_path.endswith('.view'):
+        db_path = store.resolve_db_path(file_rel_path)
+        if not db_path:
+            return f"Error: Database not found for {file_rel_path}"
+        table_name = entity_path.replace('.table', '').replace('.view', '').split('/')[-1]
+        return _read_db_table(db_path, table_name, offset, limit, sample)
 
-    try:
-        with open(raw_file, 'r', encoding='utf-8', errors='ignore') as f:
-            return f.read()
-    except Exception as e:
-        return f"Error reading chunk: {e}"
+    if entity_path.endswith('.col'):
+        db_path = store.resolve_db_path(file_rel_path)
+        if not db_path:
+            return f"Error: Database not found for {file_rel_path}"
+        parts = entity_path.replace('.col', '').split('.')
+        if len(parts) < 2:
+            return f"Error: Invalid column entity: {entity_path}"
+        table_name = parts[0]
+        column_name = parts[1]
+        return _read_db_column(db_path, table_name, column_name, offset, limit)
 
+    # Try JSON/YAML entity: display metadata
+    meta = store.get_meta(file_rel_path, entity_path)
+    if meta:
+        lines = [f"{k}: {v}" for k, v in sorted(meta.items())]
+        return "\n".join(lines)
 
-def _read_json_entity(pontis_root: str, file_rel_path: str, entity_path: str) -> str:
-    """Read a JSON/YAML pattern entity's metadata."""
-    import yaml as _yaml
-
-    entity_dir = os.path.join(pontis_root, file_rel_path, "_entity", entity_path)
-    meta_path = os.path.join(entity_dir, "_meta.yml")
-
-    if not os.path.exists(meta_path):
-        return f"Entity not found: {entity_path}"
-
-    with open(meta_path, 'r', encoding='utf-8') as f:
-        meta = _yaml.safe_load(f) or {}
-
-    lines = []
-    for key, value in sorted(meta.items()):
-        lines.append(f"{key}: {value}")
-    return "\n".join(lines)
+    return f"Error: Unsupported entity type: {entity_path}"
 
 
 def read_command(
-    project_path: str,
+    store,
     file_path: str,
     offset: int = 1,
     limit: Optional[int] = None,
@@ -295,7 +265,7 @@ def read_command(
     Read content from files and entities.
 
     Args:
-        project_path: Path to project root
+        store: ProjectStore instance
         file_path: File path, optionally with ::entity suffix
         offset: Starting line/row (1-indexed for text)
         limit: Max lines/rows to read
@@ -307,7 +277,6 @@ def read_command(
         File/entity content as string
     """
     parsed = parse_path_pattern(file_path)
-    pontis_root = os.path.join(project_path, ".pontis")
 
     # Resolve base file path
     if current_cwd and not os.path.isabs(parsed.file_pattern):
@@ -317,11 +286,11 @@ def read_command(
 
     # If entity specified, read entity
     if parsed.has_entity:
-        return _read_entity(pontis_root, project_path, resolved_file,
-                            parsed.entity_pattern, offset, limit, sample)
+        return _read_entity(store, resolved_file, parsed.entity_pattern,
+                           offset, limit, sample)
 
     # Physical file read
-    physical_path = os.path.join(project_path, resolved_file)
+    physical_path = os.path.join(store.project_path, resolved_file)
     if not os.path.exists(physical_path):
         return f"Error: File not found: {file_path}"
 
@@ -333,51 +302,18 @@ def read_command(
         return _read_pdf(physical_path, pages)
     elif ext == NOTEBOOK_EXTENSION:
         return _read_notebook(physical_path, offset, limit)
-    elif ext == '.csv':
-        return _read_text_file(physical_path, offset, limit)
     else:
         return _read_text_file(physical_path, offset, limit)
 
 
-def _read_entity(pontis_root: str, project_path: str, file_rel_path: str,
-                 entity_path: str, offset: int, limit: Optional[int],
-                 sample: Optional[int]) -> str:
-    """Read a logical entity."""
-    if entity_path.endswith('.chunk'):
-        return _read_chunk(pontis_root, file_rel_path, entity_path)
-
-    if entity_path.endswith('.table'):
-        db_path = _resolve_db_path(pontis_root, file_rel_path)
-        if not db_path:
-            return f"Error: Database not found for {file_rel_path}"
-        table_name = entity_path.replace('.table', '')
-        return _read_db_table(db_path, table_name, offset, limit, sample)
-
-    if entity_path.endswith('.col'):
-        db_path = _resolve_db_path(pontis_root, file_rel_path)
-        if not db_path:
-            return f"Error: Database not found for {file_rel_path}"
-        parts = entity_path.replace('.col', '').split('.')
-        if len(parts) < 2:
-            return f"Error: Invalid column entity: {entity_path}"
-        table_name = parts[0]
-        column_name = parts[1]
-        return _read_db_column(db_path, table_name, column_name, offset, limit)
-
-    # Try JSON entity
-    ext = os.path.splitext(file_rel_path)[1].lower()
-    if ext in ('.json', '.yaml', '.yml'):
-        return _read_json_entity(pontis_root, file_rel_path, entity_path)
-
-    return f"Error: Unsupported entity type: {entity_path}"
-
-
 if __name__ == "__main__":
+    import sys
     if len(sys.argv) < 3:
         print("Usage: python -m tool_use.read.tool <project_path> <file_path> [options]")
         sys.exit(1)
 
-    _project = sys.argv[1]
+    from storage import ProjectStore
+    _store = ProjectStore(sys.argv[1])
     _file = sys.argv[2]
     _offset = 1
     _limit = None
@@ -397,4 +333,4 @@ if __name__ == "__main__":
         else:
             i += 1
 
-    print(read_command(_project, _file, _offset, _limit, _sample, _pages))
+    print(read_command(_store, _file, _offset, _limit, _sample, _pages))

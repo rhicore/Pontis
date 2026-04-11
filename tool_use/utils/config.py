@@ -2,11 +2,29 @@
 Display Configuration - 工具显示配置
 
 包含：
+- TOOL_PAGINATION: 各工具的分页默认值
 - INFO_TYPE_CONFIG: glob/search 的 info 显示模板
 - META_TYPE_CONFIG: meta 命令的显示配置（统一按后缀名匹配）
 """
 from typing import List, Optional, Set
 from dataclasses import dataclass, field
+
+
+# ========== 分页配置 ==========
+
+@dataclass
+class PaginationConfig:
+    """工具分页配置"""
+    default_limit: int      # 默认每页条数
+    max_limit: int          # 最大每页条数
+
+
+TOOL_PAGINATION = {
+    "glob":   PaginationConfig(default_limit=100, max_limit=500),
+    "search": PaginationConfig(default_limit=100, max_limit=500),
+    "grep":   PaginationConfig(default_limit=250, max_limit=1000),
+    "lookup": PaginationConfig(default_limit=50,  max_limit=200),
+}
 
 
 @dataclass
@@ -45,8 +63,8 @@ INFO_TYPE_CONFIG = {
     ".tsv": InfoTypeConfig(info_template="{row_count} rows, {column_count} cols"),
     ".md": InfoTypeConfig(info_template="{line_count} lines"),
     ".txt": InfoTypeConfig(info_template="{line_count} lines"),
-    "directory": InfoTypeConfig(info_template="{child_count} children"),
-    "file": InfoTypeConfig(info_template="{file_size}"),
+    ".directory": InfoTypeConfig(info_template="{file_count} files, {subdir_count} dirs"),
+    ".file": InfoTypeConfig(info_template="{file_size}"),
     ".dict": InfoTypeConfig(info_template="{count} keys"),
     ".list": InfoTypeConfig(info_template="{count} items"),
     ".array": InfoTypeConfig(info_template="{count} items"),
@@ -62,18 +80,18 @@ INFO_TYPE_CONFIG = {
 META_TYPE_CONFIG = {
     # 文件级
     ".db": MetaTypeConfig(
-        default_keys=["table_count", "view_count", "index_count", "file_size", "detail"],
+        default_keys=["table_count", "view_count", "index_count", "file_size", "brief", "detail"],
     ),
     ".json": MetaTypeConfig(
-        default_keys=["structure_type", "key_count", "array_length", "top_level_keys", "line_count", "char_count", "file_size", "detail"],
+        default_keys=["structure_type", "key_count", "array_length", "top_level_keys", "line_count", "char_count", "file_size", "brief", "detail"],
         folded_keys={"top_level_keys"},
     ),
     ".yaml": MetaTypeConfig(
-        default_keys=["structure_type", "key_count", "top_level_keys", "sequence_length", "line_count", "char_count", "file_size", "detail"],
+        default_keys=["structure_type", "key_count", "top_level_keys", "sequence_length", "line_count", "char_count", "file_size", "brief", "detail"],
         folded_keys={"top_level_keys"},
     ),
     ".yml": MetaTypeConfig(
-        default_keys=["structure_type", "key_count", "top_level_keys", "sequence_length", "line_count", "char_count", "file_size", "detail"],
+        default_keys=["structure_type", "key_count", "top_level_keys", "sequence_length", "line_count", "char_count", "file_size", "brief", "detail"],
         folded_keys={"top_level_keys"},
     ),
     ".csv": MetaTypeConfig(
@@ -83,17 +101,17 @@ META_TYPE_CONFIG = {
         default_keys=["row_count", "column_count", "line_count", "char_count", "file_size"],
     ),
     ".md": MetaTypeConfig(
-        default_keys=["line_count", "char_count", "non_empty_line_count", "avg_line_length", "max_line_length", "file_size", "detail"],
+        default_keys=["line_count", "char_count", "non_empty_line_count", "avg_line_length", "max_line_length", "file_size", "brief", "detail"],
     ),
     ".txt": MetaTypeConfig(
-        default_keys=["line_count", "char_count", "non_empty_line_count", "avg_line_length", "max_line_length", "file_size", "detail"],
+        default_keys=["line_count", "char_count", "non_empty_line_count", "avg_line_length", "max_line_length", "file_size", "brief", "detail"],
     ),
     # 实体级
     ".table": MetaTypeConfig(
-        default_keys=["row_count", "column_count", "primary_key", "detail"],
+        default_keys=["row_count", "column_count", "primary_key", "brief", "detail"],
     ),
     ".view": MetaTypeConfig(
-        default_keys=["row_count", "column_count", "detail"],
+        default_keys=["row_count", "column_count", "brief", "detail"],
     ),
     ".col": MetaTypeConfig(
         default_keys=["cardinality", "null_count", "null_percentage", "source_table",

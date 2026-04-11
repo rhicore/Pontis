@@ -30,6 +30,14 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                         "type": "string",
                         "description": "Glob pattern for files and entities, e.g. '**/*.db::*user*.table'",
                     },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Starting index (0-based), default 0",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results per page, default 100",
+                    },
                 },
                 "required": ["path_pattern"],
             },
@@ -67,6 +75,10 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                     "head_limit": {
                         "type": "integer",
                         "description": "Max output entries, default 250",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Starting index (0-based), default 0",
                     },
                 },
                 "required": ["pattern"],
@@ -148,6 +160,14 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                         "enum": ["distinct_count", "file_count"],
                         "description": "Output mode, default 'distinct_count'",
                     },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Starting index (0-based), default 0",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results per page, default 50",
+                    },
                 },
                 "required": ["file_pattern", "type", "predicate"],
             },
@@ -168,6 +188,14 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                     "query": {
                         "type": "string",
                         "description": "Natural language search query",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Starting index (0-based), default 0",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results per page, default 100",
                     },
                 },
                 "required": ["path_pattern", "query"],
@@ -200,28 +228,33 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
 
 # ==================== Tool Execution ====================
 
-def execute_tool(name: str, arguments: dict, project_path: str) -> str:
+def execute_tool(name: str, arguments: dict, store) -> str:
     """Execute a tool by name with given arguments."""
     try:
         if name == "glob":
             from tool_use.glob.tool import glob_command
-            return glob_command(project_path, arguments["path_pattern"])
+            return glob_command(
+                store, arguments["path_pattern"],
+                offset=arguments.get("offset", 0),
+                limit=arguments.get("limit"),
+            )
 
         elif name == "grep":
             from tool_use.grep.tool import grep_command
             return grep_command(
-                project_path,
+                store,
                 pattern=arguments["pattern"],
                 path=arguments.get("path", ""),
                 output_mode=arguments.get("output_mode", "files_with_matches"),
                 glob=arguments.get("glob"),
                 ignore_case=arguments.get("ignore_case", False),
                 head_limit=arguments.get("head_limit", 250),
+                offset=arguments.get("offset", 0),
             )
 
         elif name == "read":
             from tool_use.read.tool import read_command
-            kwargs = {"project_path": project_path, "file_path": arguments["file_path"]}
+            kwargs = {"store": store, "file_path": arguments["file_path"]}
             if "offset" in arguments:
                 kwargs["offset"] = arguments["offset"]
             if "limit" in arguments:
@@ -231,7 +264,7 @@ def execute_tool(name: str, arguments: dict, project_path: str) -> str:
         elif name == "meta":
             from tool_use.meta.tool import meta_command
             return meta_command(
-                project_path,
+                store,
                 path=arguments["path"],
                 all=arguments.get("all", False),
                 property=arguments.get("property"),
@@ -240,26 +273,30 @@ def execute_tool(name: str, arguments: dict, project_path: str) -> str:
         elif name == "lookup":
             from tool_use.lookup.tool import lookup_command
             return lookup_command(
-                project_path,
+                store,
                 file_pattern=arguments["file_pattern"],
                 type=arguments["type"],
                 predicate=arguments["predicate"],
                 output_mode=arguments.get("output_mode", "distinct_count"),
+                offset=arguments.get("offset", 0),
+                limit=arguments.get("limit"),
             )
 
         elif name == "search":
             from tool_use.search.tool import search_command
             return search_command(
-                project_path,
+                store,
                 path_pattern=arguments["path_pattern"],
                 query=arguments["query"],
+                offset=arguments.get("offset", 0),
+                limit=arguments.get("limit"),
             )
 
         elif name == "bash":
             from tool_use.bash.tool import bash_command
             return bash_command(
                 command=arguments["command"],
-                cwd=project_path,
+                cwd=store.project_path,
                 timeout_ms=arguments.get("timeout", 120) * 1000,
             )
 
