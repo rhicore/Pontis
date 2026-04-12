@@ -281,3 +281,61 @@ class ProjectStore:
             return '\n'.join(output)
         except Exception as e:
             return f"Error reading file: {e}"
+
+    # ==================== Write Operations ====================
+
+    def _resolve_meta_path(self, path: str, entity_path: str = "") -> str:
+        """解析 meta 文件物理路径。"""
+        if entity_path:
+            return os.path.join(
+                self._pontis_root, path, "_entity", entity_path, "_meta.yml"
+            )
+        return os.path.join(self._pontis_root, path, "_meta.yml")
+
+    def write_meta(self, path: str, data: dict, entity_path: str = ""):
+        """写入/更新 meta。只覆盖 data 中提供的字段，保留已有字段。
+
+        自动清除缓存，使下次 get_meta() 读取最新值。
+        """
+        existing = self._read_raw_meta(path, entity_path) or {}
+        existing.update(data)
+
+        meta_path = self._resolve_meta_path(path, entity_path)
+        os.makedirs(os.path.dirname(meta_path), exist_ok=True)
+
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            yaml.dump(existing, f, default_flow_style=False,
+                      allow_unicode=True, sort_keys=False)
+
+        # 清除缓存
+        cache_key = f"{path}::{entity_path}" if entity_path else path
+        self._meta_cache.pop(cache_key, None)
+
+    def create_entity_dir(self, path: str, entity_path: str) -> str:
+        """创建实体目录结构，返回实体目录的绝对路径。"""
+        entity_dir = os.path.join(
+            self._pontis_root, path, "_entity", entity_path
+        )
+        os.makedirs(entity_dir, exist_ok=True)
+        return entity_dir
+
+    def add_edges(self, edge_list: List[Dict[str, str]]):
+        """批量添加关系边（按 from+type+to 三元组去重）。"""
+        edges_path = os.path.join(self._pontis_root, "_edges.yml")
+
+        existing = []
+        if os.path.exists(edges_path):
+            with open(edges_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+                existing = data.get("edges", [])
+
+        existing_keys = {(e["from"], e["type"], e["to"]) for e in existing}
+        for e in edge_list:
+            key = (e["from"], e["type"], e["to"])
+            if key not in existing_keys:
+                existing.append(e)
+                existing_keys.add(key)
+
+        with open(edges_path, 'w', encoding='utf-8') as f:
+            yaml.dump({"edges": existing}, f,
+                      default_flow_style=False, allow_unicode=True)

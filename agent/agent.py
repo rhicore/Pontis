@@ -1,20 +1,28 @@
 """Pontis Agent - Interactive data analysis agent with tool calling."""
 import json
 import sys
-from typing import Iterator
+from typing import Iterator, Optional
 
 from openai import OpenAI
 
 from storage import ProjectStore
 from agent.config import load_agent_config
-from agent.tools import TOOL_DEFINITIONS, execute_tool
+from agent.tools import ToolRegistry, build_readonly_registry
 from agent.system_prompt import build_system_prompt
 
 
 class PontisAgent:
-    """Interactive agent that uses Pontis tools to analyze project data."""
+    """Interactive agent that uses Pontis tools to analyze project data.
 
-    def __init__(self, project_path: str):
+    Args:
+        project_path: Path to the project directory.
+        tools: ToolRegistry instance. Defaults to readonly registry.
+        system_prompt: System prompt string. Defaults to readonly prompt.
+    """
+
+    def __init__(self, project_path: str,
+                 tools: Optional[ToolRegistry] = None,
+                 system_prompt: Optional[str] = None):
         self.project_path = project_path
         self.store = ProjectStore(project_path)
         self.config = load_agent_config(project_path)
@@ -30,7 +38,9 @@ class PontisAgent:
             base_url=self.config.provider,
         )
 
-        self.system_prompt = build_system_prompt(project_path)
+        # 可注入的工具和 prompt
+        self.tools = tools or build_readonly_registry()
+        self.system_prompt = system_prompt or build_system_prompt(project_path)
         self.messages = [
             {"role": "system", "content": self.system_prompt},
         ]
@@ -44,7 +54,7 @@ class PontisAgent:
             response = self.client.chat.completions.create(
                 model=self.config.model,
                 messages=self.messages,
-                tools=TOOL_DEFINITIONS,
+                tools=self.tools.get_definitions(),
                 max_tokens=self.config.max_tokens,
                 temperature=self.config.temperature,
             )
@@ -65,7 +75,7 @@ class PontisAgent:
                     arguments = {}
 
                 print(f"  \033[90m[{name}({arguments})]\033[0m")
-                result = execute_tool(name, arguments, self.store)
+                result = self.tools.execute(name, arguments, self.store)
 
                 # Truncate very long results to avoid context overflow
                 if len(result) > 8000:
@@ -91,7 +101,7 @@ class PontisAgent:
             response = self.client.chat.completions.create(
                 model=self.config.model,
                 messages=self.messages,
-                tools=TOOL_DEFINITIONS,
+                tools=self.tools.get_definitions(),
                 max_tokens=self.config.max_tokens,
                 temperature=self.config.temperature,
             )
@@ -117,7 +127,7 @@ class PontisAgent:
                     "id": tool_call.id,
                 }
 
-                result = execute_tool(name, arguments, self.store)
+                result = self.tools.execute(name, arguments, self.store)
                 if len(result) > 8000:
                     result = result[:8000] + "\n... (truncated)"
 
