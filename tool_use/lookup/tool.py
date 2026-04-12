@@ -5,20 +5,11 @@ Performs value alignment / predicate matching on:
 - .table / .col: SQL predicate matching (e.g., "INT > 100", "STR = 'active'")
 - .json: Search non-nested primitive values (String, Number, Bool, NULL) and keys
 
-Parameters:
-    file_pattern: Glob pattern for files (e.g., "**/*.db", "**/*.json")
-    type: Data type to search ("INT", "STR", "BOOL", "NUMBER", "NULL")
-    predicate: Filter expression (e.g., "INT > 100", "STR = 'active'")
-    output_mode: "distinct_count" (default) or "file_count"
-
-Output formats:
-    distinct_count: path:count:value per line
-    file_count: path:count per line
+Uses store.find_nodes() to discover files, then queries physical data.
 """
 import os
 import re
 import sqlite3
-import glob as _glob
 from typing import Optional, List, Tuple
 
 from tool_use.utils.config import TOOL_PAGINATION
@@ -96,7 +87,6 @@ def _lookup_db_columns(
     data_type: str,
     predicate: str,
     output_mode: str,
-    cwd: str = ""
 ) -> str:
     """Lookup values in database columns matching the predicate."""
     results = []
@@ -104,26 +94,24 @@ def _lookup_db_columns(
     if not store.pontis_exists:
         return "No .pontis directory found"
 
-    # Find matching DB files
-    search_base = os.path.join(store.project_path, cwd) if cwd else store.project_path
-    full_pattern = os.path.join(search_base, file_pattern)
-    matched_paths = _glob.glob(full_pattern)
-    db_files = [os.path.relpath(p, store.project_path) for p in matched_paths]
+    # Find matching DB file nodes via store
+    db_refs = store.find_nodes(file_pattern)
+    # Filter to file nodes only (no ::)
+    db_refs = [r for r in db_refs if "::" not in r]
 
     field, op, target_val = _parse_predicate(predicate)
 
-    for db_rel in db_files:
-        # Find .col entities via store
-        entity_refs = store.find_connected(db_rel, pattern="*.col")
-
-        db_meta = store.get_meta(db_rel) or {}
+    for db_ref in db_refs:
+        db_meta = store.get_meta(db_ref) or {}
         db_path = os.path.join(store.project_path, db_meta.get("path", ""))
         if not db_meta.get("path"):
             continue
 
+        # Find .col entities connected to this file
+        entity_refs = store.find_connected(db_ref, edge_type="contains", pattern="*.col")
+
         for entity_ref in entity_refs:
             entity_rel = entity_ref.split("::", 1)[-1] if "::" in entity_ref else entity_ref
-            # Parse column entity name: table.col_name.data_type.col
             basename = os.path.basename(entity_rel)
             parts = basename.replace('.col', '').split('.')
             if len(parts) < 2:
@@ -141,7 +129,7 @@ def _lookup_db_columns(
             if not type_match:
                 continue
 
-            # Query column values
+            # Query column values from physical DB
             try:
                 conn = sqlite3.connect(db_path)
                 cursor = conn.cursor()
@@ -157,9 +145,9 @@ def _lookup_db_columns(
                 if matching:
                     if output_mode == 'distinct_count':
                         for val in matching:
-                            results.append(f"{db_rel}::{entity_rel}:{len(matching)}:{val}")
+                            results.append(f"{db_ref}::{entity_rel}:{len(matching)}:{val}")
                     else:
-                        results.append(f"{db_rel}::{entity_rel}:{len(matching)}")
+                        results.append(f"{db_ref}::{entity_rel}:{len(matching)}")
 
             except Exception:
                 continue
@@ -176,16 +164,15 @@ def _lookup_json_values(
     data_type: str,
     predicate: str,
     output_mode: str,
-    cwd: str = ""
 ) -> str:
     """Lookup values in JSON files."""
     import json
 
     results = []
-    search_base = os.path.join(store.project_path, cwd) if cwd else store.project_path
-    full_pattern = os.path.join(search_base, file_pattern)
-    matched_paths = _glob.glob(full_pattern)
-    json_files = [os.path.relpath(p, store.project_path) for p in matched_paths]
+
+    # Find matching JSON file nodes via store
+    json_refs = store.find_nodes(file_pattern)
+    json_refs = [r for r in json_refs if "::" not in r]
 
     _, op, target_val = _parse_predicate(predicate)
 
@@ -200,7 +187,9 @@ def _lookup_json_values(
     }
     target_types = type_map.get(data_type.upper(), (str, int, float, bool, type(None)))
 
-    for json_file in json_files:
+    for json_ref in json_refs:
+        json_meta = store.get_meta(json_ref) or {}
+        json_file = json_meta.get("path", json_ref)
         full_path = os.path.join(store.project_path, json_file)
         try:
             with open(full_path, 'r', encoding='utf-8') as f:
@@ -237,9 +226,9 @@ def _lookup_json_values(
         if matching:
             if output_mode == 'distinct_count':
                 for path_str, val in matching:
-                    results.append(f"{json_file}::{path_str}:{len(matching)}:{val}")
+                    results.append(f"{json_ref}::{path_str}:{len(matching)}:{val}")
             else:
-                results.append(f"{json_file}:{len(matching)}")
+                results.append(f"{json_ref}:{len(matching)}")
 
     if not results:
         return "No matching values found"
@@ -262,13 +251,13 @@ def lookup_command(
 
     Args:
         store: Store instance
-        file_pattern: Glob pattern for files
+        file_pattern: Glob pattern for files (matched via store.find_nodes)
         type: Data type ("INT", "STR", "BOOL", "NUMBER", "NULL")
         predicate: Filter expression
         output_mode: "distinct_count" or "file_count"
         offset: Starting index (0-based)
         limit: Max results per page
-        current_cwd: Current working directory
+        current_cwd: Current working directory (unused)
 
     Returns:
         Formatted results
@@ -288,20 +277,12 @@ def lookup_command(
                 all_results.append(line)
 
     if ext_pattern in ('.db', '.sqlite', '.sqlite3'):
-        _collect(_lookup_db_columns(
-            store, file_pattern, type, predicate, output_mode, current_cwd
-        ))
+        _collect(_lookup_db_columns(store, file_pattern, type, predicate, output_mode))
     elif ext_pattern in ('.json', '.jsonl'):
-        _collect(_lookup_json_values(
-            store, file_pattern, type, predicate, output_mode, current_cwd
-        ))
+        _collect(_lookup_json_values(store, file_pattern, type, predicate, output_mode))
     else:
-        _collect(_lookup_db_columns(
-            store, file_pattern, type, predicate, output_mode, current_cwd
-        ))
-        _collect(_lookup_json_values(
-            store, file_pattern, type, predicate, output_mode, current_cwd
-        ))
+        _collect(_lookup_db_columns(store, file_pattern, type, predicate, output_mode))
+        _collect(_lookup_json_values(store, file_pattern, type, predicate, output_mode))
 
     if not all_results:
         return "No matching values found"
@@ -324,7 +305,7 @@ def lookup_command(
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 5:
-        print("Usage: python -m tool_use.lookup.tool <project_path> <file_pattern> <type> <predicate> [output_mode] [cwd]")
+        print("Usage: python -m tool_use.lookup.tool <project_path> <file_pattern> <type> <predicate> [output_mode]")
         sys.exit(1)
 
     from storage import Store
@@ -333,5 +314,4 @@ if __name__ == "__main__":
     _type = sys.argv[3]
     _predicate = sys.argv[4]
     _mode = sys.argv[5] if len(sys.argv) > 5 else "distinct_count"
-    _cwd = sys.argv[6] if len(sys.argv) > 6 else ""
-    print(lookup_command(_store, _pattern, _type, _predicate, _mode, _cwd))
+    print(lookup_command(_store, _pattern, _type, _predicate, _mode))

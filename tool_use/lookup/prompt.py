@@ -4,7 +4,7 @@ DESCRIPTION = "值检索工具，在数据列中按条件筛选值。"
 
 DETAIL = """\
 参数：
-- file_pattern (必填): 文件 glob 模式，如 "**/*.db", "**/*.csv"
+- file_pattern (必填): glob 模式匹配文件节点，如 "*.db", "*.csv"，由 Store 图谱检索
 - type (必填): 数据类型: INT, TEXT, REAL, BOOL, STR, FLOAT
 - predicate (必填): 筛选表达式，格式为 `类型 运算符 值`
   - 数值: "INT > 100", "REAL < 50.0"
@@ -15,8 +15,8 @@ DETAIL = """\
 - limit: 每页最大条数，默认 50，最大 200
 
 示例：
-- 查找大于 100 的整数列值: lookup(file_pattern="**/*.db", type="INT", predicate="INT > 100")
-- 查找包含 "active" 的文本列: lookup(file_pattern="**/*.db", type="TEXT", predicate='TEXT = "active"')
+- 查找大于 100 的整数列值: lookup(file_pattern="*.db", type="INT", predicate="INT > 100")
+- 查找包含 "active" 的文本列: lookup(file_pattern="*.db", type="TEXT", predicate='TEXT = "active"')
 
 结果截断时会提示总数和当前范围，使用 offset 参数翻页。
 

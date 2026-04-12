@@ -20,8 +20,6 @@ def generate(store: Store) -> None:
 
     for path in store.find_nodes("*.txt"):
         try:
-            edir = store._entity_dir(path, "")
-            os.makedirs(edir, exist_ok=True)
             logger.info(f"  Entity: {path}")
         except Exception as e:
             logger.warning(f"Failed to create text entity for {path}: {e}")

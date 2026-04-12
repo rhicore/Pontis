@@ -1,42 +1,57 @@
-"""create_entity — 创建逻辑实体"""
-from typing import Dict, List, Optional
+"""
+Create entity tool - Create new entity nodes in the knowledge graph.
+
+Uses store.create_node() which handles:
+- Writing meta to .pontis/nodes/{ent_id}/_meta.yml
+- Auto-recording _inode for file nodes
+- Auto-adding contains edge for entity nodes
+- Adding user-specified edges
+"""
 
 
-def create_entity_command(store, path: str, entity_type: str, entity_name: str,
-                          meta: Optional[Dict] = None,
-                          edges: Optional[List[Dict]] = None) -> str:
-    """创建一个新的逻辑实体，可同时写入 meta 和添加关系边。
+def create_entity_command(
+    store,
+    ref: str,
+    meta: dict = None,
+    edges: list = None,
+) -> str:
+    """
+    Create a new entity node.
 
     Args:
-        store: Store 实例
-        path: 文件路径，如 'event.db'
-        entity_type: 实体类型后缀，如 'view', 'rel', 'pattern'
-        entity_name: 实体名称，如 'user_event_join.view'
-        meta: 初始 meta 数据（可选）
-        edges: 要添加的关系边列表（可选），格式: [{"from": "...", "type": "...", "to": "..."}]
+        store: Store instance
+        ref: Entity ref string, e.g. "event.db::user_event_join.view"
+        meta: Initial metadata dict
+        edges: Optional list of edge dicts with {from, type, to}
+
+    Returns:
+        Success/error message
     """
-    # 构造 entity_path：如果名称已含后缀则不重复加
-    if entity_name.endswith(f".{entity_type}"):
-        entity_path = entity_name
-    else:
-        entity_path = f"{entity_name}.{entity_type}"
+    if not store.pontis_exists:
+        return f"Error: .pontis directory not found in {store.project_path}"
 
-    # Create entity via new Store API
-    ref = f"{path}::{entity_path}"
-    store.create_node(ref, meta=meta or {}, edges=edges)
+    if "::" not in ref:
+        return f"Error: ref must contain '::' for entity creation. Got: '{ref}'"
 
-    # 添加关系边
-    added_edges = 0
-    if edges:
-        added_edges = len(edges)
+    if store.node_exists(ref):
+        return f"Entity already exists: {ref}"
 
-    # 构建返回信息
-    result_parts = [f"已创建实体: {path}::{entity_path}"]
-    if meta:
-        result_parts.append(f"Meta 字段: {', '.join(meta.keys())}")
-    if edges:
-        result_parts.append(f"添加了 {added_edges} 条关系边")
-        for e in edges:
-            result_parts.append(f"  {e['from']} --[{e['type']}]--> {e['to']}")
+    meta = meta or {}
 
-    return "\n".join(result_parts)
+    store.create_node(ref, meta=meta, edges=edges)
+
+    return f"Created entity: {ref}"
+
+
+if __name__ == "__main__":
+    import json
+    import sys
+    if len(sys.argv) < 3:
+        print("Usage: python -m tool_use.create_entity.tool <project_path> <ref> [meta_json]")
+        sys.exit(1)
+
+    from storage import Store
+    _store = Store(sys.argv[1])
+    _ref = sys.argv[2]
+    _meta = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
+    print(create_entity_command(_store, _ref, _meta))

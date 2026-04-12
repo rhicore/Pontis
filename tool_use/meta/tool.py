@@ -1,20 +1,15 @@
 """
-Meta tool - View metadata for physical files, directories, and logical entities.
+Meta tool - View metadata for file/directory/entity nodes.
 
-Supports path::entity syntax:
-    meta "data.db"                        # File metadata
-    meta "data.db::users.table"           # Entity metadata
-    meta "data.db::users.id.INT.col"      # Column metadata
+Store.get_meta(ref) handles ref resolution internally:
+  "event.db"              → file node (via inode)
+  "event.db::users.table" → entity node
+  "ent_a3f2c801"          → ID direct reference
 
-Parameters:
-    path: path::entity string
-    all: show all metadata (bool, default False)
-    property: show specific property only
+Virtual properties are always computed and included.
 """
-import os
 from typing import Optional
 
-from tool_use.utils.path_parser import parse_path_pattern
 from tool_use.utils.formatters import get_meta_type_config, format_meta_output
 
 
@@ -26,48 +21,28 @@ def meta_command(
     current_cwd: str = ""
 ) -> str:
     """
-    View metadata for a physical file/directory or logical entity.
+    View metadata for a node.
 
     Args:
         store: Store instance
-        path: path::entity string
+        path: ref string (file path, path::entity, or ent_xxx)
         all: Whether to show all metadata
         property: Specific property to view
-        current_cwd: Current working directory
+        current_cwd: Current working directory (unused)
 
     Returns:
         Formatted metadata
     """
-    parsed = parse_path_pattern(path)
-
     if not store.pontis_exists:
         return f"Error: .pontis directory not found in {store.project_path}"
 
-    # Resolve path
-    if current_cwd and not os.path.isabs(parsed.file_pattern):
-        resolved_file = os.path.join(current_cwd, parsed.file_pattern)
-    else:
-        resolved_file = parsed.file_pattern
-
-    # Get metadata (enriched with virtual props)
-    if parsed.has_entity:
-        ref = f"{resolved_file}::{parsed.entity_pattern}"
-        meta = store.get_meta(ref)
-    else:
-        meta = store.get_meta(resolved_file)
-
-    target = f"{resolved_file}::{parsed.entity_pattern}" if parsed.has_entity else resolved_file
+    meta = store.get_meta(path)
 
     if meta is None:
-        # Fallback: list directory contents
-        if os.path.isdir(os.path.join(store.project_path, resolved_file)):
-            entries = [e for e in os.listdir(os.path.join(store.project_path, resolved_file)) if not e.startswith('.')]
-            if entries:
-                return f"No metadata found for '{target}'. Directory contains: {entries[:10]}"
-        return f"No metadata found for '{target}'"
+        return f"No metadata found for '{path}'"
 
     if not meta:
-        return f"Empty metadata for '{target}'"
+        return f"Empty metadata for '{path}'"
 
     # If specific property requested
     if property:
@@ -78,15 +53,19 @@ def meta_command(
         from tool_use.utils.formatters import _format_meta_value
         return f"{property}: {_format_meta_value(value, None)}"
 
-    # Get type config for formatting — purely by extension
-    if parsed.has_entity:
-        entity_name = os.path.basename(parsed.entity_pattern)
+    # Determine type config by extracting extension from ref
+    is_entity = "::" in path
+    if is_entity:
+        entity_name = path.split("::", 1)[1]
         if "." in entity_name:
             file_ext = "." + entity_name.split(".")[-1].lower()
         else:
             file_ext = ""
     else:
-        file_ext = os.path.splitext(resolved_file)[1].lower()
+        import os
+        _, ext = os.path.splitext(path)
+        file_ext = ext.lower()
+
     config = get_meta_type_config(file_ext)
 
     # Format output

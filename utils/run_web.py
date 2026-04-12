@@ -18,7 +18,7 @@ def main():
 
     # Load the app directly from the hyphenated directory
     server_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "front-end", "server.py"
+        os.path.dirname(os.path.abspath(__file__)), "utils", "front-end", "server.py"
     )
     spec = importlib.util.spec_from_file_location("front_end.server", server_path)
     mod = importlib.util.module_from_spec(spec)

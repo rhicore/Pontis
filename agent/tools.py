@@ -62,7 +62,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "path_pattern": {
                             "type": "string",
-                            "description": "Glob pattern for files and entities, e.g. '**/*.db::*user*.table'",
+                            "description": "Glob pattern with optional :: segments for edge traversal, e.g. '*.db::*.table::*.*.*.col'",
                         },
                         "offset": {
                             "type": "integer",
@@ -154,7 +154,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "File or entity path to view metadata, e.g. 'test.db::users.table'",
+                            "description": "Ref string: file path, path::entity, or ent_id, e.g. 'event.db::users.table'",
                         },
                         "all": {
                             "type": "boolean",
@@ -179,7 +179,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "file_pattern": {
                             "type": "string",
-                            "description": "Glob pattern for files, e.g. '**/*.db'",
+                            "description": "Glob pattern for files (via Store graph), e.g. '*.db', '*.json'",
                         },
                         "type": {
                             "type": "string",
@@ -271,17 +271,9 @@ def _build_write_schemas() -> Dict[str, dict]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {
+                        "ref": {
                             "type": "string",
-                            "description": "文件路径，如 'event.db'",
-                        },
-                        "entity_type": {
-                            "type": "string",
-                            "description": "实体类型后缀，如 'view', 'rel', 'pattern'",
-                        },
-                        "entity_name": {
-                            "type": "string",
-                            "description": "实体名称，如 'user_event_join.view'",
+                            "description": "实体引用，格式 path::entity_name，如 'event.db::user_event_join.view'",
                         },
                         "meta": {
                             "type": "object",
@@ -301,7 +293,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                             "description": "要添加的关系边（可选）",
                         },
                     },
-                    "required": ["path", "entity_type", "entity_name"],
+                    "required": ["ref"],
                 },
             },
         },
@@ -313,20 +305,16 @@ def _build_write_schemas() -> Dict[str, dict]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {
+                        "ref": {
                             "type": "string",
-                            "description": "文件路径",
-                        },
-                        "entity_path": {
-                            "type": "string",
-                            "description": "实体路径（可选，不提供则为文件级 meta）",
+                            "description": "节点引用：文件路径、path::entity、或 ent_id",
                         },
                         "fields": {
                             "type": "object",
                             "description": "要更新的字段键值对，如 {\"brief\": \"...\", \"detail\": \"...\"}",
                         },
                     },
-                    "required": ["path", "fields"],
+                    "required": ["ref", "fields"],
                 },
             },
         },
@@ -415,9 +403,7 @@ def _exec_create_entity(store, arguments: dict) -> str:
     from tool_use.create_entity.tool import create_entity_command
     return create_entity_command(
         store,
-        path=arguments["path"],
-        entity_type=arguments["entity_type"],
-        entity_name=arguments["entity_name"],
+        ref=arguments["ref"],
         meta=arguments.get("meta"),
         edges=arguments.get("edges"),
     )
@@ -427,8 +413,7 @@ def _exec_update_meta(store, arguments: dict) -> str:
     from tool_use.update_meta.tool import update_meta_command
     return update_meta_command(
         store,
-        path=arguments["path"],
-        entity_path=arguments.get("entity_path"),
+        ref=arguments["ref"],
         fields=arguments["fields"],
     )
 

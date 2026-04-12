@@ -30,33 +30,37 @@ def _get_project_overview(pontis_path: str) -> str:
 
     lines = ["## 数据概览"]
 
-    # Count entity types and list actual project data files
-    project_root = os.path.dirname(pontis_path)  # noqa: F841
+    nodes_dir = os.path.join(pontis_path, "nodes")
     entity_types = {}
-    data_files = []
+    file_count = 0
 
-    for root, dirs, _files in os.walk(pontis_path):
-        dirs[:] = [d for d in dirs if not d.startswith('.') and d != '_entity']
-        if "_entity" in os.listdir(root):
-            # This path corresponds to a project data file with entities
-            entity_dir = os.path.join(root, "_entity")
-            for e_name in os.listdir(entity_dir):
-                e_path = os.path.join(entity_dir, e_name)
-                if os.path.isdir(e_path) and "." in e_name:
-                    suffix = e_name.rsplit(".", 1)[-1]
+    if os.path.exists(nodes_dir):
+        for entry in os.listdir(nodes_dir):
+            if not entry.startswith("ent_"):
+                continue
+            meta_path = os.path.join(nodes_dir, entry, "_meta.yml")
+            if not os.path.isfile(meta_path):
+                continue
+            try:
+                with open(meta_path, 'r') as f:
+                    raw = yaml.safe_load(f) or {}
+            except Exception:
+                continue
+
+            entity_name = raw.get("_entity_name", "")
+            if entity_name:
+                if "." in entity_name:
+                    suffix = entity_name.rsplit(".", 1)[-1]
                     entity_types[suffix] = entity_types.get(suffix, 0) + 1
-            # Record as a data file
-            rel = os.path.relpath(root, pontis_path)
-            if rel != ".":
-                data_files.append(rel)
+            else:
+                file_count += 1
 
-    if data_files:
-        lines.append(f"- 数据文件: {', '.join(sorted(data_files))}")
+    if file_count:
+        lines.append(f"- 文件节点: {file_count}")
     if entity_types:
         parts = [f"{k}({v})" for k, v in sorted(entity_types.items())]
         lines.append(f"- 实体: {', '.join(parts)}")
 
-    # Check edges
     edges_path = os.path.join(pontis_path, "_edges.yml")
     if os.path.exists(edges_path):
         try:
@@ -86,16 +90,20 @@ Pontis 为项目中的数据文件提取了**逻辑实体**，形成知识图谱
 - **文件**: 项目中的实际数据文件（如 `event.db`, `expense.csv`, `budget.json`, `knowledge.md`）
 - **逻辑实体**: 从文件中提取的语义对象（表、列、外键、JSON 路径模式等），通过 `path::entity` 语法访问
 
-### 路径语法: `path::entity`
+### Ref 语法
 
-所有工具使用统一的路径语法:
-- 左侧 `path`: 文件的 glob 模式
-- 右侧 `entity`: 逻辑实体的 glob 模式
-- 示例:
-  - `**/*.db` → 查找所有数据库文件
-  - `**/*.db::*.table` → 查找所有数据库中的表
-  - `event.db::event.*.col` → 查找 event.db 中 event 表的所有列
-  - `expense.csv` → 引用 CSV 文件本身（无实体部分）
+所有工具使用统一的 ref 字符串寻址:
+- `event.db` — 文件节点（通过 inode 定位）
+- `event.db::users.table` — 实体节点
+- `ent_a3f2c801` — ID 直接引用
+
+`::` 支持多跳、双向边遍历:
+- `*.db::*.table` — 文件 → 表（出边）
+- `*.table::*.db` — 表 → 文件（入边，反向查找）
+- `*.db::*.table::*.*.*.col` — 多跳：文件 → 表 → 列
+- `expense.csv` — 引用文件本身（无实体部分）
+
+含 `/` 的 pattern 段只匹配文件节点（实体名不含 `/`）。
 
 ### 逻辑实体类型
 

@@ -1,27 +1,26 @@
-"""update_meta tool prompt."""
+"""Update meta tool prompt — 合并写入元数据。"""
 
-DESCRIPTION = "更新文件或逻辑实体的元数据字段（合并写入，不覆盖未指定的字段）。"
+DESCRIPTION = "合并写入节点的元数据字段，仅更新指定的字段，保留已有字段。"
 
-DETAIL = """
-使用场景:
-- 为缺少 brief/detail 的实体补充 AI 总结
-- 更新实体的描述性元数据
+DETAIL = """\
+参数：
+- ref (必填): 节点引用，支持三种格式：
+  - 文件路径: "event.db"
+  - path::entity: "event.db::users.table"
+  - ID 引用: "ent_a3f2c801"
+- fields (必填): 要更新的字段键值对，如 {"brief": "...", "detail": "..."}
 
-参数说明:
-- path: 文件路径
-- entity_path: (可选) 实体路径，如 'users.table'。不提供则为文件级 meta
-- fields: 要更新的字段键值对字典，如 {"brief": "用户表", "detail": "存储所有注册用户的基本信息..."}
+更新行为：
+- 合并写入：只更新 fields 中提供的字段，其他字段保持不变
+- 自动维护内部字段（_id, _entity_name, _files, _inode）
+- 如果节点不存在且为文件路径，会自动创建节点
 
-当前常用字段:
-- brief: 简要概括（≤50字）
-- detail: 详细描述
-
-注意:
-- 只更新 fields 中指定的字段，不影响其他已有字段
-- 更新前应先用 meta 读取当前值，确认需要更新
-- brief 应精炼，detail 应完整但不过长
+典型用法：
+- 为表添加描述: update_meta(ref="event.db::users.table", fields={"detail": "用户信息表"})
+- 为列添加语义: update_meta(ref="event.db::users.status.TEXT.col", fields={"brief": "用户状态"})
+- 标记处理状态: update_meta(ref="event.db", fields={"processed": true})\
 """
 
 
 def get_description() -> str:
-    return f"{DESCRIPTION}\n{DETAIL}"
+    return f"{DESCRIPTION}\n\n{DETAIL}"

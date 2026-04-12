@@ -1,35 +1,53 @@
-"""update_meta — 更新文件或实体的元数据"""
-from typing import Dict, Optional
+"""
+Update meta tool - Merge-write metadata for existing nodes.
+
+Uses store.set_meta() which:
+- Only updates fields present in `fields` dict
+- Preserves existing fields not mentioned
+- Auto-maintains internal fields (_id, _entity_name, _files, _inode)
+"""
 
 
-def update_meta_command(store, path: str, fields: Dict,
-                        entity_path: Optional[str] = None) -> str:
-    """更新文件或实体的 meta，合并写入指定字段。
+def update_meta_command(
+    store,
+    ref: str,
+    fields: dict,
+) -> str:
+    """
+    Merge-write metadata for a node.
 
     Args:
-        store: Store 实例
-        path: 文件路径
-        fields: 要更新的字段键值对，如 {"brief": "...", "detail": "..."}
-        entity_path: 实体路径（可选，不提供则为文件级 meta）
+        store: Store instance
+        ref: ref string (file path, path::entity, or ent_id)
+        fields: Fields to update/merge
+
+    Returns:
+        Success/error message
     """
-    # 检查 meta 是否存在
-    ref = f"{path}::{entity_path}" if entity_path else path
-    target_desc = ref
+    if not store.pontis_exists:
+        return f"Error: .pontis directory not found in {store.project_path}"
 
-    if not store.meta_exists(ref):
-        return f"错误: 未找到 {target_desc} 的 meta，请确认路径正确"
+    # Verify node exists
+    if not store.node_exists(ref):
+        # Also try get_meta for unindexed files
+        meta = store.get_meta(ref)
+        if meta is None:
+            return f"Node not found: {ref}"
 
-    # 合并写入
     store.set_meta(ref, fields)
 
-    # 读取更新后的完整 meta 用于返回
-    updated = store.get_meta(ref)
+    return f"Updated {ref}: {', '.join(fields.keys())}"
 
-    result_parts = [f"已更新 {target_desc} 的元数据:"]
-    for key, value in fields.items():
-        val_str = str(value)
-        if len(val_str) > 200:
-            val_str = val_str[:200] + "..."
-        result_parts.append(f"  {key}: {val_str}")
 
-    return "\n".join(result_parts)
+if __name__ == "__main__":
+    import json
+    import sys
+    if len(sys.argv) < 4:
+        print("Usage: python -m tool_use.update_meta.tool <project_path> <ref> <fields_json>")
+        sys.exit(1)
+
+    from storage import Store
+    _store = Store(sys.argv[1])
+    _ref = sys.argv[2]
+    _fields = json.loads(sys.argv[3])
+    print(update_meta_command(_store, _ref, _fields))

@@ -35,8 +35,6 @@ def _expand_serialized(path: str, store: Store) -> None:
         return
 
     if "structure_type" in meta:
-        # 已有 structure_type 但没有 _entity，只创建 _entity
-        _ensure_entity(path, store)
         return
 
     rel_path = meta.get("path")
@@ -61,17 +59,10 @@ def _expand_serialized(path: str, store: Store) -> None:
             **top_info,
         })
 
-        _ensure_entity(path, store)
         logger.info(f"  Entity: {path} ({top_info.get('structure_type', '?')})")
 
     except Exception as e:
         logger.debug(f"Could not expand {path}: {e}")
-
-
-def _ensure_entity(path: str, store: Store) -> None:
-    """确保 _entity/ 目录存在"""
-    edir = store._entity_dir(path, "")
-    os.makedirs(edir, exist_ok=True)
 
 
 def _analyze_structure(file_path: str, content: str, path: str) -> dict:
