@@ -1,17 +1,8 @@
 """Text Info Generator - 通用文本文件信息生成器
 
 职责：
-- 匹配所有文本编码文件节点 (*.txt, *.md, *.sql, *.py, *.js, *.css, *.html, *.xml, *.yaml, *.json 等)
+- 匹配所有文本编码文件节点
 - 添加文本文件共有的元信息（编码、字符数、行数、行长度统计等）
-
-支持的文件类型：
-- 纯文本: .txt, .log, .csv, .tsv
-- 标记语言: .md, .markdown, .rst
-- 代码文件: .py, .js, .ts, .jsx, .tsx, .java, .c, .cpp, .h, .hpp, .go, .rs, .rb, .php, .swift, .kt
-- 数据文件: .sql, .json, .yaml, .yml, .xml, .toml, .ini, .conf, .config
-- Web文件: .html, .htm, .css, .scss, .sass, .less
-- 脚本文件: .sh, .bash, .zsh, .fish, .ps1, .bat, .cmd
-- 其他文本: .gitignore, .dockerfile, .env, .properties
 
 独立执行：
     python -m extractor.text_info ./my_data
@@ -19,7 +10,7 @@
 import os
 import logging
 from typing import Optional, Dict, Any, Set
-from extractor.utils import VFSStorage, NodeRef
+from storage import Store
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +106,7 @@ TEXT_FILENAMES: Set[str] = {
     'install', 'setup', 'configure',
     'manifest', 'manifest.in',
     'requirements', 'requirements-dev', 'requirements-test',
-    ' Pipfile', 'pipfile', 'poetry.lock', 'yarn.lock', 'package-lock.json',
+    'pipfile', 'pipfile', 'poetry.lock', 'yarn.lock', 'package-lock.json',
     'cmakelists.txt', 'cmakecache.txt',
 }
 
@@ -137,7 +128,7 @@ def is_text_file(filename: str) -> bool:
     return False
 
 
-def generate(storage: VFSStorage) -> None:
+def generate(store: Store) -> None:
     """为所有文本文件节点生成信息"""
     logger.info("=== Generating Text info ===")
 
@@ -145,29 +136,30 @@ def generate(storage: VFSStorage) -> None:
     processed = set()
 
     for pattern in ['*.txt', '*.md', '*.sql', '*.py', '*.js', '*.json', '*.yaml', '*.xml']:
-        for node in storage.find_nodes(pattern):
-            if node.rel_path not in processed:
-                processed.add(node.rel_path)
+        for path in store.find_nodes(pattern):
+            if path not in processed:
+                processed.add(path)
                 try:
-                    _generate_for_text(node, storage)
+                    _generate_for_text(path, store)
                 except Exception as e:
-                    logger.warning(f"Failed to generate info for {node.name}: {e}")
+                    logger.warning(f"Failed to generate info for {path}: {e}")
 
     # 还要检查其他后缀
-    for node in storage.find_nodes("*"):
-        if node.rel_path in processed:
+    for path in store.find_nodes("*"):
+        if path in processed:
             continue
-        if is_text_file(node.name):
-            processed.add(node.rel_path)
+        basename = os.path.basename(path)
+        if is_text_file(basename):
+            processed.add(path)
             try:
-                _generate_for_text(node, storage)
+                _generate_for_text(path, store)
             except Exception as e:
-                logger.warning(f"Failed to generate info for {node.name}: {e}")
+                logger.warning(f"Failed to generate info for {path}: {e}")
 
 
-def _generate_for_text(node: NodeRef, storage: VFSStorage) -> bool:
+def _generate_for_text(path: str, store: Store) -> bool:
     """为单个文本文件生成通用元信息"""
-    meta = storage.read_meta(node)
+    meta = store.get_meta(path)
     if not meta:
         return False
 
@@ -176,7 +168,7 @@ def _generate_for_text(node: NodeRef, storage: VFSStorage) -> bool:
         return False
 
     rel_path = meta.get("path")
-    file_path = storage.resolve_path(rel_path) if rel_path else None
+    file_path = os.path.join(store.project_path, rel_path) if rel_path else None
     if not file_path or not os.path.exists(file_path):
         return False
 
@@ -205,8 +197,8 @@ def _generate_for_text(node: NodeRef, storage: VFSStorage) -> bool:
         # 字符分布统计
         char_stats = _analyze_characters(content)
 
-        # 更新meta - 只包含通用文本特征
-        meta.update({
+        # 更新meta
+        store.set_meta(path, {
             "file_size": stat.st_size,
             "encoding": encoding,
             "char_count": char_count,
@@ -218,9 +210,7 @@ def _generate_for_text(node: NodeRef, storage: VFSStorage) -> bool:
             **char_stats,
         })
 
-        storage.write_meta(node, meta)
-
-        logger.info(f"  Text info: {node.rel_path} ({line_count} lines, {char_count} chars)")
+        logger.info(f"  Text info: {path} ({line_count} lines, {char_count} chars)")
         return True
 
     except Exception as e:
@@ -268,30 +258,3 @@ def _analyze_characters(content: str) -> Dict[str, Any]:
         "punct_count": puncts,
         "other_count": others,
     }
-
-
-def main():
-    """CLI入口"""
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(description="Generate text file info")
-    parser.add_argument('target', help='Directory with .pontis')
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-
-    target_path = os.path.abspath(args.target)
-    pontis_path = os.path.join(target_path, ".pontis")
-
-    if not os.path.exists(pontis_path):
-        print(f"Error: No .pontis found at {pontis_path}", file=sys.stderr)
-        sys.exit(1)
-
-    storage = VFSStorage(pontis_path)
-    generate(storage)
-    print("Done.")
-
-
-if __name__ == '__main__':
-    main()

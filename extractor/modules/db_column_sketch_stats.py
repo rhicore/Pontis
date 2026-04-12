@@ -20,7 +20,7 @@ import random
 import logging
 from typing import Optional, List, Dict, Any
 
-from extractor.utils import VFSStorage, NodeRef, load_config
+from storage import Store
 
 logger = logging.getLogger(__name__)
 
@@ -28,24 +28,25 @@ logger = logging.getLogger(__name__)
 _FETCH_SIZE = 10000
 
 
-def generate(storage: VFSStorage, config=None) -> None:
+def generate(store: Store, config=None) -> None:
     """为所有 .col 节点生成 sketch 统计。"""
     logger.info("=== Generating DB column sketch statistics ===")
 
     sample_size = config.sample_size if config else 20
     top_k = config.top_k if config else 5
 
-    for node in storage.find_nodes("*.db/_entity/*.*.*.col"):
+    for ref in store.find_nodes("*.db::*.*.*.col"):
         try:
-            _generate_for_column(node, storage, sample_size, top_k)
+            _generate_for_column(ref, store, sample_size, top_k)
         except Exception as e:
-            logger.warning(f"Failed to generate sketch stats for {node.name}: {e}")
+            logger.warning(f"Failed to generate sketch stats for {ref}: {e}")
 
 
-def _generate_for_column(node: NodeRef, storage: VFSStorage,
+def _generate_for_column(ref: str, store: Store,
                          sample_size: int, top_k: int) -> bool:
     """为单个列生成 sketch 统计。"""
-    meta = storage.read_meta(node)
+    path, entity_name = ref.split("::", 1)
+    meta = store.get_meta(ref)
     if not meta:
         return False
 
@@ -53,68 +54,28 @@ def _generate_for_column(node: NodeRef, storage: VFSStorage,
     if "cardinality" in meta:
         return False
 
-    # 解析路径 → db_path, table, column, dtype
-    parsed = _parse_column_node(node, storage)
-    if not parsed:
-        return False
-
-    db_path, table, column, dtype = parsed
-
-    # 单次流式扫描 + sketch
-    stats = _sketch_column(db_path, table, column, dtype, sample_size, top_k)
-    if not stats:
-        return False
-
-    meta.update(stats)
-    storage.write_meta(node, meta)
-    logger.info(f"  Sketch stats: {node.rel_path} "
-                f"(cardinality≈{stats.get('cardinality')})")
-    return True
-
-
-def _parse_column_node(node: NodeRef, storage: VFSStorage):
-    """解析列节点路径，返回 (db_path, table, column, dtype) 或 None。"""
-    path_parts = node.rel_path.split(os.sep)
-    if len(path_parts) < 3:
-        return None
-
-    # 找 .db 节点
-    db_idx = -1
-    for i, part in enumerate(path_parts):
-        if part.endswith('.db'):
-            db_idx = i
-            break
-
-    if db_idx == -1 or db_idx + 2 >= len(path_parts):
-        return None
-
-    if path_parts[db_idx + 1] != '_entity':
-        return None
-
-    db_rel_path = os.sep.join(path_parts[:db_idx + 1])
-
-    # 解析: [table].[column].[type].col
-    col_node_name = path_parts[db_idx + 2].replace(".col", "")
-    col_parts = col_node_name.split(".")
+    # 解析实体名 → db_path, table, column, dtype
+    col_parts = entity_name.replace(".col", "").split(".")
     if len(col_parts) < 3:
-        return None
+        return False
 
     table_name = col_parts[0]
     col_name = col_parts[1]
-    data_type = col_parts[2] if len(col_parts) > 2 else "TEXT"
+    data_type = col_parts[2]
 
-    # 获取 DB 源路径
-    db_node = NodeRef(db_rel_path, node.pontis_root)
-    db_meta = storage.read_meta(db_node)
-    if not db_meta:
-        return None
+    db_path = os.path.join(store.project_path, store.get_meta(path).get("path", ""))
+    if not db_path:
+        return False
 
-    rel_path = db_meta.get("path")
-    db_path = storage.resolve_path(rel_path) if rel_path else None
-    if not db_path or not os.path.exists(db_path):
-        return None
+    # 单次流式扫描 + sketch
+    stats = _sketch_column(db_path, table_name, col_name, data_type, sample_size, top_k)
+    if not stats:
+        return False
 
-    return db_path, table_name, col_name, data_type
+    store.set_meta(ref, stats)
+    logger.info(f"  Sketch stats: {ref} "
+                f"(cardinality≈{stats.get('cardinality')})")
+    return True
 
 
 def _sketch_column(db_path: str, table: str, column: str, dtype: str,
@@ -252,31 +213,3 @@ def _format_value(value) -> Any:
     if isinstance(value, bytes):
         return f"<BLOB:{len(value)}bytes>"
     return value
-
-
-def main():
-    """CLI 入口"""
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(description="Generate DB column sketch statistics")
-    parser.add_argument('target', help='Directory with .pontis')
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-
-    target_path = os.path.abspath(args.target)
-    pontis_path = os.path.join(target_path, ".pontis")
-
-    if not os.path.exists(pontis_path):
-        print(f"Error: No .pontis found at {pontis_path}", file=sys.stderr)
-        sys.exit(1)
-
-    config = load_config()
-    storage = VFSStorage(pontis_path)
-    generate(storage, config)
-    print("Done.")
-
-
-if __name__ == '__main__':
-    main()

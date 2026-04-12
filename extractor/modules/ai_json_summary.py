@@ -11,13 +11,14 @@
 """
 import os
 import logging
-from extractor.utils import VFSStorage, NodeRef, get_llm
+from storage import Store
+from extractor.utils import get_llm
 from extractor.ai_utils import generate_detail_and_brief
 
 logger = logging.getLogger(__name__)
 
 
-def generate(storage: VFSStorage) -> None:
+def generate(store: Store) -> None:
     logger.info("=== AI: JSON summary ===")
 
     llm = get_llm()
@@ -25,15 +26,15 @@ def generate(storage: VFSStorage) -> None:
         logger.warning("LLM not configured, skipping AI summary")
         return
 
-    for node in storage.find_nodes("*.json"):
+    for path in store.find_nodes("*.json"):
         try:
-            _generate_for_json(node, storage, llm)
+            _generate_for_json(path, store, llm)
         except Exception as e:
-            logger.warning(f"Failed for {node.name}: {e}")
+            logger.warning(f"Failed for {path}: {e}")
 
 
-def _generate_for_json(node: NodeRef, storage: VFSStorage, llm) -> bool:
-    meta = storage.read_meta(node)
+def _generate_for_json(path: str, store: Store, llm) -> bool:
+    meta = store.get_meta(path)
     if not meta:
         return False
 
@@ -66,34 +67,17 @@ IMPORTANT rules:
 
     try:
         detail, brief = generate_detail_and_brief(llm, prompt, max_tokens=100)
+        updates = {}
         if detail:
-            meta["detail"] = detail
+            updates["detail"] = detail
         if brief:
-            meta["brief"] = brief
+            updates["brief"] = brief
 
-        if detail or brief:
-            storage.write_meta(node, meta)
-            logger.info(f"  AI summary: {node.rel_path}")
+        if updates:
+            store.set_meta(path, updates)
+            logger.info(f"  AI summary: {path}")
             return True
     except Exception as e:
         logger.debug(f"LLM failed: {e}")
 
     return False
-
-
-def main():
-    import argparse, sys
-    parser = argparse.ArgumentParser(description="AI JSON summary")
-    parser.add_argument('target', help='Directory with .pontis')
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-    pontis_path = os.path.join(os.path.abspath(args.target), ".pontis")
-    if not os.path.exists(pontis_path):
-        print(f"Error: No .pontis found", file=sys.stderr)
-        sys.exit(1)
-    generate(VFSStorage(pontis_path))
-    print("Done.")
-
-
-if __name__ == '__main__':
-    main()

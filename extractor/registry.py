@@ -1,15 +1,23 @@
-"""Pipeline — 提取管线定义
+"""Registry — 模块注册表与管线定义
 
 编辑下方的 PIPELINE 列表来控制 extractor 执行哪些模块、按什么顺序。
-每个元素是一个模块名，对应 extractor/ 下的一个 generate() 函数。
+每个元素是一个模块名，对应 extractor/modules/ 下的一个 generate() 函数。
 
 要切换 sketch 模式：将 db_column_stats + db_column_sample + db_column_topk
 替换为 db_column_sketch_stats 即可。
 
 要跳过某个阶段：直接注释掉对应行。
+
+Usage:
+    from extractor import extract
+    extract("./my_data")
 """
 import logging
+from pathlib import Path
 from typing import Dict, List
+
+from storage import Store
+from extractor.utils import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -28,30 +36,30 @@ def _get_registry() -> Dict[str, object]:
     if _REGISTRY is not None:
         return _REGISTRY
 
-    from extractor.skeleton import generate_skeleton
-    from extractor.db_basic import generate as db_basic
-    from extractor.csv_basic import generate as csv_basic
-    from extractor.serialized_basic import generate as serialized_basic
-    from extractor.text_basic import generate as text_basic
-    from extractor.db_info import generate as db_info
-    from extractor.db_table_info import generate as db_table_info
-    from extractor.db_column_stats import generate as db_column_stats
-    from extractor.db_column_sample import generate as db_column_sample
-    from extractor.db_column_topk import generate as db_column_topk
-    from extractor.csv_info import generate as csv_info
-    from extractor.csv_column_stats import generate as csv_column_stats
-    from extractor.csv_column_sample import generate as csv_column_sample
-    from extractor.csv_column_topk import generate as csv_column_topk
-    from extractor.json_pattern import generate as json_pattern
-    from extractor.text_info import generate as text_info
-    from extractor.db_table_relations import generate as db_table_relations
-    from extractor.db_column_overlap import generate as db_column_overlap
-    from extractor.db_column_rel import generate as db_column_rel
-    from extractor.ai_db_summary import generate as ai_db_summary
-    from extractor.ai_db_table_summary import generate as ai_db_table_summary
-    from extractor.ai_db_column_summary import generate as ai_db_column_summary
-    from extractor.ai_json_summary import generate as ai_json_summary
-    from extractor.ai_text_summary import generate as ai_text_summary
+    from extractor.modules.skeleton import generate_skeleton
+    from extractor.modules.db_basic import generate as db_basic
+    from extractor.modules.csv_basic import generate as csv_basic
+    from extractor.modules.serialized_basic import generate as serialized_basic
+    from extractor.modules.text_basic import generate as text_basic
+    from extractor.modules.db_info import generate as db_info
+    from extractor.modules.db_table_info import generate as db_table_info
+    from extractor.modules.db_column_stats import generate as db_column_stats
+    from extractor.modules.db_column_sample import generate as db_column_sample
+    from extractor.modules.db_column_topk import generate as db_column_topk
+    from extractor.modules.csv_info import generate as csv_info
+    from extractor.modules.csv_column_stats import generate as csv_column_stats
+    from extractor.modules.csv_column_sample import generate as csv_column_sample
+    from extractor.modules.csv_column_topk import generate as csv_column_topk
+    from extractor.modules.json_pattern import generate as json_pattern
+    from extractor.modules.text_info import generate as text_info
+    from extractor.modules.db_table_relations import generate as db_table_relations
+    from extractor.modules.db_column_overlap import generate as db_column_overlap
+    from extractor.modules.db_column_rel import generate as db_column_rel
+    from extractor.modules.ai_db_summary import generate as ai_db_summary
+    from extractor.modules.ai_db_table_summary import generate as ai_db_table_summary
+    from extractor.modules.ai_db_column_summary import generate as ai_db_column_summary
+    from extractor.modules.ai_json_summary import generate as ai_json_summary
+    from extractor.modules.ai_text_summary import generate as ai_text_summary
 
     _REGISTRY = {
         # Phase 1
@@ -64,10 +72,9 @@ def _get_registry() -> Dict[str, object]:
         # Phase 2 — DB 信息
         "db_info": db_info,
         "db_table_info": db_table_info,
-        "db_column_stats": db_column_stats,           # 精确统计（小表）
-        "db_column_sample": db_column_sample,          # 精确采样
-        "db_column_topk": db_column_topk,              # 精确 top-K
-        # "db_column_sketch_stats": None,              # Sketch 近似统计（大表），取消注释启用
+        "db_column_stats": db_column_stats,
+        "db_column_sample": db_column_sample,
+        "db_column_topk": db_column_topk,
         # Phase 3 — CSV 信息
         "csv_info": csv_info,
         "csv_column_stats": csv_column_stats,
@@ -90,8 +97,8 @@ def _get_registry() -> Dict[str, object]:
 
     # 尝试注册 sketch 模块
     try:
-        from extractor.db_column_sketch_stats import generate as db_column_sketch_stats
-        _REGISTRY["db_column_sketch_stats"] = db_column_sketch_stats
+        from extractor.modules.db_column_sketch_stats import generate as sketch
+        _REGISTRY["db_column_sketch_stats"] = sketch
     except ImportError:
         pass
 
@@ -116,12 +123,9 @@ PIPELINE: List[str] = [
     # ── Phase 2: DB 信息 ──
     "db_info",
     "db_table_info",
-    # 精确统计（适合小表，全量扫描）:
     "db_column_stats",
     "db_column_sample",
     "db_column_topk",
-    # Sketch 近似统计（适合大表，单次流式扫描）:
-    # 替换上面三行为下面这一行即可:
     # "db_column_sketch_stats",
 
     # ── Phase 3: CSV 信息 ──
@@ -150,7 +154,7 @@ PIPELINE: List[str] = [
 ]
 
 
-def run_pipeline(pipeline: List[str], storage,
+def run_pipeline(pipeline: List[str], store: Store,
                  target_path: str = None, config=None) -> None:
     """按 PIPELINE 列表顺序执行模块。"""
     registry = _get_registry()
@@ -165,10 +169,35 @@ def run_pipeline(pipeline: List[str], storage,
 
         try:
             if name == _SKELETON_MODULE:
-                func(target_path, storage, config)
+                func(target_path, store, config)
             elif name in _CONFIG_MODULES:
-                func(storage, config=config)
+                func(store, config=config)
             else:
-                func(storage)
+                func(store)
         except Exception as e:
             logger.warning(f"Module {name} failed: {e}")
+
+
+def extract(target: str, config_path: str = None, verbose: bool = False) -> None:
+    """全量提取入口"""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format='%(message)s' if not verbose else '%(levelname)s: %(message)s'
+    )
+
+    target_path = Path(target).resolve()
+    if not target_path.exists():
+        raise ValueError(f"Target path does not exist: {target_path}")
+
+    config = load_config(config_path)
+    store = Store(str(target_path))
+
+    store.clear_edges()
+
+    logger.info(f"=== Pontis Extractor: {target_path} ===")
+    logger.info(f"Pipeline: {len(PIPELINE)} modules\n")
+
+    run_pipeline(PIPELINE, store, str(target_path), config)
+
+    logger.info("\n=== Extraction complete ===")

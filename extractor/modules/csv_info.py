@@ -9,31 +9,31 @@
 """
 import os
 import logging
-from extractor.utils import VFSStorage, NodeRef
+from storage import Store
 
 logger = logging.getLogger(__name__)
 
 
-def generate(storage: VFSStorage) -> None:
+def generate(store: Store) -> None:
     """为所有CSV/TSV节点生成信息"""
     logger.info("=== Generating CSV info ===")
 
-    for node in storage.find_nodes("*.csv"):
+    for path in store.find_nodes("*.csv"):
         try:
-            _generate_for_csv(node, storage, delimiter=',')
+            _generate_for_csv(path, store, delimiter=',')
         except Exception as e:
-            logger.warning(f"Failed to generate info for {node.name}: {e}")
+            logger.warning(f"Failed to generate info for {path}: {e}")
 
-    for node in storage.find_nodes("*.tsv"):
+    for path in store.find_nodes("*.tsv"):
         try:
-            _generate_for_csv(node, storage, delimiter='\t')
+            _generate_for_csv(path, store, delimiter='\t')
         except Exception as e:
-            logger.warning(f"Failed to generate info for {node.name}: {e}")
+            logger.warning(f"Failed to generate info for {path}: {e}")
 
 
-def _generate_for_csv(node: NodeRef, storage: VFSStorage, delimiter: str) -> bool:
+def _generate_for_csv(path: str, store: Store, delimiter: str) -> bool:
     """为单个CSV生成信息"""
-    meta = storage.read_meta(node)
+    meta = store.get_meta(path)
     if not meta:
         return False
 
@@ -41,7 +41,7 @@ def _generate_for_csv(node: NodeRef, storage: VFSStorage, delimiter: str) -> boo
         return False
 
     rel_path = meta.get("path")
-    csv_path = storage.resolve_path(rel_path) if rel_path else None
+    csv_path = os.path.join(store.project_path, rel_path) if rel_path else None
     if not csv_path or not os.path.exists(csv_path):
         return False
 
@@ -61,44 +61,16 @@ def _generate_for_csv(node: NodeRef, storage: VFSStorage, delimiter: str) -> boo
         file_size = os.path.getsize(csv_path)
 
         # 更新meta
-        meta.update({
+        store.set_meta(path, {
             "row_count": row_count,
             "column_count": column_count,
             "file_size": file_size,
             "delimiter": "," if delimiter == ',' else "\\t",
         })
-        storage.write_meta(node, meta)
 
-        logger.info(f"  CSV info: {node.rel_path} ({row_count} rows, {column_count} cols)")
+        logger.info(f"  CSV info: {path} ({row_count} rows, {column_count} cols)")
         return True
 
     except Exception as e:
         logger.debug(f"Could not get CSV info: {e}")
         return False
-
-
-def main():
-    """CLI入口"""
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(description="Generate CSV info")
-    parser.add_argument('target', help='Directory with .pontis')
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-
-    target_path = os.path.abspath(args.target)
-    pontis_path = os.path.join(target_path, ".pontis")
-
-    if not os.path.exists(pontis_path):
-        print(f"Error: No .pontis found at {pontis_path}", file=sys.stderr)
-        sys.exit(1)
-
-    storage = VFSStorage(pontis_path)
-    generate(storage)
-    print("Done.")
-
-
-if __name__ == '__main__':
-    main()

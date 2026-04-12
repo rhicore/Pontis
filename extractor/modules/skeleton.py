@@ -14,12 +14,13 @@
 import os
 import logging
 from datetime import datetime
-from extractor.utils import VFSStorage, NodeRef, Config, load_config
+from storage import Store
+from extractor.utils import Config, load_config
 
 logger = logging.getLogger(__name__)
 
 
-def generate_skeleton(source_path: str, storage: VFSStorage, config: Config) -> None:
+def generate_skeleton(source_path: str, store: Store, config: Config) -> None:
     """生成VFS文件树骨架
 
     遍历源文件夹，为每个文件/目录创建对应VFS节点
@@ -44,7 +45,7 @@ def generate_skeleton(source_path: str, storage: VFSStorage, config: Config) -> 
                 continue
 
             physical_path = os.path.join(root, name)
-            _sync_file(physical_path, rel_root, storage)
+            _sync_file(physical_path, rel_root, store)
 
         # 处理目录（如果需要为目录创建节点）
         for name in dirs:
@@ -54,7 +55,7 @@ def generate_skeleton(source_path: str, storage: VFSStorage, config: Config) -> 
                 continue
 
 
-def _sync_file(physical_path: str, parent_rel_path: str, storage: VFSStorage) -> None:
+def _sync_file(physical_path: str, parent_rel_path: str, store: Store) -> None:
     """同步单个文件到VFS"""
     # 检查文件是否存在（可能在遍历后被删除，如SQLite临时文件）
     if not os.path.exists(physical_path):
@@ -177,7 +178,6 @@ def _sync_file(physical_path: str, parent_rel_path: str, storage: VFSStorage) ->
 
     # 创建节点
     rel_path = os.path.join(parent_rel_path, node_name) if parent_rel_path else node_name
-    node = NodeRef(rel_path, storage.pontis_root)
 
     # 获取文件统计信息
     stat = os.stat(physical_path)
@@ -193,38 +193,7 @@ def _sync_file(physical_path: str, parent_rel_path: str, storage: VFSStorage) ->
         "created_at": datetime.now().isoformat(),
     }
 
-    storage.ensure_dir(node.full_path)
-    storage.write_meta(node, meta)
+    store.create_node(rel_path, meta=meta)
     logger.info(f"  Created skeleton: {rel_path}")
 
     # 实体展开由各 [type]_basic.py 处理，此处不展开
-
-
-def main():
-    """CLI入口"""
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(description="Generate VFS skeleton")
-    parser.add_argument('target', help='Source directory to scan')
-    parser.add_argument('-c', '--config', help='Config file path')
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-
-    target_path = os.path.abspath(args.target)
-    if not os.path.isdir(target_path):
-        print(f"Error: Not a directory: {target_path}", file=sys.stderr)
-        sys.exit(1)
-
-    pontis_path = os.path.join(target_path, ".pontis")
-    os.makedirs(pontis_path, exist_ok=True)
-
-    config = load_config(args.config)
-    storage = VFSStorage(pontis_path)
-    generate_skeleton(target_path, storage, config)
-    print("Done.")
-
-
-if __name__ == '__main__':
-    main()

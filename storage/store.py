@@ -1,29 +1,69 @@
-"""ProjectStore — 存储抽象层
+"""Store — 统一知识图谱存储层
 
-tool_use 通过 ProjectStore 访问所有元数据和实体，不直接操作 .pontis/ 目录。
-get_meta() 自动 enrich 虚属性，调用方不区分存储属性和计算属性。
+所有节点（文件、目录、实体）使用单一 ref 字符串寻址：
+  "db/event.db"              → 文件/目录节点
+  "db/event.db::users.table" → 实体节点（:: 为边遍历操作符）
+  "ent_a3f2c801"             → ID 直接引用
 
-以后换存储后端（文件 → 数据库）只需实现新的 Store 类。
+内部维护 _id 索引和 _files 关联，不暴露给调用方。
+
+物理存储结构 (.pontis/) — 内部实现细节，调用方不可见：
+  <path>/_meta.yml              文件级元数据
+  <path>/_entity/<name>/_meta.yml  实体元数据
+  _edges.yml                     关系边（ID 引用）
 """
 import os
+import uuid
 import fnmatch
-import glob as _glob
-import sqlite3
+import logging
 from typing import Dict, Iterator, List, Optional, Tuple
 
 import yaml
 
+logger = logging.getLogger(__name__)
 
-class ProjectStore:
-    """Read-only storage abstraction over .pontis/ directory.
+# 内部字段：存储在 _meta.yml 中但不暴露给 get_meta()
+_INTERNAL_FIELDS = {"_id", "_files"}
 
-    All tool_use modules receive a store instance instead of project_path.
+
+def _gen_id() -> str:
+    """生成实体 ID: ent_{8位hex}"""
+    return f"ent_{uuid.uuid4().hex[:8]}"
+
+
+def _is_entity_ref(ref: str) -> bool:
+    """判断 ref 是否指向实体节点（含 ::）。"""
+    return "::" in ref
+
+
+class Store:
+    """统一知识图谱存储层。
+
+    同时服务 extractor 管线和 agent 工具。
+    外部使用 ref 字符串寻址，内部用 _id 做稳定引用。
+
+    Args:
+        project_path: 项目目录（包含 .pontis/ 的目录）
     """
 
     def __init__(self, project_path: str):
         self._project_path = os.path.abspath(project_path)
         self._pontis_root = os.path.join(self._project_path, ".pontis")
+
+        # 缓存
         self._meta_cache: Dict[str, Optional[dict]] = {}
+        self._edges_cache: Optional[List[dict]] = None
+
+        # ID 索引：path ↔ id 双向映射
+        self._id_index: Dict[str, Tuple[str, str]] = {}      # id → (path, entity_name)
+        self._path_index: Dict[Tuple[str, str], str] = {}    # (path, entity_name) → id
+
+        # 边索引：用于 :: 遍历
+        self._outgoing: Dict[str, List[dict]] = {}  # node_id → [{type, to}, ...]
+        self._incoming: Dict[str, List[dict]] = {}  # node_id → [{type, from}, ...]
+
+        # 延迟构建索引（首次访问时）
+        self._index_built = False
 
     # ==================== Properties ====================
 
@@ -35,307 +75,514 @@ class ProjectStore:
     def pontis_exists(self) -> bool:
         return os.path.exists(self._pontis_root)
 
-    # ==================== Metadata ====================
+    # ==================== Ref Resolution ====================
 
-    def get_meta(self, path: str, entity_path: str = "") -> Optional[dict]:
-        """Get enriched metadata for a file or entity.
+    def resolve_ref(self, ref: str) -> Tuple[str, str]:
+        """将 ref 字符串解析为内部 (path, entity_name)。
 
-        Reads _meta.yml, enriches with virtual properties.
-        Returns None if not found.
+        三种格式：
+          "db/event.db"              → ("db/event.db", "")
+          "db/event.db::users.table" → ("db/event.db", "users.table")
+          "ent_a3f2c801"             → ID 查表 → (path, entity_name)
         """
-        cache_key = f"{path}::{entity_path}" if entity_path else path
+        if ref.startswith("ent_"):
+            pair = self._id_to_path(ref)
+            if pair is None:
+                raise KeyError(f"Unknown node ID: {ref}")
+            return pair
 
-        if cache_key in self._meta_cache:
-            cached = self._meta_cache[cache_key]
-            return dict(cached) if cached else None
+        if "::" in ref:
+            path, entity_name = ref.split("::", 1)
+            return (path, entity_name)
 
-        raw = self._read_raw_meta(path, entity_path)
-        if raw is None:
-            self._meta_cache[cache_key] = None
-            return None
+        return (ref, "")
 
-        # Enrich with virtual properties
-        from storage.virtual_props import enrich_meta
-        enriched = enrich_meta(raw, self._project_path, path, entity_path)
-        self._meta_cache[cache_key] = enriched
-        return dict(enriched)
+    @staticmethod
+    def _ref_from_parts(path: str, entity_name: str = "") -> str:
+        """从 (path, entity_name) 构造 ref 字符串。"""
+        return f"{path}::{entity_name}" if entity_name else path
 
-    def meta_exists(self, path: str, entity_path: str = "") -> bool:
-        """Check if metadata exists for a file or entity."""
-        if entity_path:
-            meta_path = os.path.join(
-                self._pontis_root, path, "_entity", entity_path, "_meta.yml"
+    # ==================== Index ====================
+
+    def _ensure_index(self):
+        if self._index_built:
+            return
+        self._build_index()
+
+    def _build_index(self):
+        """扫描 .pontis/ 构建 ID 索引 + 边索引。"""
+        self._id_index.clear()
+        self._path_index.clear()
+        self._outgoing.clear()
+        self._incoming.clear()
+
+        if not os.path.exists(self._pontis_root):
+            self._index_built = True
+            return
+
+        for root, dirs, files in os.walk(self._pontis_root):
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            if "_meta.yml" not in files:
+                continue
+            rel = os.path.relpath(root, self._pontis_root)
+            if rel == ".":
+                continue
+            raw = self._read_raw_by_rel(rel)
+            if raw is None:
+                continue
+            path, entity_name = self._parse_rel(rel)
+            eid = raw.get("_id")
+            if eid:
+                self._id_index[eid] = (path, entity_name)
+                self._path_index[(path, entity_name)] = eid
+
+        # 构建边索引
+        raw_edges = self._read_edges_raw()
+        for e in raw_edges:
+            from_id = e.get("from", "")
+            to_id = e.get("to", "")
+            etype = e.get("type", "")
+            self._outgoing.setdefault(from_id, []).append(
+                {"type": etype, "to": to_id}
             )
-        else:
-            meta_path = os.path.join(self._pontis_root, path, "_meta.yml")
-        return os.path.exists(meta_path)
-
-    def _read_raw_meta(self, path: str, entity_path: str = "") -> Optional[dict]:
-        """Read raw _meta.yml without enrichment. Internal only."""
-        if entity_path:
-            meta_path = os.path.join(
-                self._pontis_root, path, "_entity", entity_path, "_meta.yml"
+            self._incoming.setdefault(to_id, []).append(
+                {"type": etype, "from": from_id}
             )
-        else:
-            meta_path = os.path.join(self._pontis_root, path, "_meta.yml")
 
-        if not os.path.exists(meta_path):
-            return None
+        self._index_built = True
 
+    def _register_id(self, eid: str, path: str, entity_name: str):
+        """注册新实体 ID 到索引。"""
+        self._id_index[eid] = (path, entity_name)
+        self._path_index[(path, entity_name)] = eid
+
+    def _path_to_id(self, path: str, entity_name: str = "") -> Optional[str]:
+        """路径 → ID。"""
+        self._ensure_index()
+        return self._path_index.get((path, entity_name))
+
+    def _id_to_path(self, eid: str) -> Optional[Tuple[str, str]]:
+        """ID → (path, entity_name)。"""
+        self._ensure_index()
+        return self._id_index.get(eid)
+
+    @staticmethod
+    def _parse_rel(rel: str) -> Tuple[str, str]:
+        """将 .pontis/ 内的相对路径解析为 (path, entity_name)。"""
+        parts = rel.replace(os.sep, "/").split("/")
         try:
-            with open(meta_path, 'r') as f:
+            idx = parts.index("_entity")
+            path = "/".join(parts[:idx])
+            entity_name = "/".join(parts[idx + 1:])
+            return (path, entity_name)
+        except ValueError:
+            return (rel.replace(os.sep, "/"), "")
+
+    # ==================== Internal Path Helpers ====================
+
+    def _meta_path(self, path: str, entity_name: str = "") -> str:
+        """解析 meta 文件物理路径。"""
+        if entity_name:
+            return os.path.join(
+                self._pontis_root, path, "_entity", entity_name, "_meta.yml"
+            )
+        return os.path.join(self._pontis_root, path, "_meta.yml")
+
+    def _entity_dir(self, path: str, entity_name: str) -> str:
+        """实体目录路径。"""
+        return os.path.join(self._pontis_root, path, "_entity", entity_name)
+
+    @staticmethod
+    def _cache_key(path: str, entity_name: str = "") -> str:
+        return f"{path}::{entity_name}" if entity_name else path
+
+    # ==================== Meta Read ====================
+
+    def get_meta(self, ref: str, *, enrich: bool = False) -> Optional[dict]:
+        """读取 meta，自动剥离内部字段。
+
+        Args:
+            ref: 节点引用（路径、路径::实体、ID）
+            enrich: True 时补充虚属性（agent 工具用）
+        """
+        path, entity_name = self.resolve_ref(ref)
+        key = self._cache_key(path, entity_name)
+
+        if key in self._meta_cache:
+            cached = self._meta_cache[key]
+            if cached is None:
+                return None
+            result = dict(cached)
+        else:
+            raw = self._read_raw(path, entity_name)
+            if raw is None:
+                self._meta_cache[key] = None
+                return None
+            result = dict(raw)
+            self._meta_cache[key] = dict(raw)
+
+        # 虚属性补充
+        if enrich:
+            from storage.virtual_props import enrich_meta
+            result = enrich_meta(result, self._project_path, path, entity_name)
+
+        # 剥离内部字段
+        return {k: v for k, v in result.items() if k not in _INTERNAL_FIELDS}
+
+    def meta_exists(self, ref: str) -> bool:
+        """检查 meta 是否存在。"""
+        path, entity_name = self.resolve_ref(ref)
+        return os.path.exists(self._meta_path(path, entity_name))
+
+    def _read_raw(self, path: str, entity_name: str = "") -> Optional[dict]:
+        """读取原始 meta（含内部字段），不经过缓存。"""
+        mp = self._meta_path(path, entity_name)
+        if not os.path.exists(mp):
+            return None
+        try:
+            with open(mp, 'r') as f:
                 return yaml.safe_load(f) or {}
         except Exception:
             return None
 
-    # ==================== Entity Discovery ====================
+    def _read_raw_by_rel(self, rel: str) -> Optional[dict]:
+        """按 .pontis/ 内相对路径读取原始 meta。"""
+        mp = os.path.join(self._pontis_root, rel, "_meta.yml")
+        if not os.path.exists(mp):
+            return None
+        try:
+            with open(mp, 'r') as f:
+                return yaml.safe_load(f) or {}
+        except Exception:
+            return None
 
-    def glob_entities(self, file_path: str, pattern: str = "*") -> List[str]:
-        """List entities under a file matching fnmatch pattern.
+    # ==================== Meta Write ====================
 
-        Returns entity relative paths (e.g., "users.table", "users.id.INT.col").
+    def set_meta(self, ref: str, data: dict):
+        """合并写入：只更新 data 中的字段，保留已有字段。
+
+        自动维护 _id（新节点）和 _files。
         """
-        entity_root = os.path.join(self._pontis_root, file_path, "_entity")
-        if not os.path.exists(entity_root):
+        path, entity_name = self.resolve_ref(ref)
+        existing = self._read_raw(path, entity_name) or {}
+        existing.update(data)
+
+        # 自动补充 _id
+        if "_id" not in existing:
+            eid = _gen_id()
+            existing["_id"] = eid
+            self._register_id(eid, path, entity_name)
+
+        # 自动补充 _files（仅实体）
+        if entity_name and "_files" not in existing:
+            existing["_files"] = [path]
+
+        self._write_meta_file(path, entity_name, existing)
+        self._meta_cache[self._cache_key(path, entity_name)] = dict(existing)
+
+    def put_meta(self, ref: str, data: dict):
+        """全量写入：替换整个 meta。
+
+        自动维护 _id 和 _files。extractor 初始化用。
+        """
+        path, entity_name = self.resolve_ref(ref)
+
+        # 自动补充 _id
+        if "_id" not in data:
+            eid = _gen_id()
+            data["_id"] = eid
+            self._register_id(eid, path, entity_name)
+
+        # 自动补充 _files（仅实体）
+        if entity_name and "_files" not in data:
+            data["_files"] = [path]
+
+        self._write_meta_file(path, entity_name, data)
+        self._meta_cache[self._cache_key(path, entity_name)] = dict(data)
+
+    def _write_meta_file(self, path: str, entity_name: str, data: dict):
+        """写入 _meta.yml 到磁盘。"""
+        mp = self._meta_path(path, entity_name)
+        os.makedirs(os.path.dirname(mp), exist_ok=True)
+        with open(mp, 'w', encoding='utf-8') as f:
+            yaml.dump(data, f, default_flow_style=False,
+                      allow_unicode=True, sort_keys=False)
+
+    # ==================== Node Operations ====================
+
+    def create_node(self, ref: str, *, meta: Optional[dict] = None,
+                    edges: Optional[List[dict]] = None,
+                    files: Optional[List[str]] = None):
+        """创建节点。
+
+        ref 含 :: → 实体节点（创建目录 + meta + contains 边 + 用户边）
+        ref 不含 :: → 文件/目录节点（只写 meta）
+
+        Args:
+            ref: 节点引用
+            meta: 初始元数据
+            edges: 关系边列表
+            files: 关联文件列表（仅实体，默认 [path]）
+        """
+        path, entity_name = self.resolve_ref(ref)
+        meta = meta or {}
+
+        if entity_name:
+            # 实体节点
+            edir = self._entity_dir(path, entity_name)
+            os.makedirs(edir, exist_ok=True)
+
+            if files:
+                meta["_files"] = files
+            else:
+                meta.setdefault("_files", [path])
+
+            self.put_meta(ref, meta)
+
+            # 自动 contains 边 + 用户边
+            contains_edge = {
+                "from": path,
+                "type": "contains",
+                "to": ref,
+            }
+            all_edges = [contains_edge]
+            if edges:
+                all_edges.extend(edges)
+            self.add_edges(all_edges)
+        else:
+            # 文件/目录节点
+            self.put_meta(ref, meta)
+            if edges:
+                self.add_edges(edges)
+
+    def node_exists(self, ref: str) -> bool:
+        """检查节点是否存在。"""
+        path, entity_name = self.resolve_ref(ref)
+        if entity_name:
+            return os.path.isdir(self._entity_dir(path, entity_name))
+        return os.path.exists(self._meta_path(path))
+
+    # ==================== Node Discovery ====================
+
+    def find_nodes(self, pattern: str) -> List[str]:
+        """按 pattern 查找节点，返回 ref 字符串列表。
+
+        Pattern 语法：
+          "*.db"              → 匹配所有 .db 文件节点
+          "*.table"           → 匹配所有 .table 实体节点（跨文件搜索）
+          "*.db::*.table"     → DB 文件节点 → 遍历边 → 匹配 .table 实体
+          "event.db::*"       → event.db 下所有相连实体
+        """
+        segments = pattern.split("::")
+
+        if len(segments) == 1:
+            return self._match_all_nodes(segments[0])
+
+        # 多段：逐段遍历
+        refs = self._match_all_nodes(segments[0])
+        for seg in segments[1:]:
+            next_refs = []
+            for ref in refs:
+                next_refs.extend(self._traverse(ref, pattern=seg))
+            refs = next_refs
+        return refs
+
+    def find_connected(self, ref: str, edge_type: str = None,
+                       pattern: str = "*") -> List[str]:
+        """从指定节点出发，沿边查找相连节点。
+
+        Args:
+            ref: 起始节点引用
+            edge_type: 只沿此类型的边遍历（None = 所有类型）
+            pattern: 过滤目标节点名
+        """
+        return self._traverse(ref, edge_type=edge_type, pattern=pattern)
+
+    def _match_all_nodes(self, pattern: str) -> List[str]:
+        """匹配所有节点（文件 + 实体），不暴露 _entity/。"""
+        if not os.path.exists(self._pontis_root):
             return []
 
         results = []
-        for root, dirs, files in os.walk(entity_root):
+        for root, dirs, files in os.walk(self._pontis_root):
             dirs[:] = [d for d in dirs if not d.startswith('.')]
-            for d in dirs:
-                if fnmatch.fnmatch(d, pattern):
-                    rel = os.path.relpath(os.path.join(root, d), entity_root)
-                    results.append(rel)
+            if "_meta.yml" not in files:
+                continue
+            rel = os.path.relpath(root, self._pontis_root)
+            if rel == ".":
+                continue
+            path, entity_name = self._parse_rel(rel)
+            ref = self._ref_from_parts(path, entity_name)
+
+            # 用节点名匹配（文件用 path，实体用 entity_name）
+            name = entity_name if entity_name else path
+            if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(ref, pattern):
+                results.append(ref)
+
         return results
 
-    def walk_all_metas(self) -> Iterator[Tuple[str, dict]]:
-        """Walk ALL _meta.yml files in .pontis/.
+    def _traverse(self, ref: str, edge_type: str = None,
+                  pattern: str = "*") -> List[str]:
+        """从 ref 出发沿边遍历，返回匹配 pattern 的目标节点。"""
+        self._ensure_index()
+        path, entity_name = self.resolve_ref(ref)
+        node_id = self._path_to_id(path, entity_name)
+        if not node_id:
+            return []
 
-        Yields (rel_path, enriched_meta) for every _meta.yml found.
-        Used for keyword search.
-        """
+        results = []
+        for edge in self._outgoing.get(node_id, []):
+            if edge_type and edge["type"] != edge_type:
+                continue
+            to_id = edge["to"]
+            to_pair = self._id_to_path(to_id)
+            if to_pair is None:
+                continue
+            to_path, to_ename = to_pair
+            to_ref = self._ref_from_parts(to_path, to_ename)
+            # 匹配节点名
+            name = to_ename if to_ename else to_path
+            if fnmatch.fnmatch(name, pattern):
+                results.append(to_ref)
+
+        return results
+
+    def walk_metas(self, *, enrich: bool = False) -> Iterator[Tuple[str, dict]]:
+        """遍历所有 meta，yield (ref, meta)。"""
         if not os.path.exists(self._pontis_root):
             return
 
         for root, dirs, files in os.walk(self._pontis_root):
             dirs[:] = [d for d in dirs if not d.startswith('.')]
-            for fname in files:
-                if fname != '_meta.yml':
-                    continue
-                rel_dir = os.path.relpath(root, self._pontis_root)
-                raw = self._read_raw_meta_by_path(os.path.join(root, fname))
-                if raw is not None:
-                    # Determine if this is a file-level or entity-level meta
-                    # for virtual prop enrichment
-                    parts = rel_dir.replace(os.sep, "/").split("/")
-                    if "_entity" in parts:
-                        # Entity: extract file_rel and entity_path
-                        idx = parts.index("_entity")
-                        file_rel = "/".join(parts[:idx])
-                        entity_path = "/".join(parts[idx + 1:])
-                        from storage.virtual_props import enrich_meta
-                        meta = enrich_meta(raw, self._project_path, file_rel, entity_path)
-                    else:
-                        # File-level
-                        from storage.virtual_props import enrich_meta
-                        meta = enrich_meta(raw, self._project_path, rel_dir)
-                    yield (rel_dir, meta)
-
-    def walk_entities(self, file_path: str,
-                      entity_pattern: str = "*") -> Iterator[Tuple[str, dict]]:
-        """Walk entities under a file. Yields (entity_rel_path, enriched_meta)."""
-        entity_root = os.path.join(self._pontis_root, file_path, "_entity")
-        if not os.path.exists(entity_root):
-            return
-
-        for root, dirs, files in os.walk(entity_root):
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
-            for d in dirs:
-                if fnmatch.fnmatch(d, entity_pattern):
-                    entity_rel = os.path.relpath(os.path.join(root, d), entity_root)
-                    meta = self.get_meta(file_path, entity_rel)
-                    if meta is not None:
-                        yield (entity_rel, meta)
-
-    @staticmethod
-    def _read_raw_meta_by_path(meta_path: str) -> Optional[dict]:
-        """Read a specific _meta.yml by absolute path."""
-        try:
-            with open(meta_path, 'r') as f:
-                return yaml.safe_load(f) or {}
-        except Exception:
-            return None
-
-    # ==================== Content Retrieval ====================
-
-    def read_raw_content(self, file_path: str, entity_path: str) -> Optional[str]:
-        """Read _raw content for an entity (chunk text etc.).
-
-        Returns None if _raw file doesn't exist.
-        """
-        raw_path = os.path.join(
-            self._pontis_root, file_path, "_entity", entity_path, "_raw"
-        )
-        if not os.path.exists(raw_path):
-            return None
-        try:
-            with open(raw_path, 'r', encoding='utf-8', errors='ignore') as f:
-                return f.read()
-        except Exception:
-            return None
-
-    def resolve_db_path(self, file_rel_path: str) -> Optional[str]:
-        """Resolve the actual database file path from metadata.
-
-        Reads meta.path from _meta.yml and resolves to absolute path.
-        """
-        meta = self._read_raw_meta(file_rel_path)
-        if not meta:
-            return None
-        source_path = meta.get('path')
-        if not source_path:
-            return None
-        db_path = os.path.join(self._project_path, source_path)
-        return db_path if os.path.exists(db_path) else None
-
-    # ==================== Physical File System ====================
-
-    def glob_physical_files(self, pattern: str, cwd: str = "") -> List[str]:
-        """Glob physical files in the project directory.
-
-        Returns relative paths. Excludes .pontis, .git, and hidden dirs.
-        Sorted by modification time (newest first).
-        """
-        search_root = os.path.join(self._project_path, cwd) if cwd else self._project_path
-        full_pattern = os.path.join(search_root, pattern)
-
-        matches = _glob.glob(full_pattern, recursive=True)
-
-        results = []
-        for m in matches:
-            rel = os.path.relpath(m, self._project_path)
-            # Skip .pontis and hidden dirs
-            parts = rel.split(os.sep)
-            if '.pontis' in parts:
+            if "_meta.yml" not in files:
                 continue
-            if any(p.startswith('.') for p in parts):
+            rel_dir = os.path.relpath(root, self._pontis_root)
+            if rel_dir == ".":
                 continue
-            results.append(rel)
+            path, entity_name = self._parse_rel(rel_dir)
+            ref = self._ref_from_parts(path, entity_name)
+            meta = self.get_meta(ref, enrich=enrich)
+            if meta is not None:
+                yield (ref, meta)
 
-        results.sort(
-            key=lambda p: os.path.getmtime(os.path.join(self._project_path, p)),
-            reverse=True
-        )
-        return results
+    # ==================== Edges ====================
 
-    def file_exists(self, path: str) -> bool:
-        return os.path.exists(os.path.join(self._project_path, path))
+    def _edges_path(self) -> str:
+        return os.path.join(self._pontis_root, "_edges.yml")
 
-    def is_directory(self, path: str) -> bool:
-        return os.path.isdir(os.path.join(self._project_path, path))
+    def _read_edges_raw(self) -> List[dict]:
+        """读取原始边数据（含 ID）。"""
+        if self._edges_cache is not None:
+            return self._edges_cache
 
-    def list_dir(self, path: str) -> List[str]:
-        """List non-hidden entries in a directory."""
-        full = os.path.join(self._project_path, path)
-        try:
-            return [e for e in os.listdir(full) if not e.startswith('.')]
-        except Exception:
+        ep = self._edges_path()
+        if not os.path.exists(ep):
+            self._edges_cache = []
             return []
 
-    def get_file_size(self, path: str) -> int:
-        return os.path.getsize(os.path.join(self._project_path, path))
-
-    def read_physical_file(self, path: str, offset: int = 1,
-                           limit: Optional[int] = None) -> str:
-        """Read a physical file with line numbers.
-
-        Returns cat -n style output.
-        """
-        full = os.path.join(self._project_path, path)
         try:
-            with open(full, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-
-            total = len(lines)
-            start = max(0, offset - 1)
-
-            if start >= total:
-                return f"Warning: offset ({offset}) beyond file length ({total} lines)."
-
-            if limit is not None:
-                end = min(start + limit, total)
-            else:
-                end = total
-                if end - start > 2000:
-                    end = start + 2000
-
-            output = []
-            for i, line in enumerate(lines[start:end], start=start + 1):
-                output.append(f"{i}\t{line.rstrip()}")
-
-            if end < total:
-                remaining = total - end
-                output.append(
-                    f"File has {remaining} more lines after line {end} (total {total})."
-                )
-            return '\n'.join(output)
-        except Exception as e:
-            return f"Error reading file: {e}"
-
-    # ==================== Write Operations ====================
-
-    def _resolve_meta_path(self, path: str, entity_path: str = "") -> str:
-        """解析 meta 文件物理路径。"""
-        if entity_path:
-            return os.path.join(
-                self._pontis_root, path, "_entity", entity_path, "_meta.yml"
-            )
-        return os.path.join(self._pontis_root, path, "_meta.yml")
-
-    def write_meta(self, path: str, data: dict, entity_path: str = ""):
-        """写入/更新 meta。只覆盖 data 中提供的字段，保留已有字段。
-
-        自动清除缓存，使下次 get_meta() 读取最新值。
-        """
-        existing = self._read_raw_meta(path, entity_path) or {}
-        existing.update(data)
-
-        meta_path = self._resolve_meta_path(path, entity_path)
-        os.makedirs(os.path.dirname(meta_path), exist_ok=True)
-
-        with open(meta_path, 'w', encoding='utf-8') as f:
-            yaml.dump(existing, f, default_flow_style=False,
-                      allow_unicode=True, sort_keys=False)
-
-        # 清除缓存
-        cache_key = f"{path}::{entity_path}" if entity_path else path
-        self._meta_cache.pop(cache_key, None)
-
-    def create_entity_dir(self, path: str, entity_path: str) -> str:
-        """创建实体目录结构，返回实体目录的绝对路径。"""
-        entity_dir = os.path.join(
-            self._pontis_root, path, "_entity", entity_path
-        )
-        os.makedirs(entity_dir, exist_ok=True)
-        return entity_dir
-
-    def add_edges(self, edge_list: List[Dict[str, str]]):
-        """批量添加关系边（按 from+type+to 三元组去重）。"""
-        edges_path = os.path.join(self._pontis_root, "_edges.yml")
-
-        existing = []
-        if os.path.exists(edges_path):
-            with open(edges_path, 'r', encoding='utf-8') as f:
+            with open(ep, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f) or {}
-                existing = data.get("edges", [])
+            self._edges_cache = data.get("edges", [])
+            return self._edges_cache
+        except Exception:
+            self._edges_cache = []
+            return []
 
-        existing_keys = {(e["from"], e["type"], e["to"]) for e in existing}
-        for e in edge_list:
-            key = (e["from"], e["type"], e["to"])
-            if key not in existing_keys:
-                existing.append(e)
-                existing_keys.add(key)
-
-        with open(edges_path, 'w', encoding='utf-8') as f:
-            yaml.dump({"edges": existing}, f,
+    def _write_edges_raw(self, edges: List[dict]):
+        """写入原始边数据。"""
+        os.makedirs(self._pontis_root, exist_ok=True)
+        with open(self._edges_path(), 'w', encoding='utf-8') as f:
+            yaml.dump({"edges": edges}, f,
                       default_flow_style=False, allow_unicode=True)
+        self._edges_cache = edges
+
+    def get_edges(self, from_ref: str = None, edge_type: str = None,
+                  to_ref: str = None) -> List[dict]:
+        """查询边，参数和返回值都用路径格式。"""
+        self._ensure_index()
+        raw_edges = self._read_edges_raw()
+
+        result = []
+        for e in raw_edges:
+            from_path = self._resolve_edge_ref(e.get("from", ""))
+            to_path = self._resolve_edge_ref(e.get("to", ""))
+            etype = e.get("type", "")
+
+            if from_ref and from_path != from_ref:
+                continue
+            if edge_type and etype != edge_type:
+                continue
+            if to_ref and to_path != to_ref:
+                continue
+
+            result.append({
+                "from": from_path,
+                "type": etype,
+                "to": to_path,
+            })
+
+        return result
+
+    def add_edges(self, edges: List[dict]):
+        """添加边（路径格式输入，ID 格式存储，去重）。"""
+        self._ensure_index()
+        raw = self._read_edges_raw()
+        existing_keys = {(e.get("from", ""), e.get("type", ""), e.get("to", ""))
+                         for e in raw}
+
+        for e in edges:
+            from_id = self._resolve_path_to_id(e.get("from", ""))
+            to_id = self._resolve_path_to_id(e.get("to", ""))
+            etype = e.get("type", "")
+
+            key = (from_id, etype, to_id)
+            if key in existing_keys:
+                continue
+
+            entry = {
+                "from": from_id,
+                "from_path": e.get("from", ""),
+                "type": etype,
+                "to": to_id,
+                "to_path": e.get("to", ""),
+            }
+            raw.append(entry)
+            existing_keys.add(key)
+
+            # 增量更新边索引
+            self._outgoing.setdefault(from_id, []).append(
+                {"type": etype, "to": to_id}
+            )
+            self._incoming.setdefault(to_id, []).append(
+                {"type": etype, "from": from_id}
+            )
+
+        self._write_edges_raw(raw)
+
+    def clear_edges(self):
+        """清空所有边。"""
+        self._write_edges_raw([])
+        self._outgoing.clear()
+        self._incoming.clear()
+
+    def _resolve_edge_ref(self, ref: str) -> str:
+        """边引用 → 路径格式。如果是 ID 就转换，否则原样返回。"""
+        if ref.startswith("ent_"):
+            pair = self._id_to_path(ref)
+            if pair:
+                path, entity_name = pair
+                return f"{path}::{entity_name}" if entity_name else path
+        return ref
+
+    def _resolve_path_to_id(self, ref: str) -> str:
+        """路径格式 → ID。如果已是 ID 就原样返回。"""
+        if ref.startswith("ent_"):
+            return ref
+        # 解析 "path::entity"
+        if "::" in ref:
+            path, entity_name = ref.split("::", 1)
+        else:
+            path, entity_name = ref, ""
+        eid = self._path_to_id(path, entity_name)
+        return eid if eid else ref

@@ -17,7 +17,7 @@ import os
 import random
 import re
 import logging
-from extractor.utils import VFSStorage, NodeRef
+from storage import Store
 
 logger = logging.getLogger(__name__)
 
@@ -285,21 +285,21 @@ def collect_patterns(data, path: str, patterns: list, max_depth: int = 20, _dept
 
 # ============ 主生成器 ============
 
-def generate(storage: VFSStorage) -> None:
+def generate(store: Store) -> None:
     """为所有 JSON 文件生成 .pattern 子实体"""
     logger.info("=== Generating JSON patterns ===")
 
-    for node in storage.find_nodes("*.json"):
+    for path in store.find_nodes("*.json"):
         try:
-            _generate_for_json(node, storage)
+            _generate_for_json(path, store)
         except Exception as e:
-            logger.warning(f"Failed to generate patterns for {node.name}: {e}")
+            logger.warning(f"Failed to generate patterns for {path}: {e}")
 
 
-def _generate_for_json(node: NodeRef, storage: VFSStorage) -> bool:
+def _generate_for_json(path: str, store: Store) -> bool:
     """为单个 JSON 文件生成 .pattern 子实体"""
     # 读取 JSON 数据
-    data = _load_json(node, storage)
+    data = _load_json(path, store)
     if data is None:
         return False
 
@@ -310,24 +310,19 @@ def _generate_for_json(node: NodeRef, storage: VFSStorage) -> bool:
     if not patterns:
         return False
 
-    # 确保 _entity 目录存在
-    entity_rel = os.path.join(node.rel_path, "_entity")
-    entity_node = NodeRef(entity_rel, storage.pontis_root)
-    storage.ensure_dir(entity_node.full_path)
-
-    # 为每个模式创建 .pattern 子节点
+    # 为每个模式创建 .pattern 子实体
     for pat in patterns:
-        _write_pattern(pat, entity_rel, storage)
+        _write_pattern(path, pat, store)
 
-    logger.info(f"  Patterns: {node.rel_path} ({len(patterns)} entities)")
+    logger.info(f"  Patterns: {path} ({len(patterns)} entities)")
     return True
 
 
-def _load_json(node: NodeRef, storage: VFSStorage):
+def _load_json(path: str, store: Store):
     """从源文件加载 JSON 数据"""
-    meta = storage.read_meta(node)
+    meta = store.get_meta(path)
     rel_path = meta.get("path") if meta else None
-    file_path = storage.resolve_path(rel_path) if rel_path else None
+    file_path = os.path.join(store.project_path, rel_path) if rel_path else None
     if file_path and os.path.exists(file_path):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -338,13 +333,11 @@ def _load_json(node: NodeRef, storage: VFSStorage):
     return None
 
 
-def _write_pattern(pat: dict, entity_rel: str, storage: VFSStorage) -> None:
-    """写入单个 .pattern 节点"""
-    # 节点名称：路径 + .pattern，替换 / 为安全字符
+def _write_pattern(file_path: str, pat: dict, store: Store) -> None:
+    """写入单个 .pattern 实体"""
+    # 实体名称：路径 + .pattern，替换特殊字符
     safe_name = pat["name"].replace("/", "_").replace("\\", "_")
-    node_name = f"{safe_name}.pattern"
-    pattern_rel = os.path.join(entity_rel, node_name)
-    pattern_node = NodeRef(pattern_rel, storage.pontis_root)
+    entity_name = f"{safe_name}.pattern"
 
     meta = {
         "name": pat["name"],
@@ -352,27 +345,4 @@ def _write_pattern(pat: dict, entity_rel: str, storage: VFSStorage) -> None:
         "pattern": pat["pattern"],
         "ai_summary": "",
     }
-    storage.write_meta(pattern_node, meta)
-
-
-def main():
-    """CLI入口"""
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(description="Generate JSON pattern entities")
-    parser.add_argument('target', help='Directory with .pontis')
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-
-    target_path = os.path.abspath(args.target)
-    pontis_path = os.path.join(target_path, ".pontis")
-
-    if not os.path.exists(pontis_path):
-        print(f"Error: No .pontis found at {pontis_path}", file=sys.stderr)
-        sys.exit(1)
-
-    storage = VFSStorage(pontis_path)
-    generate(storage)
-    print("Done.")
+    store.create_node(f"{file_path}::{entity_name}", meta=meta)

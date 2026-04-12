@@ -5,7 +5,7 @@ from typing import Iterator, Optional
 
 from openai import OpenAI
 
-from storage import ProjectStore
+from storage import Store
 from agent.config import load_agent_config
 from agent.tools import ToolRegistry, build_readonly_registry
 from agent.system_prompt import build_system_prompt
@@ -24,7 +24,7 @@ class PontisAgent:
                  tools: Optional[ToolRegistry] = None,
                  system_prompt: Optional[str] = None):
         self.project_path = project_path
-        self.store = ProjectStore(project_path)
+        self.store = Store(project_path)
         self.config = load_agent_config(project_path)
 
         if not self.config.api_key:

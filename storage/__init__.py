@@ -1,3 +1,3 @@
-from storage.store import ProjectStore
+from storage.store import Store
 
-__all__ = ["ProjectStore"]
+__all__ = ["Store"]

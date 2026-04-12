@@ -12,13 +12,14 @@
 import os
 import logging
 from typing import List
-from extractor.utils import VFSStorage, NodeRef, get_llm
+from storage import Store
+from extractor.utils import get_llm
 from extractor.ai_utils import generate_detail_and_brief
 
 logger = logging.getLogger(__name__)
 
 
-def generate(storage: VFSStorage) -> None:
+def generate(store: Store) -> None:
     """为所有 .db 文件节点生成 AI 总结"""
     logger.info("=== AI: DB file summary ===")
 
@@ -27,41 +28,42 @@ def generate(storage: VFSStorage) -> None:
         logger.warning("LLM not configured, skipping AI summary")
         return
 
-    for node in storage.find_nodes("*.db"):
+    for path in store.find_nodes("*.db"):
         try:
-            _generate_for_db(node, storage, llm)
+            _generate_for_db(path, store, llm)
         except Exception as e:
-            logger.warning(f"Failed for {node.name}: {e}")
+            logger.warning(f"Failed for {path}: {e}")
 
 
-def _generate_for_db(node: NodeRef, storage: VFSStorage, llm) -> bool:
-    meta = storage.read_meta(node)
+def _generate_for_db(path: str, store: Store, llm) -> bool:
+    meta = store.get_meta(path)
     if not meta:
         return False
 
     if "detail" in meta and "brief" in meta:
         return False
 
-    db_name = node.name.replace(".db", "")
-    tables = _get_table_info(node, storage)
-    views = _get_view_info(node, storage)
+    db_name = os.path.splitext(os.path.basename(path))[0]
+    tables = _get_table_info(path, store)
+    views = _get_view_info(path, store)
 
     if not tables and not views:
-        logger.debug(f"  No tables/views found for {node.name}")
+        logger.debug(f"  No tables/views found for {path}")
         return False
 
     prompt = _build_prompt(db_name, tables, views, meta)
 
     try:
         detail, brief = generate_detail_and_brief(llm, prompt, max_tokens=300)
+        updates = {}
         if detail:
-            meta["detail"] = detail
+            updates["detail"] = detail
         if brief:
-            meta["brief"] = brief
+            updates["brief"] = brief
 
-        if detail or brief:
-            storage.write_meta(node, meta)
-            logger.info(f"  AI summary: {node.rel_path}")
+        if updates:
+            store.set_meta(path, updates)
+            logger.info(f"  AI summary: {path}")
             return True
     except Exception as e:
         logger.debug(f"LLM failed: {e}")
@@ -69,28 +71,29 @@ def _generate_for_db(node: NodeRef, storage: VFSStorage, llm) -> bool:
     return False
 
 
-def _get_table_info(db_node: NodeRef, storage: VFSStorage) -> List[dict]:
+def _get_table_info(db_path: str, store: Store) -> List[dict]:
     """读取数据库下所有表的元数据"""
     tables = []
-    for table_node in storage.find_nodes(os.path.join(db_node.rel_path, "_entity", "*.table")):
-        table_meta = storage.read_meta(table_node)
+    for table_ref in store.find_nodes(f"{db_path}::*.table"):
+        table_meta = store.get_meta(table_ref)
         if table_meta:
-            table_name = table_node.name.replace(".table", "")
+            _, table_name = table_ref.split("::", 1)
+            table_name_clean = table_name.replace(".table", "")
             # 读取列信息
             columns = []
-            col_pattern = os.path.join(db_node.rel_path, "_entity", f"{table_name}.*.*.col")
-            for col_node in storage.find_nodes(col_pattern):
-                col_meta = storage.read_meta(col_node)
+            for col_ref in store.find_nodes(f"{db_path}::{table_name_clean}.*.*.col"):
+                col_meta = store.get_meta(col_ref)
                 if col_meta:
-                    col_parts = col_node.name.replace(".col", "").split(".")
+                    _, col_name = col_ref.split("::", 1)
+                    col_parts = col_name.replace(".col", "").split(".")
                     columns.append({
-                        "name": col_parts[1] if len(col_parts) >= 2 else col_node.name,
+                        "name": col_parts[1] if len(col_parts) >= 2 else col_name,
                         "type": col_parts[2] if len(col_parts) >= 3 else "?",
                         "detail": col_meta.get("detail", ""),
                     })
 
             tables.append({
-                "name": table_name,
+                "name": table_name_clean,
                 "row_count": table_meta.get("row_count"),
                 "column_count": table_meta.get("column_count"),
                 "primary_key": table_meta.get("primary_key"),
@@ -100,14 +103,15 @@ def _get_table_info(db_node: NodeRef, storage: VFSStorage) -> List[dict]:
     return tables
 
 
-def _get_view_info(db_node: NodeRef, storage: VFSStorage) -> List[dict]:
+def _get_view_info(db_path: str, store: Store) -> List[dict]:
     """读取数据库下所有视图的元数据"""
     views = []
-    for view_node in storage.find_nodes(os.path.join(db_node.rel_path, "_entity", "*.view")):
-        view_meta = storage.read_meta(view_node)
+    for view_ref in store.find_nodes(f"{db_path}::*.view"):
+        view_meta = store.get_meta(view_ref)
         if view_meta:
+            _, view_name = view_ref.split("::", 1)
             views.append({
-                "name": view_node.name.replace(".view", ""),
+                "name": view_name.replace(".view", ""),
                 "row_count": view_meta.get("row_count"),
                 "column_count": view_meta.get("column_count"),
                 "detail": view_meta.get("detail", ""),
@@ -153,21 +157,3 @@ IMPORTANT rules:
 - Output ONLY plain text, no labels, no markdown formatting.\
 """
     return prompt
-
-
-def main():
-    import argparse, sys
-    parser = argparse.ArgumentParser(description="AI DB file summary")
-    parser.add_argument('target', help='Directory with .pontis')
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-    pontis_path = os.path.join(os.path.abspath(args.target), ".pontis")
-    if not os.path.exists(pontis_path):
-        print(f"Error: No .pontis found", file=sys.stderr)
-        sys.exit(1)
-    generate(VFSStorage(pontis_path))
-    print("Done.")
-
-
-if __name__ == '__main__':
-    main()

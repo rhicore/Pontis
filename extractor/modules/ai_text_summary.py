@@ -11,18 +11,14 @@
 """
 import os
 import logging
-from extractor.utils import VFSStorage, NodeRef, get_llm
+from storage import Store
+from extractor.utils import get_llm
 from extractor.ai_utils import generate_detail_and_brief
 
 logger = logging.getLogger(__name__)
 
-# 支持的文本文件后缀
-TEXT_EXTENSIONS = {'.md', '.txt', '.log', '.sql', '.py', '.js', '.ts', '.tsx', '.jsx',
-                   '.sh', '.bash', '.zsh', '.yaml', '.yml', '.toml', '.xml', '.html',
-                   '.css', '.scss', '.json', '.csv', '.tsv'}
 
-
-def generate(storage: VFSStorage) -> None:
+def generate(store: Store) -> None:
     logger.info("=== AI: Text file summary ===")
 
     llm = get_llm()
@@ -32,15 +28,15 @@ def generate(storage: VFSStorage) -> None:
 
     # 匹配所有文本类型文件
     for ext in ['.md', '.txt', '.log', '.sql']:
-        for node in storage.find_nodes(f"*{ext}"):
+        for path in store.find_nodes(f"*{ext}"):
             try:
-                _generate_for_text(node, storage, llm)
+                _generate_for_text(path, store, llm)
             except Exception as e:
-                logger.warning(f"Failed for {node.name}: {e}")
+                logger.warning(f"Failed for {path}: {e}")
 
 
-def _generate_for_text(node: NodeRef, storage: VFSStorage, llm) -> bool:
-    meta = storage.read_meta(node)
+def _generate_for_text(path: str, store: Store, llm) -> bool:
+    meta = store.get_meta(path)
     if not meta:
         return False
 
@@ -52,7 +48,7 @@ def _generate_for_text(node: NodeRef, storage: VFSStorage, llm) -> bool:
     if not source_rel:
         return False
 
-    source_path = storage.resolve_path(source_rel)
+    source_path = os.path.join(store.project_path, source_rel)
     if not os.path.exists(source_path):
         return False
 
@@ -60,18 +56,19 @@ def _generate_for_text(node: NodeRef, storage: VFSStorage, llm) -> bool:
     char_count = meta.get("char_count", 0)
     line_count = meta.get("line_count", 0)
 
-    prompt = _build_prompt(node.name, preview, char_count, line_count)
+    prompt = _build_prompt(path, preview, char_count, line_count)
 
     try:
         detail, brief = generate_detail_and_brief(llm, prompt, max_tokens=100)
+        updates = {}
         if detail:
-            meta["detail"] = detail
+            updates["detail"] = detail
         if brief:
-            meta["brief"] = brief
+            updates["brief"] = brief
 
-        if detail or brief:
-            storage.write_meta(node, meta)
-            logger.info(f"  AI summary: {node.rel_path}")
+        if updates:
+            store.set_meta(path, updates)
+            logger.info(f"  AI summary: {path}")
             return True
     except Exception as e:
         logger.debug(f"LLM failed: {e}")
@@ -110,21 +107,3 @@ IMPORTANT rules:
 - Output ONLY plain text, no labels, no markdown formatting.\
 """
     return prompt
-
-
-def main():
-    import argparse, sys
-    parser = argparse.ArgumentParser(description="AI text file summary")
-    parser.add_argument('target', help='Directory with .pontis')
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-    pontis_path = os.path.join(os.path.abspath(args.target), ".pontis")
-    if not os.path.exists(pontis_path):
-        print(f"Error: No .pontis found", file=sys.stderr)
-        sys.exit(1)
-    generate(VFSStorage(pontis_path))
-    print("Done.")
-
-
-if __name__ == '__main__':
-    main()

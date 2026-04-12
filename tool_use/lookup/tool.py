@@ -18,6 +18,7 @@ Output formats:
 import os
 import re
 import sqlite3
+import glob as _glob
 from typing import Optional, List, Tuple
 
 from tool_use.utils.config import TOOL_PAGINATION
@@ -104,19 +105,24 @@ def _lookup_db_columns(
         return "No .pontis directory found"
 
     # Find matching DB files
-    db_files = store.glob_physical_files(file_pattern, cwd)
+    search_base = os.path.join(store.project_path, cwd) if cwd else store.project_path
+    full_pattern = os.path.join(search_base, file_pattern)
+    matched_paths = _glob.glob(full_pattern)
+    db_files = [os.path.relpath(p, store.project_path) for p in matched_paths]
 
     field, op, target_val = _parse_predicate(predicate)
 
     for db_rel in db_files:
         # Find .col entities via store
-        entities = store.glob_entities(db_rel, "*.col")
+        entity_refs = store.find_connected(db_rel, pattern="*.col")
 
-        db_path = store.resolve_db_path(db_rel)
-        if not db_path:
+        db_meta = store.get_meta(db_rel) or {}
+        db_path = os.path.join(store.project_path, db_meta.get("path", ""))
+        if not db_meta.get("path"):
             continue
 
-        for entity_rel in entities:
+        for entity_ref in entity_refs:
+            entity_rel = entity_ref.split("::", 1)[-1] if "::" in entity_ref else entity_ref
             # Parse column entity name: table.col_name.data_type.col
             basename = os.path.basename(entity_rel)
             parts = basename.replace('.col', '').split('.')
@@ -176,7 +182,10 @@ def _lookup_json_values(
     import json
 
     results = []
-    json_files = store.glob_physical_files(file_pattern, cwd)
+    search_base = os.path.join(store.project_path, cwd) if cwd else store.project_path
+    full_pattern = os.path.join(search_base, file_pattern)
+    matched_paths = _glob.glob(full_pattern)
+    json_files = [os.path.relpath(p, store.project_path) for p in matched_paths]
 
     _, op, target_val = _parse_predicate(predicate)
 
@@ -252,7 +261,7 @@ def lookup_command(
     Value-based search for data entities.
 
     Args:
-        store: ProjectStore instance
+        store: Store instance
         file_pattern: Glob pattern for files
         type: Data type ("INT", "STR", "BOOL", "NUMBER", "NULL")
         predicate: Filter expression
@@ -318,8 +327,8 @@ if __name__ == "__main__":
         print("Usage: python -m tool_use.lookup.tool <project_path> <file_pattern> <type> <predicate> [output_mode] [cwd]")
         sys.exit(1)
 
-    from storage import ProjectStore
-    _store = ProjectStore(sys.argv[1])
+    from storage import Store
+    _store = Store(sys.argv[1])
     _pattern = sys.argv[2]
     _type = sys.argv[3]
     _predicate = sys.argv[4]

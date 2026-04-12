@@ -252,23 +252,21 @@ def _grep_entity(store, params: GrepParams, cwd: str) -> str:
     entity_pattern = parsed.entity_pattern or "*"
 
     # Find .chunk entities via store
-    entities = store.glob_entities(parsed.file_pattern, entity_pattern)
+    entity_refs = store.find_connected(parsed.file_pattern, pattern=entity_pattern)
 
     flags = re.IGNORECASE if params.case_insensitive else 0
     pattern = re.compile(params.pattern, flags)
 
     results = []
-    for entity_rel in entities:
+    for entity_ref in entity_refs:
+        entity_rel = entity_ref.split("::", 1)[-1] if "::" in entity_ref else entity_ref
         if not entity_rel.endswith('.chunk'):
             continue
         if not fnmatch.fnmatch(os.path.basename(entity_rel), entity_pattern):
             continue
 
-        raw = store.read_raw_content(parsed.file_pattern, entity_rel)
-        if raw:
-            for i, line in enumerate(raw.split('\n'), 1):
-                if pattern.search(line):
-                    results.append(f"{parsed.file_pattern}::{entity_rel}:{i}:{line}")
+        # Raw content is no longer saved; skip entity content search
+        pass
 
     if not results:
         return "No matches found"
@@ -296,7 +294,7 @@ def grep_command(
     Search content in files and entities.
 
     Args:
-        store: ProjectStore instance
+        store: Store instance
         pattern: Regex pattern (ripgrep syntax)
         path: File or directory to search
         output_mode: "content", "files_with_matches", or "count"
@@ -366,8 +364,8 @@ if __name__ == "__main__":
         print("Usage: python -m tool_use.grep.tool <project_path> <json_params> [cwd]")
         sys.exit(1)
 
-    from storage import ProjectStore
-    _store = ProjectStore(sys.argv[1])
+    from storage import Store
+    _store = Store(sys.argv[1])
     _params = json.loads(sys.argv[2])
     _cwd = sys.argv[3] if len(sys.argv) > 3 else ""
     print(grep_command(_store, **_params, current_cwd=_cwd))

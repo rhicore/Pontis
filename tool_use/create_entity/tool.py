@@ -1,5 +1,4 @@
 """create_entity — 创建逻辑实体"""
-import json
 from typing import Dict, List, Optional
 
 
@@ -9,7 +8,7 @@ def create_entity_command(store, path: str, entity_type: str, entity_name: str,
     """创建一个新的逻辑实体，可同时写入 meta 和添加关系边。
 
     Args:
-        store: ProjectStore 实例
+        store: Store 实例
         path: 文件路径，如 'event.db'
         entity_type: 实体类型后缀，如 'view', 'rel', 'pattern'
         entity_name: 实体名称，如 'user_event_join.view'
@@ -22,20 +21,14 @@ def create_entity_command(store, path: str, entity_type: str, entity_name: str,
     else:
         entity_path = f"{entity_name}.{entity_type}"
 
-    # 创建实体目录
-    entity_dir = store.create_entity_dir(path, entity_path)
-
-    # 写入 meta
-    if meta:
-        store.write_meta(path, meta, entity_path)
+    # Create entity via new Store API
+    ref = f"{path}::{entity_path}"
+    store.create_node(ref, meta=meta or {}, edges=edges)
 
     # 添加关系边
     added_edges = 0
     if edges:
-        before_count = len(_read_edges(store))
-        store.add_edges(edges)
-        after_count = len(_read_edges(store))
-        added_edges = after_count - before_count
+        added_edges = len(edges)
 
     # 构建返回信息
     result_parts = [f"已创建实体: {path}::{entity_path}"]
@@ -47,15 +40,3 @@ def create_entity_command(store, path: str, entity_type: str, entity_name: str,
             result_parts.append(f"  {e['from']} --[{e['type']}]--> {e['to']}")
 
     return "\n".join(result_parts)
-
-
-def _read_edges(store) -> list:
-    """读取现有边列表。"""
-    import os
-    import yaml
-    edges_path = os.path.join(store._pontis_root, "_edges.yml")
-    if not os.path.exists(edges_path):
-        return []
-    with open(edges_path, 'r', encoding='utf-8') as f:
-        data = yaml.safe_load(f) or {}
-    return data.get("edges", [])

@@ -11,36 +11,36 @@
 """
 import os
 import logging
-from extractor.utils import VFSStorage, NodeRef
+from storage import Store
 
 logger = logging.getLogger(__name__)
 
 
-def generate(storage: VFSStorage) -> None:
+def generate(store: Store) -> None:
     """为所有序列化文件节点展开实体"""
     logger.info("=== Generating serialized file entities ===")
 
     for pattern in ["*.json", "*.yaml", "*.xml", "*.toml", "*.hcl"]:
-        for node in storage.find_nodes(pattern):
+        for path in store.find_nodes(pattern):
             try:
-                _expand_serialized(node, storage)
+                _expand_serialized(path, store)
             except Exception as e:
-                logger.warning(f"Failed to expand {node.name}: {e}")
+                logger.warning(f"Failed to expand {path}: {e}")
 
 
-def _expand_serialized(node: NodeRef, storage: VFSStorage) -> None:
+def _expand_serialized(path: str, store: Store) -> None:
     """分析序列化文件结构，更新 _meta.yml，创建 _entity/"""
-    meta = storage.read_meta(node)
-    if not meta or "structure_type" in meta:
-        # 已处理或无 meta，跳过
-        if not meta:
-            return
+    meta = store.get_meta(path)
+    if not meta:
+        return
+
+    if "structure_type" in meta:
         # 已有 structure_type 但没有 _entity，只创建 _entity
-        _ensure_entity(node, storage)
+        _ensure_entity(path, store)
         return
 
     rel_path = meta.get("path")
-    file_path = storage.resolve_path(rel_path) if rel_path else None
+    file_path = os.path.join(store.project_path, rel_path) if rel_path else None
     if not file_path or not os.path.exists(file_path):
         return
 
@@ -52,34 +52,34 @@ def _expand_serialized(node: NodeRef, storage: VFSStorage) -> None:
             content = f.read()
 
         line_count = len(content.splitlines())
-        top_info = _analyze_structure(file_path, content, node)
+        top_info = _analyze_structure(file_path, content, path)
 
-        meta.update({
+        store.set_meta(path, {
             "file_size": file_size,
             "line_count": line_count,
             "char_count": len(content),
             **top_info,
         })
-        storage.write_meta(node, meta)
 
-        _ensure_entity(node, storage)
-        logger.info(f"  Entity: {node.rel_path} ({top_info.get('structure_type', '?')})")
+        _ensure_entity(path, store)
+        logger.info(f"  Entity: {path} ({top_info.get('structure_type', '?')})")
 
     except Exception as e:
-        logger.debug(f"Could not expand {node.name}: {e}")
+        logger.debug(f"Could not expand {path}: {e}")
 
 
-def _ensure_entity(node: NodeRef, storage: VFSStorage) -> None:
+def _ensure_entity(path: str, store: Store) -> None:
     """确保 _entity/ 目录存在"""
-    entity_rel = os.path.join(node.rel_path, "_entity")
-    entity_node = NodeRef(entity_rel, storage.pontis_root)
-    storage.ensure_dir(entity_node.full_path)
+    edir = store._entity_dir(path, "")
+    os.makedirs(edir, exist_ok=True)
 
 
-def _analyze_structure(file_path: str, content: str, node: NodeRef) -> dict:
+def _analyze_structure(file_path: str, content: str, path: str) -> dict:
     """分析文件顶层结构"""
-    # 从节点后缀推断文件类型
-    suffix = node.suffix
+    # 从路径推断文件类型
+    basename = os.path.basename(path)
+    suffix = os.path.splitext(basename)[1] if '.' in basename else ''
+
     if suffix in ('.yml',):
         file_type = 'YAML'
     else:
@@ -152,21 +152,3 @@ def _analyze_structure(file_path: str, content: str, node: NodeRef) -> dict:
         return {"structure_type": "hcl", "note": "HCL structure analysis pending"}
 
     return {"structure_type": "unknown"}
-
-
-def main():
-    import argparse, sys
-    parser = argparse.ArgumentParser(description="Generate serialized file entities")
-    parser.add_argument('target', help='Directory with .pontis')
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-    pontis_path = os.path.join(os.path.abspath(args.target), ".pontis")
-    if not os.path.exists(pontis_path):
-        print(f"Error: No .pontis found at {pontis_path}", file=sys.stderr)
-        sys.exit(1)
-    generate(VFSStorage(pontis_path))
-    print("Done.")
-
-
-if __name__ == '__main__':
-    main()

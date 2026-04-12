@@ -12,13 +12,14 @@
 import os
 import logging
 from typing import List
-from extractor.utils import VFSStorage, NodeRef, get_llm
+from storage import Store
+from extractor.utils import get_llm
 from extractor.ai_utils import generate_detail_and_brief
 
 logger = logging.getLogger(__name__)
 
 
-def generate(storage: VFSStorage) -> None:
+def generate(store: Store) -> None:
     """为所有 .table 节点生成 AI 总结"""
     logger.info("=== AI: DB table summary ===")
 
@@ -27,35 +28,37 @@ def generate(storage: VFSStorage) -> None:
         logger.warning("LLM not configured, skipping AI summary")
         return
 
-    for node in storage.find_nodes("*.db/_entity/*.table"):
+    for ref in store.find_nodes("*.db::*.table"):
         try:
-            _generate_for_table(node, storage, llm)
+            _generate_for_table(ref, store, llm)
         except Exception as e:
-            logger.warning(f"Failed for {node.name}: {e}")
+            logger.warning(f"Failed for {ref}: {e}")
 
 
-def _generate_for_table(node: NodeRef, storage: VFSStorage, llm) -> bool:
-    meta = storage.read_meta(node)
+def _generate_for_table(ref: str, store: Store, llm) -> bool:
+    path, entity_name = ref.split("::", 1)
+    meta = store.get_meta(ref)
     if not meta:
         return False
 
     if "detail" in meta and "brief" in meta:
         return False
 
-    table_name = node.name.replace(".table", "")
-    columns = _get_column_info(node, table_name, storage)
+    table_name = entity_name.replace(".table", "")
+    columns = _get_column_info(path, table_name, store)
     prompt = _build_prompt(table_name, columns)
 
     try:
         detail, brief = generate_detail_and_brief(llm, prompt, max_tokens=200)
+        updates = {}
         if detail:
-            meta["detail"] = detail
+            updates["detail"] = detail
         if brief:
-            meta["brief"] = brief
+            updates["brief"] = brief
 
-        if detail or brief:
-            storage.write_meta(node, meta)
-            logger.info(f"  AI summary: {node.rel_path}")
+        if updates:
+            store.set_meta(ref, updates)
+            logger.info(f"  AI summary: {ref}")
             return True
     except Exception as e:
         logger.debug(f"LLM failed: {e}")
@@ -63,24 +66,13 @@ def _generate_for_table(node: NodeRef, storage: VFSStorage, llm) -> bool:
     return False
 
 
-def _get_column_info(table_node: NodeRef, table_name: str, storage: VFSStorage) -> List[dict]:
+def _get_column_info(db_path: str, table_name: str, store: Store) -> List[dict]:
     columns = []
-    path_parts = table_node.rel_path.split(os.sep)
-    db_idx = -1
-    for i, part in enumerate(path_parts):
-        if part.endswith('.db'):
-            db_idx = i
-            break
-    if db_idx == -1:
-        return columns
-
-    db_rel_path = os.sep.join(path_parts[:db_idx+1])
-    col_pattern = os.path.join(db_rel_path, "_entity", f"{table_name}.*.*.col")
-    for col_node in storage.find_nodes(col_pattern):
-        col_meta = storage.read_meta(col_node)
+    for col_ref in store.find_nodes(f"{db_path}::{table_name}.*.*.col"):
+        col_meta = store.get_meta(col_ref)
         if col_meta:
-            col_node_name = col_node.name.replace(".col", "")
-            col_parts = col_node_name.split(".")
+            _, col_name = col_ref.split("::", 1)
+            col_parts = col_name.replace(".col", "").split(".")
             if len(col_parts) >= 3:
                 columns.append({
                     "name": col_parts[1],
@@ -110,21 +102,3 @@ IMPORTANT rules:
 - Output ONLY plain text, no labels, no markdown formatting.\
 """
     return prompt
-
-
-def main():
-    import argparse, sys
-    parser = argparse.ArgumentParser(description="AI DB table summary")
-    parser.add_argument('target', help='Directory with .pontis')
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-    pontis_path = os.path.join(os.path.abspath(args.target), ".pontis")
-    if not os.path.exists(pontis_path):
-        print(f"Error: No .pontis found", file=sys.stderr)
-        sys.exit(1)
-    generate(VFSStorage(pontis_path))
-    print("Done.")
-
-
-if __name__ == '__main__':
-    main()

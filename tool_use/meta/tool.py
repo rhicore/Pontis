@@ -29,7 +29,7 @@ def meta_command(
     View metadata for a physical file/directory or logical entity.
 
     Args:
-        store: ProjectStore instance
+        store: Store instance
         path: path::entity string
         all: Whether to show all metadata
         property: Specific property to view
@@ -51,7 +51,8 @@ def meta_command(
 
     # Get metadata (enriched with virtual props)
     if parsed.has_entity:
-        meta = store.get_meta(resolved_file, parsed.entity_pattern)
+        ref = f"{resolved_file}::{parsed.entity_pattern}"
+        meta = store.get_meta(ref)
     else:
         meta = store.get_meta(resolved_file)
 
@@ -59,8 +60,8 @@ def meta_command(
 
     if meta is None:
         # Fallback: list directory contents
-        if store.is_directory(resolved_file):
-            entries = store.list_dir(resolved_file)
+        if os.path.isdir(os.path.join(store.project_path, resolved_file)):
+            entries = [e for e in os.listdir(os.path.join(store.project_path, resolved_file)) if not e.startswith('.')]
             if entries:
                 return f"No metadata found for '{target}'. Directory contains: {entries[:10]}"
         return f"No metadata found for '{target}'"
@@ -107,8 +108,8 @@ if __name__ == "__main__":
         print("Usage: python -m tool_use.meta.tool <project_path> <path> [--all] [+property]")
         sys.exit(1)
 
-    from storage import ProjectStore
-    _store = ProjectStore(sys.argv[1])
+    from storage import Store
+    _store = Store(sys.argv[1])
     _path = sys.argv[2]
     _all = '--all' in sys.argv or '-a' in sys.argv
     _prop = None

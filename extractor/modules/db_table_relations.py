@@ -3,7 +3,7 @@
 职责：
 - 匹配 *.db/_entity/*.table 节点
 - 分析该表的外键和命名约定关系
-- 在.db目录下创建 [表名].[列名]__to__[目标表名].[目标列名].fk 文件
+- 在 _entity/ 下创建 [表名].[列名]__to__[目标表名].[目标列名].fk 实体
 
 独立执行：
     python -m extractor.db_table_relations ./my_data
@@ -11,55 +11,34 @@
 import os
 import logging
 from typing import List, Dict
-from extractor.utils import VFSStorage, NodeRef
+from storage import Store
 
 logger = logging.getLogger(__name__)
 
 
-def generate(storage: VFSStorage) -> None:
+def generate(store: Store) -> None:
     """为所有表节点分析关系"""
     logger.info("=== Generating table relations ===")
 
-    for node in storage.find_nodes("*.db/_entity/*.table"):
+    for ref in store.find_nodes("*.db::*.table"):
         try:
-            _generate_for_table(node, storage)
+            _generate_for_table(ref, store)
         except Exception as e:
-            logger.warning(f"Failed to generate relations for {node.name}: {e}")
+            logger.warning(f"Failed to generate relations for {ref}: {e}")
 
 
-def _generate_for_table(node: NodeRef, storage: VFSStorage) -> bool:
-    """为单个表分析关系，在.db目录下创建.fk文件"""
-    meta = storage.read_meta(node)
+def _generate_for_table(ref: str, store: Store) -> bool:
+    """为单个表分析关系，在_entity/下创建.fk实体"""
+    path, entity_name = ref.split("::", 1)
+    meta = store.get_meta(ref)
     if not meta:
         return False
 
-    # 解析路径
-    path_parts = node.rel_path.split(os.sep)
-    if len(path_parts) < 2:
-        return False
-
-    # 找到.db节点位置
-    db_idx = -1
-    for i, part in enumerate(path_parts):
-        if part.endswith('.db'):
-            db_idx = i
-            break
-
-    if db_idx == -1:
-        return False
-
-    db_rel_path = os.sep.join(path_parts[:db_idx+1])
-    db_node = NodeRef(db_rel_path, node.pontis_root)
-    db_meta = storage.read_meta(db_node)
-    if not db_meta:
-        return False
-
-    table_name = node.name.replace(".table", "")
+    table_name = entity_name.replace(".table", "")
 
     # 获取DB路径
-    rel_path = db_meta.get("path")
-    db_path = storage.resolve_path(rel_path) if rel_path else None
-    if not db_path or not os.path.exists(db_path):
+    db_path = os.path.join(store.project_path, store.get_meta(path).get("path", ""))
+    if not db_path:
         return False
 
     # 获取该表的列信息
@@ -76,14 +55,14 @@ def _generate_for_table(node: NodeRef, storage: VFSStorage) -> bool:
     # 合并所有关系
     all_relations = fk_relations + naming_relations
 
-    # 在.db目录下为每个关系创建.fk文件
+    # 为每个关系创建.fk实体
     created_count = 0
     for rel in all_relations:
-        if _create_relation_file(db_node, table_name, rel, storage):
+        if _create_relation_entity(path, table_name, rel, store):
             created_count += 1
 
     if created_count > 0:
-        logger.info(f"  Relations: {node.rel_path} ({created_count} relations)")
+        logger.info(f"  Relations: {path}::{entity_name} ({created_count} relations)")
     return True
 
 
@@ -116,7 +95,6 @@ def _find_foreign_keys(db_path: str, table_name: str) -> List[Dict]:
         fks = cursor.fetchall()
 
         for fk in fks:
-            # fk: (id, seq, table, from, to, on_update, on_delete, match)
             relations.append({
                 "type": "foreign_key",
                 "from_column": fk[3],
@@ -135,7 +113,6 @@ def _find_naming_relations(db_path: str, table_name: str, columns: List[Dict]) -
     """通过命名约定查找关系 (e.g., user_id -> users.id)"""
     relations = []
 
-    # 获取数据库中所有表
     try:
         import sqlite3
         conn = sqlite3.connect(db_path)
@@ -188,24 +165,23 @@ def _find_naming_relations(db_path: str, table_name: str, columns: List[Dict]) -
     return relations
 
 
-def _create_relation_file(db_node: NodeRef, from_table: str, relation: Dict, storage: VFSStorage) -> bool:
-    """在.db目录下为关系创建.fk文件"""
+def _create_relation_entity(path: str, from_table: str, relation: Dict,
+                            store: Store) -> bool:
+    """在_entity/下为关系创建.fk实体"""
     try:
         from_col = relation["from_column"]
         to_table = relation["to_table"]
         to_col = relation["to_column"]
 
-        # 构建关系文件名: [表名].[列名]__to__[目标表名].[目标列名].fk
+        # 构建关系实体名: [表名].[列名]__to__[目标表名].[目标列名].fk
         safe_from_col = from_col.replace("/", "_").replace("\\", "_")
         safe_to_table = to_table.replace("/", "_").replace("\\", "_")
         safe_to_col = to_col.replace("/", "_").replace("\\", "_")
 
-        fk_filename = f"{from_table}.{safe_from_col}__to__{safe_to_table}.{safe_to_col}.fk"
-        fk_rel_path = os.path.join(db_node.rel_path, fk_filename)
-        fk_node = NodeRef(fk_rel_path, db_node.pontis_root)
+        fk_entity_name = f"{from_table}.{safe_from_col}__to__{safe_to_table}.{safe_to_col}.fk"
 
         # 检查是否已存在
-        if storage.exists(fk_node):
+        if store.node_exists(f"{path}::{fk_entity_name}"):
             return False
 
         # 创建关系meta
@@ -219,46 +195,17 @@ def _create_relation_file(db_node: NodeRef, from_table: str, relation: Dict, sto
             "created_at": __import__('datetime').datetime.now().isoformat(),
         }
 
-        storage.ensure_dir(fk_node.full_path)
-        storage.write_meta(fk_node, fk_meta)
+        store.create_node(f"{path}::{fk_entity_name}", meta=fk_meta)
 
         # 添加边: table → fk
-        fk_entity_name = fk_filename.replace(".fk", ".fk")
-        storage.add_edge(
-            from_ref=f"{db_node.name}::{from_table}.table",
-            edge_type="foreign_keys",
-            to_ref=f"{db_node.name}::{fk_entity_name}",
-        )
+        store.add_edges([{
+            "from": f"{path}::{from_table}.table",
+            "type": "foreign_keys",
+            "to": f"{path}::{fk_entity_name}",
+        }])
 
         return True
 
     except Exception as e:
         logger.debug(f"Could not create relation: {e}")
         return False
-
-
-def main():
-    """CLI入口"""
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(description="Generate DB table relations")
-    parser.add_argument('target', help='Directory with .pontis')
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-
-    target_path = os.path.abspath(args.target)
-    pontis_path = os.path.join(target_path, ".pontis")
-
-    if not os.path.exists(pontis_path):
-        print(f"Error: No .pontis found at {pontis_path}", file=sys.stderr)
-        sys.exit(1)
-
-    storage = VFSStorage(pontis_path)
-    generate(storage)
-    print("Done.")
-
-
-if __name__ == '__main__':
-    main()

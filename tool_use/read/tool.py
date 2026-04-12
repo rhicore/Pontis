@@ -222,19 +222,21 @@ def _read_entity(store, file_rel_path: str, entity_path: str,
                  offset: int, limit: Optional[int], sample: Optional[int]) -> str:
     """Read a logical entity."""
     if entity_path.endswith('.chunk'):
-        content = store.read_raw_content(file_rel_path, entity_path)
-        return content if content is not None else f"Chunk content not found: {entity_path}"
+        # Raw content is no longer saved; return None indication
+        return f"Chunk content not found: {entity_path}"
 
     if entity_path.endswith('.table') or entity_path.endswith('.view'):
-        db_path = store.resolve_db_path(file_rel_path)
-        if not db_path:
+        db_meta = store.get_meta(file_rel_path) or {}
+        db_path = os.path.join(store.project_path, db_meta.get("path", ""))
+        if not db_meta.get("path"):
             return f"Error: Database not found for {file_rel_path}"
         table_name = entity_path.replace('.table', '').replace('.view', '').split('/')[-1]
         return _read_db_table(db_path, table_name, offset, limit, sample)
 
     if entity_path.endswith('.col'):
-        db_path = store.resolve_db_path(file_rel_path)
-        if not db_path:
+        db_meta = store.get_meta(file_rel_path) or {}
+        db_path = os.path.join(store.project_path, db_meta.get("path", ""))
+        if not db_meta.get("path"):
             return f"Error: Database not found for {file_rel_path}"
         parts = entity_path.replace('.col', '').split('.')
         if len(parts) < 2:
@@ -244,7 +246,8 @@ def _read_entity(store, file_rel_path: str, entity_path: str,
         return _read_db_column(db_path, table_name, column_name, offset, limit)
 
     # Try JSON/YAML entity: display metadata
-    meta = store.get_meta(file_rel_path, entity_path)
+    ref = f"{file_rel_path}::{entity_path}"
+    meta = store.get_meta(ref)
     if meta:
         lines = [f"{k}: {v}" for k, v in sorted(meta.items())]
         return "\n".join(lines)
@@ -265,7 +268,7 @@ def read_command(
     Read content from files and entities.
 
     Args:
-        store: ProjectStore instance
+        store: Store instance
         file_path: File path, optionally with ::entity suffix
         offset: Starting line/row (1-indexed for text)
         limit: Max lines/rows to read
@@ -312,8 +315,8 @@ if __name__ == "__main__":
         print("Usage: python -m tool_use.read.tool <project_path> <file_path> [options]")
         sys.exit(1)
 
-    from storage import ProjectStore
-    _store = ProjectStore(sys.argv[1])
+    from storage import Store
+    _store = Store(sys.argv[1])
     _file = sys.argv[2]
     _offset = 1
     _limit = None

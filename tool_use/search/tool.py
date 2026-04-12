@@ -26,8 +26,8 @@ def _keyword_search(store, query: str, path_pattern: str = "") -> List[tuple]:
     query_lower = query.lower()
     query_words = set(query_lower.split())
 
-    for rel_dir, meta in store.walk_all_metas():
-        name = meta.get('name', os.path.basename(rel_dir))
+    for ref, meta in store.walk_metas():
+        name = meta.get('name', os.path.basename(ref))
         summary = meta.get('short_summary', '') or ''
         long_summary = meta.get('long_summary', '') or ''
         node_type = meta.get('type', '')
@@ -44,7 +44,7 @@ def _keyword_search(store, query: str, path_pattern: str = "") -> List[tuple]:
             info = format_info_from_meta(meta, config)
             brief = meta.get("brief", "")
 
-            display = rel_dir
+            display = ref
             combined_info = f"{info}, {brief}" if brief and info != "-" else (brief or info)
             results.append((score, display, combined_info))
     return results
@@ -64,7 +64,7 @@ def search_command(
     Semantic search across files and entities.
 
     Args:
-        store: ProjectStore instance
+        store: Store instance
         path_pattern: Glob pattern for narrowing search scope
         query: Natural language search query
         offset: Starting index (0-based)
@@ -115,8 +115,8 @@ if __name__ == "__main__":
         print("Usage: python -m tool_use.search.tool <project_path> <path_pattern> <query>")
         sys.exit(1)
 
-    from storage import ProjectStore
-    _store = ProjectStore(sys.argv[1])
+    from storage import Store
+    _store = Store(sys.argv[1])
     _pattern = sys.argv[2]
     _query = sys.argv[3]
     print(search_command(_store, _pattern, _query))
