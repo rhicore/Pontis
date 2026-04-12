@@ -34,8 +34,8 @@ class Config:
 
 
 def load_config(path: Optional[str] = None) -> Config:
-    """Load extractor config, bridging from common.config.PontisConfig."""
-    from common.config import load_config as _load_pontis_config
+    """Load extractor config, bridging from config.PontisConfig."""
+    from config import load_config as _load_pontis_config
     pontis_cfg = _load_pontis_config(path)
 
     return Config(

@@ -1,13 +1,13 @@
-"""Unified LLM configuration for Pontis.
+"""Pontis 全局配置
 
-Two model profiles:
-- extractor: cheap model for metadata extraction / summarization
-- agent: capable model for interactive analysis
+两个 LLM profile:
+- extractor: 廉价模型，用于元数据提取和总结
+- agent: 强推理模型，用于交互分析
 
-Config sources (priority order):
-1. Project-level pontis.yml
-2. ~/.pontis/config.yml
-3. Environment variables
+配置加载优先级:
+1. ~/.pontis/config.yml（全局用户配置）
+2. <project>/pontis.yml（项目级覆盖）
+3. 环境变量（OPENAI_API_KEY, OPENAI_BASE_URL）
 """
 import os
 from dataclasses import dataclass
@@ -18,7 +18,7 @@ import yaml
 
 @dataclass
 class LLMConfig:
-    """LLM connection config — returned by PontisConfig.extractor_llm() / agent_llm()."""
+    """LLM 连接配置"""
     provider: str = ""
     model: str = ""
     api_key: str = ""
@@ -26,29 +26,29 @@ class LLMConfig:
     temperature: float = 0.3
 
     def create_client(self):
-        """Create an OpenAI-compatible client."""
+        """创建 OpenAI 兼容客户端。"""
         from openai import OpenAI
         return OpenAI(api_key=self.api_key, base_url=self.provider)
 
 
 @dataclass
 class PontisConfig:
-    """Top-level Pontis config with two LLM profiles."""
-    # Extractor profile (cheap model)
+    """Pontis 全局配置"""
+    # Extractor profile（廉价模型）
     extractor_provider: str = "https://api.deepseek.com"
     extractor_model: str = "deepseek-chat"
     extractor_api_key: str = "sk-9cf27bbb303c44709d26b60c691e5edb"
     extractor_max_tokens: int = 2000
     extractor_temperature: float = 0.2
 
-    # Agent profile (capable model)
+    # Agent profile（强推理模型）
     agent_provider: str = "https://api.deepseek.com"
     agent_model: str = "deepseek-reasoner"
     agent_api_key: str = "sk-9cf27bbb303c44709d26b60c691e5edb"
     agent_max_tokens: int = 4096
     agent_temperature: float = 0.3
 
-    # Shared
+    # 共享配置
     pontis_dir_name: str = ".pontis"
     meta_filename: str = "_meta.yml"
     sample_size: int = 5
@@ -75,17 +75,17 @@ class PontisConfig:
 
 
 def load_config(project_path: str = None) -> PontisConfig:
-    """Load config from file or environment variables."""
+    """加载配置。"""
     config = PontisConfig()
 
-    # 1. Try ~/.pontis/config.yml
+    # 1. ~/.pontis/config.yml
     home_config = os.path.expanduser("~/.pontis/config.yml")
     if os.path.exists(home_config):
         with open(home_config, 'r') as f:
             data = yaml.safe_load(f) or {}
         config = _apply_dict(config, data)
 
-    # 2. Try project-level pontis.yml
+    # 2. 项目级 pontis.yml
     if project_path:
         for filename in ["pontis.yml", "pontis.yaml"]:
             path = os.path.join(project_path, filename)
@@ -95,7 +95,7 @@ def load_config(project_path: str = None) -> PontisConfig:
                 config = _apply_dict(config, data)
                 break
 
-    # 3. Environment variable overrides
+    # 3. 环境变量覆盖
     shared_key = os.environ.get("OPENAI_API_KEY", "")
     base_url = os.environ.get("OPENAI_BASE_URL", "")
 
@@ -113,7 +113,7 @@ def load_config(project_path: str = None) -> PontisConfig:
 
 
 def _apply_dict(config: PontisConfig, data: dict) -> PontisConfig:
-    """Apply dict values to config dataclass."""
+    """将 dict 值应用到 config dataclass。"""
     for k, v in data.items():
         if hasattr(config, k):
             setattr(config, k, v)
