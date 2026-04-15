@@ -13,16 +13,19 @@ from storage import Store
 
 logger = logging.getLogger(__name__)
 
+DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
+
 
 def generate(store: Store) -> None:
     """为所有表节点生成信息"""
     logger.info("=== Generating table info ===")
 
-    for ref in store.find_nodes("*.db::*.table"):
-        try:
-            _generate_for_table(ref, store)
-        except Exception as e:
-            logger.warning(f"Failed to generate info for {ref}: {e}")
+    for ext in DB_EXTENSIONS:
+        for ref in store.find_nodes(f"{ext}::*.table"):
+            try:
+                _generate_for_table(ref, store)
+            except Exception as e:
+                logger.warning(f"Failed to generate info for {ref}: {e}")
 
 
 def _generate_for_table(ref: str, store: Store) -> bool:

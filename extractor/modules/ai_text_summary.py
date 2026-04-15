@@ -12,8 +12,8 @@
 import os
 import logging
 from storage import Store
-from extractor.utils import get_llm
-from extractor.ai_utils import generate_detail_and_brief
+from extractor.modules._utils import get_llm
+from extractor.modules._ai_utils import generate_detail_and_brief
 
 logger = logging.getLogger(__name__)
 

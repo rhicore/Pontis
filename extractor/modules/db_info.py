@@ -18,11 +18,12 @@ def generate(store: Store) -> None:
     """为所有DB节点生成信息"""
     logger.info("=== Generating DB info ===")
 
-    for path in store.find_nodes("*.db"):
-        try:
-            _generate_for_db(path, store)
-        except Exception as e:
-            logger.warning(f"Failed to generate info for {path}: {e}")
+    for pattern in ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]:
+        for path in store.find_nodes(pattern):
+            try:
+                _generate_for_db(path, store)
+            except Exception as e:
+                logger.warning(f"Failed to generate info for {path}: {e}")
 
 
 def _generate_for_db(path: str, store: Store) -> bool:

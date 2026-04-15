@@ -14,16 +14,19 @@ from storage import Store
 
 logger = logging.getLogger(__name__)
 
+DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
+
 
 def generate(store: Store, k: int = 5) -> None:
     """为所有DB列生成TopK值"""
     logger.info("=== Generating DB column TopK values ===")
 
-    for ref in store.find_nodes("*.db::*.*.*.col"):
-        try:
-            _generate_for_column(ref, store, k)
-        except Exception as e:
-            logger.warning(f"Failed to generate topk for {ref}: {e}")
+    for ext in DB_EXTENSIONS:
+        for ref in store.find_nodes(f"{ext}::*.*.*.col"):
+            try:
+                _generate_for_column(ref, store, k)
+            except Exception as e:
+                logger.warning(f"Failed to generate topk for {ref}: {e}")
 
 
 def _generate_for_column(ref: str, store: Store,

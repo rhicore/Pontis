@@ -22,8 +22,8 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from storage import Store
-from extractor.utils import load_config
-from extractor.registry import _get_registry, _SKELETON_MODULE, _CONFIG_MODULES
+from extractor.modules._utils import load_config
+from extractor.registry import _get_registry, _CONFIG_MODULES
 
 
 def _run_full(args):
@@ -58,9 +58,7 @@ def _run_module(args):
     logging.info(f"=== Running module: {name} ===")
 
     try:
-        if name == _SKELETON_MODULE:
-            func(str(target_path), store, config)
-        elif name in _CONFIG_MODULES:
+        if name in _CONFIG_MODULES:
             func(store, config=config)
         else:
             func(store)

@@ -5,6 +5,6 @@ Usage:
     extract("./my_data")
 """
 from extractor.registry import extract
-from extractor.utils import Config
+from extractor.modules._utils import Config
 
 __all__ = ['extract', 'Config']

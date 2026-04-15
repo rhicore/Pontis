@@ -17,15 +17,12 @@ from pathlib import Path
 from typing import Dict, List
 
 from storage import Store
-from extractor.utils import load_config
+from extractor.modules._utils import load_config
 
 logger = logging.getLogger(__name__)
 
 # 需要传 config 参数的模块
 _CONFIG_MODULES = {"db_column_overlap", "db_column_rel"}
-
-# skeleton 签名特殊: (target_path, storage, config)
-_SKELETON_MODULE = "skeleton"
 
 _REGISTRY = None
 
@@ -36,7 +33,6 @@ def _get_registry() -> Dict[str, object]:
     if _REGISTRY is not None:
         return _REGISTRY
 
-    from extractor.modules.skeleton import generate_skeleton
     from extractor.modules.db_basic import generate as db_basic
     from extractor.modules.csv_basic import generate as csv_basic
     from extractor.modules.serialized_basic import generate as serialized_basic
@@ -62,9 +58,7 @@ def _get_registry() -> Dict[str, object]:
     from extractor.modules.ai_text_summary import generate as ai_text_summary
 
     _REGISTRY = {
-        # Phase 1
-        "skeleton": generate_skeleton,
-        # Phase 1.5 — 实体展开
+        # Phase 1 — 实体展开（同时创建文件节点）
         "db_basic": db_basic,
         "csv_basic": csv_basic,
         "serialized_basic": serialized_basic,
@@ -111,10 +105,7 @@ def _get_registry() -> Dict[str, object]:
 # ╚══════════════════════════════════════════════════════════════════╝
 
 PIPELINE: List[str] = [
-    # ── Phase 1: 骨架 ──
-    "skeleton",
-
-    # ── Phase 1.5: 实体展开 ──
+    # ── Phase 1: 实体展开（同时创建文件节点） ──
     "db_basic",
     "csv_basic",
     "serialized_basic",
@@ -154,8 +145,7 @@ PIPELINE: List[str] = [
 ]
 
 
-def run_pipeline(pipeline: List[str], store: Store,
-                 target_path: str = None, config=None) -> None:
+def run_pipeline(pipeline: List[str], store: Store, config=None) -> None:
     """按 PIPELINE 列表顺序执行模块。"""
     registry = _get_registry()
 
@@ -168,9 +158,7 @@ def run_pipeline(pipeline: List[str], store: Store,
         logger.info(f"  [{name}]")
 
         try:
-            if name == _SKELETON_MODULE:
-                func(target_path, store, config)
-            elif name in _CONFIG_MODULES:
+            if name in _CONFIG_MODULES:
                 func(store, config=config)
             else:
                 func(store)
@@ -198,6 +186,6 @@ def extract(target: str, config_path: str = None, verbose: bool = False) -> None
     logger.info(f"=== Pontis Extractor: {target_path} ===")
     logger.info(f"Pipeline: {len(PIPELINE)} modules\n")
 
-    run_pipeline(PIPELINE, store, str(target_path), config)
+    run_pipeline(PIPELINE, store, config)
 
     logger.info("\n=== Extraction complete ===")

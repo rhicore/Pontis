@@ -253,14 +253,68 @@ class Store:
 
     # ==================== Meta Read ====================
 
-    def get_meta(self, ref: str) -> Optional[dict]:
+    def get_meta(self, ref: str, include_props: Optional[List[str]] = None,
+                 *, _visiting: Optional[set] = None) -> Optional[dict]:
         """读取 meta + 虚属性。
 
         有节点 → 存储属性 + 虚属性（虚属性不覆盖已存储字段）
         无节点但文件/目录在磁盘存在 → 纯虚属性
         都不存在或实体无节点 → None
+
+        Args:
+            ref: 节点引用
+            include_props: 显式指定需要的虚属性列表。
+                None = 全部注册的虚属性（默认）
+                [] = 仅存储的基础 meta，不计算虚属性
+                ["file_size", ...] = 只计算指定的虚属性
+            _visiting: (内部) 运行时环路检测的访问状态集，外部调用无需传递。
         """
-        from storage.virtual_props import enrich_meta
+        # ── 运行时环路检测 ──────────────────────────────────────
+        # 防御虚属性函数内部反向调用 get_meta 导致的无限递归。
+        # 当检测到环路时，强制降级：仅返回图谱中已存储的基础 meta，跳过虚属性计算。
+        # 这是最低成本的递归防护，不需要改变虚属性函数的签名或调用方式。
+        if _visiting is not None and ref in _visiting:
+            logger.debug(f"Cycle detected in get_meta({ref}), returning base meta only")
+            return self._get_stored_meta(ref)
+
+        # 初始化访问状态集
+        _visiting = _visiting or set()
+        _visiting.add(ref)
+
+        try:
+            return self._get_meta_internal(ref, include_props, _visiting)
+        finally:
+            # 无论成功或异常，退出前解除标记
+            _visiting.discard(ref)
+
+    def _get_stored_meta(self, ref: str) -> Optional[dict]:
+        """仅读取图谱中已存储的 meta（不计算虚属性，不触发递归）。
+
+        用于环路检测降级和内部需要"纯 meta"的场景。
+        """
+        path, entity_name = self.resolve_ref(ref)
+        ent_id = self._find_id(path, entity_name)
+
+        if ent_id is None:
+            return None
+
+        if ent_id in self._meta_cache:
+            cached = self._meta_cache[ent_id]
+            if cached is None:
+                return None
+            return {k: v for k, v in cached.items() if k not in _INTERNAL_FIELDS}
+
+        raw = self._read_yaml(self._node_meta_path(ent_id))
+        if raw is None:
+            self._meta_cache[ent_id] = None
+            return None
+        self._meta_cache[ent_id] = dict(raw)
+        return {k: v for k, v in raw.items() if k not in _INTERNAL_FIELDS}
+
+    def _get_meta_internal(self, ref: str, include_props: Optional[List[str]],
+                           _visiting: set) -> Optional[dict]:
+        """get_meta 的内部实现，已通过环路检测保护。"""
+        from enricher import enrich_meta
 
         path, entity_name = self.resolve_ref(ref)
         ent_id = self._find_id(path, entity_name)
@@ -280,9 +334,15 @@ class Store:
                 result = dict(raw)
                 self._meta_cache[ent_id] = dict(raw)
 
-            # 剥离内部字段，补充虚属性
+            # 剥离内部字段
             result = {k: v for k, v in result.items() if k not in _INTERNAL_FIELDS}
-            result = enrich_meta(result, self._project_path, path, entity_name)
+
+            # 虚属性补充（受 include_props 控制）
+            if include_props is None or len(include_props) > 0:
+                result = enrich_meta(result, self._project_path, path, entity_name,
+                                     include_props=include_props,
+                                     store=self, _visiting=_visiting)
+
             return result
 
         # 无节点：实体必须存在于图谱
@@ -290,8 +350,13 @@ class Store:
             return None
 
         # 无节点的文件/目录：计算纯虚属性
-        result = enrich_meta({}, self._project_path, path, "")
-        return result if result else None
+        if include_props is None or len(include_props) > 0:
+            result = enrich_meta({}, self._project_path, path, "",
+                                 include_props=include_props,
+                                 store=self, _visiting=_visiting)
+            return result if result else None
+
+        return None
 
     def meta_exists(self, ref: str) -> bool:
         """检查 meta 是否存在。"""
@@ -404,7 +469,9 @@ class Store:
             self.add_edges(all_edges)
         else:
             # 文件/目录节点：自动记录 _inode
-            physical = os.path.join(self._project_path, path)
+            # 优先用 meta["path"]（实际文件路径），fallback 到 ref 路径
+            actual = meta.get("path", path) if isinstance(meta, dict) else path
+            physical = os.path.join(self._project_path, actual)
             if os.path.exists(physical):
                 try:
                     meta["_inode"] = os.stat(physical).st_ino
@@ -461,25 +528,75 @@ class Store:
         return self._traverse(ref, edge_type=edge_type, pattern=pattern)
 
     def _match_all_nodes(self, pattern: str) -> List[str]:
-        """匹配所有节点（文件 + 实体），基于内存索引。
+        """匹配所有节点，合并图谱搜索（Layer 1）和文件系统搜索（Layer 2）。
 
-        含 / 的 pattern 只匹配文件节点（实体名不含 /）。
-        否则同时匹配文件路径和实体名。
+        Layer 1 — 图谱搜索（fnmatch，递归匹配所有节点名）：
+          搜索 .pontis/nodes/ 中的所有显式节点（文件节点 + 实体节点）。
+          fnmatch 的 * 匹配任意字符（含 /），因此 *.db 能匹配 db/event.db。
+          实体名不含 /，含 / 的 pattern 自动跳过实体节点。
+          此层覆盖：已索引的文件 + 所有逻辑实体（.table, .col 等）。
+
+        Layer 2 — 文件系统搜索（glob 语义）：
+          使用 glob.glob 扫描物理文件系统，发现未被索引的文件（虚节点）。
+          遵循标准 glob 语义：*.db = 仅根目录，**/*.db = 递归。
+          此层覆盖：未处理过的文件（无 ent_id，get_meta() 返回纯虚属性）。
+
+        合并策略：Layer 1 结果优先，Layer 2 补充去重。
+        如需禁用某层，注释对应代码块即可。
         """
         self._ensure_index()
         has_slash = "/" in pattern
         results = []
-        for ent_id, ref in self._id_index.items():
+        seen = set()
+
+        # ── Layer 1: 图谱搜索（fnmatch，递历） ──────────────────────
+        # 匹配所有显式节点：已索引的文件节点 + 逻辑实体节点
+        # fnmatch 的 * 匹配任意字符含 /，因此 *.db 匹配任意深度的 .db 节点
+        # 实体名不含 /，含 / 的 pattern 自动跳过实体
+        for _ent_id, ref in self._id_index.items():
             is_entity = "::" in ref
 
-            # 含 / 的 pattern 只可能是文件路径
             if has_slash and is_entity:
                 continue
 
             name = ref.split("::", 1)[1] if is_entity else ref
             if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(ref, pattern):
+                seen.add(ref)
                 results.append(ref)
+
+        # ── Layer 2: 文件系统搜索（glob 语义） ──────────────────────
+        # 发现未被 extractor 处理过的文件（虚节点）
+        # glob 语义：*.db = 根目录，**/*.db = 递归，db/*.db = 指定目录
+        # 实体后缀（.table, .col 等）在磁盘上不存在，此层自动返回空
+        for rel_path in self._scan_project_files(pattern):
+            if rel_path not in seen:
+                seen.add(rel_path)
+                results.append(rel_path)
+
         return results
+
+    def _scan_project_files(self, pattern: str) -> List[str]:
+        """Layer 2: 按标准 glob 语义扫描项目目录。
+
+        *.db       → 仅根目录下的 .db 文件
+        **/*.db    → 递归所有目录下的 .db 文件
+        db/*.db    → db/ 目录下的 .db 文件
+        *.table    → 根目录下无 .table 文件（实体不存在于磁盘）
+
+        自动排除 .pontis/ 路径。
+        """
+        import glob as _glob
+        full = os.path.join(self._project_path, pattern)
+        matches = _glob.glob(full, recursive=True)
+        results = []
+        for m in matches:
+            if not os.path.isfile(m):
+                continue
+            rel = os.path.relpath(m, self._project_path)
+            if '.pontis' in rel.split(os.sep):
+                continue
+            results.append(rel)
+        return sorted(results)
 
     def _traverse(self, ref: str, edge_type: str = None,
                   pattern: str = "*") -> List[str]:

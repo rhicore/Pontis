@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 # 流式扫描的 batch size
 _FETCH_SIZE = 10000
 
+DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
+
 
 def generate(store: Store, config=None) -> None:
     """为所有 .col 节点生成 sketch 统计。"""
@@ -35,11 +37,12 @@ def generate(store: Store, config=None) -> None:
     sample_size = config.sample_size if config else 20
     top_k = config.top_k if config else 5
 
-    for ref in store.find_nodes("*.db::*.*.*.col"):
-        try:
-            _generate_for_column(ref, store, sample_size, top_k)
-        except Exception as e:
-            logger.warning(f"Failed to generate sketch stats for {ref}: {e}")
+    for ext in DB_EXTENSIONS:
+        for ref in store.find_nodes(f"{ext}::*.*.*.col"):
+            try:
+                _generate_for_column(ref, store, sample_size, top_k)
+            except Exception as e:
+                logger.warning(f"Failed to generate sketch stats for {ref}: {e}")
 
 
 def _generate_for_column(ref: str, store: Store,

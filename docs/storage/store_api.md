@@ -1,12 +1,40 @@
 # Store 层 API 文档
 
-`storage.Store` 是 Pontis 的统一知识图谱存储层。所有节点（文件、目录、表、列等）地位平等，使用同一套 API。
+`storage.Store` 是 Pontis 的统一知识图谱存储层，同时是 extractor 和 agent 与项目文件系统的唯一接口。
 
 ## 核心设计
 
-### Store 是图谱，不是文件系统
+### Store 的边界
 
-Store 只管理图谱中的节点和边。磁盘上的文件通过 **inode** 桥接到图谱节点：
+Store 负责所有**文件系统元数据**操作，但不读文件内容：
+
+```
+Store 可以                 Store 不可以
+───────────────           ───────────────
+os.stat() (inode)         open() 读文件内容
+os.walk() 遍历文件         sqlite3.connect() 读数据库
+glob 扫描文件系统           json.load() 解析文件
+计算虚属性                  解析任何文件格式
+```
+
+这使得 extractor 模块不需要直接访问文件系统——通过 Store API 发现文件，拿到路径后自己读内容。
+
+### 节点分类
+
+```
+节点 = 显式节点 ∪ 虚节点
+
+显式节点：extractor 处理过的，有 ent_id，存储在 .pontis/nodes/ 下
+  ├── 文件节点（如 db/event.db）：含 _inode，通过 inode 桥接物理文件
+  └── 实体节点（如 db/event.db::event.table）：含 _entity_name，通过边连接文件节点
+
+虚节点：磁盘上存在但未被 extractor 处理过的文件
+  └── 无 ent_id，get_meta() 返回纯虚属性，find_nodes() 可检索到
+```
+
+### Inode 桥接
+
+文件/目录节点通过 Linux inode 标识，连接物理文件系统与知识图谱：
 
 ```
 物理文件系统                    知识图谱
@@ -18,9 +46,9 @@ Store 只管理图谱中的节点和边。磁盘上的文件通过 **inode** 桥
 └──────────────┘              └──────────────────────┘
 ```
 
-- **`_inode`**：文件/目录节点与物理文件的唯一桥梁，`create_node` 时自动记录
+- **`_inode`**：文件/目录节点与物理文件的唯一桥梁，`create_node` 时优先用 `meta["path"]` stat
 - **`path`**：虚属性，方便阅读但不用于身份识别
-- **未索引的文件**：inode 在磁盘存在但不在图谱中，`get_meta` 可检测到
+- **虚节点**：磁盘上存在但无图谱节点，`get_meta` 返回纯虚属性
 
 ### 虚属性
 
@@ -101,20 +129,6 @@ get_meta("ent_a3f2c801")
   → _id_index["ent_a3f2c801"] → "db/event.db::users.table" ✓
 ```
 
-### Inode 追踪
-
-文件移动后，通过 inode 仍可定位：
-
-```
-get_meta("archive/event.db")     # 新路径
-  → name_index 未命中
-  → stat → inode=78786998（不变）
-  → _inode_index → 同一个 ent_id ✓
-
-get_meta("db/event.db")          # 旧路径，文件已移走
-  → name_index 命中（旧路径仍在索引中） ✓
-```
-
 ---
 
 ## `get_meta` 完整行为
@@ -158,11 +172,11 @@ store = Store(project_path)  # 包含 .pontis/ 的项目根目录
 读取 meta + 虚属性。详见上方完整行为。
 
 ```python
-# 有节点的文件：存储 + 虚属性
+# 显式节点：存储 + 虚属性
 store.get_meta("db/event.db")
 # → {"path": "db/event.db", "table_count": 1, "file_size": 20480, ...}
 
-# 无节点的目录：纯虚属性
+# 虚节点：纯虚属性（磁盘存在但未处理）
 store.get_meta("db/")
 # → {"child_count": 2, "file_count": 1, "subdir_count": 1}
 
@@ -207,11 +221,11 @@ store.put_meta("db/event.db", {
 创建节点。根据 ref 是否含 `::` 自动判断类型：
 
 - **实体节点**（ref 含 `::`）：写 meta + 自动 `contains` 边 + 用户边
-- **文件/目录节点**（ref 不含 `::`）：写 meta + 自动 stat 记录 `_inode`
+- **文件/目录节点**（ref 不含 `::`）：写 meta + 自动 stat 记录 `_inode`（优先用 `meta["path"]`）
 
 ```python
-# 文件节点（自动 stat → _inode）
-store.create_node("db/event.db", meta={"path": "event.db"})
+# 文件节点（自动 stat → _inode，优先用 meta["path"] 定位物理文件）
+store.create_node("db/event.db", meta={"path": "db/event.db"})
 
 # 实体节点（自动加 contains 边 + columns 边）
 store.create_node("db/event.db::users.table",
@@ -223,11 +237,11 @@ store.create_node("db/event.db::users.table",
 
 ### `node_exists(ref) -> bool`
 
-检查节点是否在图谱中。
+检查节点是否在图谱中（显式节点返回 True，虚节点返回 False）。
 
 ### `walk_metas() -> iterator[(ref, meta)]`
 
-遍历图谱中所有节点，yield `(ref, meta)`。meta 含虚属性。
+遍历图谱中所有显式节点，yield `(ref, meta)`。meta 含虚属性。不含虚节点。
 
 ---
 
@@ -235,31 +249,62 @@ store.create_node("db/event.db::users.table",
 
 ### `find_nodes(pattern) -> list[str]`
 
-按 pattern 查找图谱中的节点，返回 ref 列表。`::` 是边遍历操作符，支持多跳。
+按 pattern 查找节点，返回 ref 列表。合并两层搜索结果。
+
+#### 双层搜索
+
+```
+find_nodes(pattern)
+  ↓
+  ├── Layer 1: 图谱搜索（fnmatch，递归匹配所有节点名）
+  │     扫描 _id_index 中所有显式节点（文件节点 + 实体节点）
+  │     fnmatch 的 * 匹配任意字符（含 /），因此 *.db 匹配任意深度
+  │     覆盖：已索引的文件 + 所有逻辑实体（.table, .col 等）
+  │
+  └── Layer 2: 文件系统搜索（glob 语义）
+        使用 glob.glob 扫描物理文件系统
+        遵循标准 glob 语义：*.db = 仅根目录，**/*.db = 递归
+        覆盖：未处理过的文件（虚节点）
+```
+
+**合并策略**：Layer 1 结果优先，Layer 2 补充去重。
+
+| Pattern | Layer 1（图谱） | Layer 2（文件系统） | 结果 |
+|---------|----------------|-------------------|------|
+| `*.table` | 所有 .table 实体 ✓ | 根目录无 .table 文件 | 实体列表 |
+| `*.db` | 所有已索引 .db 文件（任意深度） | 根目录 .db 文件 | 合并 |
+| `**/*.db` | 所有已索引 .db 文件 | 所有 .db 文件（递归） | 合并去重 |
+| `db/*.db` | db/ 下的已索引 .db | db/ 下的 .db 文件 | 合并去重 |
+
+#### `::` 边遍历
+
+`::` 是边遍历操作符，支持多跳、双向。多段 pattern 逐段遍历：
+
+- 第 1 段：由双层搜索产生起始节点集
+- 第 2+ 段：沿边（双向）遍历，每跳自动去重
+- 虚节点没有边，在遍历中自然被跳过
 
 #### 检索匹配规则
 
 | 段类型 | 匹配目标 |
 |--------|----------|
 | 含 `/` 的 pattern | 仅文件/目录节点（实体名不含 `/`） |
-| 不含 `/` 的 pattern | 文件名 + 实体名 |
+| 不含 `/` 的 pattern | 文件名 + 实体名（Layer 1） |
 | `*` | 所有关联节点 |
-
-遍历是**双向**的（同时沿出边和入边），每跳自动去重。
 
 #### 示例
 
 ```python
-# 单段：匹配文件
-store.find_nodes("*.db")
-# → ["db/event.db"]
-
-# 单段：匹配实体（跨文件）
+# 单段：搜索所有 .table（Layer 1 找到实体，Layer 2 无 .table 文件）
 store.find_nodes("*.table")
 # → ["db/event.db::users.table"]
 
-# 正向：文件 → 实体
-store.find_nodes("*.db::*.table")
+# 单段：搜索 .db 文件（Layer 1 + Layer 2）
+store.find_nodes("**/*.db")
+# → ["db/event.db"]
+
+# 正向：文件 → 实体（沿出边）
+store.find_nodes("**/*.db::*.table")
 # → ["db/event.db::users.table"]
 
 # 反向：实体 → 文件（沿入边）
@@ -267,7 +312,7 @@ store.find_nodes("*.table::*.db")
 # → ["db/event.db"]
 
 # 多跳：文件 → 表 → 列
-store.find_nodes("*.db::*.table::*.*.*.col")
+store.find_nodes("**/*.db::*.table::*.*.*.col")
 # → ["db/event.db::event.id.INT.col", ...]
 
 # 反向多跳：列 → 表 → 文件
@@ -316,18 +361,6 @@ store.get_edges(from_ref="db/event.db::users.table", edge_type="columns")
 
 ---
 
-## 物理文件访问
-
-Store 通过 `store.project_path` 连接物理文件系统：
-
-```python
-import os
-meta = store.get_meta("db/event.db")
-abs_path = os.path.join(store.project_path, meta["path"])
-```
-
----
-
 ## 可视化缓存
 
 ```bash
@@ -337,33 +370,27 @@ python -m utils.scripts.build_cache ./my_project
 
 ---
 
-## 典型用法
+## Extractor 访问模式
 
-### Extractor 模块
+Extractor 模块通过 Store API 完成所有文件发现和元数据操作：
 
-```python
-from storage import Store
-store = Store(project_path)
+```
+Extractor 模块          Store API                    文件系统
+───────────────        ──────────                   ─────────
+文件发现                find_nodes("**/*.db")         glob 扫描
+                       ↓ 返回 ref                    + 图谱搜索
+                                              
+文件节点创建            create_node(path, meta)       stat → _inode
 
-for ref in store.find_nodes("*.db::*.*.*.col"):
-    path, entity_name = ref.split("::", 1)
-    meta = store.get_meta(ref)
-    store.set_meta(ref, {"processed": True})
+物理文件访问            store.project_path            open/sqlite3
+                       + meta["path"]                (读内容)
+
+元数据读写              get_meta / set_meta           .pontis/nodes/
+
+实体节点创建            create_node(ref::entity)      边存储
 ```
 
-### Agent 工具
-
-```python
-# 查询节点
-columns = store.find_connected("db/event.db::users.table", edge_type="columns")
-
-# 反向查找
-tables = store.find_nodes("*.*.*.col::*.table")
-
-# 读取 meta（始终含虚属性）
-meta = store.get_meta("db/event.db")
-print(meta["file_size"])  # 虚属性
-```
+**Extractor 不直接使用 `os.walk()`、`glob.glob()`——全部通过 Store。**
 
 ---
 

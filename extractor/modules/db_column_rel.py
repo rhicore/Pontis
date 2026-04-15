@@ -13,9 +13,11 @@ import json
 import logging
 from typing import Optional
 from storage import Store
-from extractor.utils import get_llm
+from extractor.modules._utils import get_llm
 
 logger = logging.getLogger(__name__)
+
+DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
 
 
 def generate(store: Store, config=None) -> None:
@@ -28,15 +30,14 @@ def generate(store: Store, config=None) -> None:
         return
 
     # 查找所有.overlap实体
-    overlap_refs = store.find_nodes("*.db::*.overlap")
-
     created_count = 0
-    for ref in overlap_refs:
-        try:
-            if _generate_for_overlap(ref, store, llm):
-                created_count += 1
-        except Exception as e:
-            logger.warning(f"Failed to generate relation for {ref}: {e}")
+    for ext in DB_EXTENSIONS:
+        for ref in store.find_nodes(f"{ext}::*.overlap"):
+            try:
+                if _generate_for_overlap(ref, store, llm):
+                    created_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to generate relation for {ref}: {e}")
 
     if created_count > 0:
         logger.info(f"  Total relations created: {created_count}")

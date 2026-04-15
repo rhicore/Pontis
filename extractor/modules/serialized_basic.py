@@ -1,80 +1,79 @@
-"""Serialized Basic Generator - 序列化文件实体展开器
+"""Serialized Basic Generator - 序列化文件发现与实体展开
 
 职责：
-- 匹配 *.json / *.yaml / *.xml / *.toml / *.hcl 节点
-- 分析文件结构（object/array/mapping 等）
-- 更新 _meta.yml（不含 _raw 缓存）
-- 创建 _entity/ 目录
-
-独立执行：
-    python -m extractor.serialized_basic ./my_data
+1. 通过 store.find_nodes() 发现所有序列化文件（含虚节点）
+2. 为未索引的文件创建节点（含 _inode）
+3. 分析文件结构并更新 meta
 """
 import os
 import logging
+from datetime import datetime
 from storage import Store
 
 logger = logging.getLogger(__name__)
 
 
 def generate(store: Store) -> None:
-    """为所有序列化文件节点展开实体"""
+    """发现所有序列化文件，创建文件节点并分析结构"""
     logger.info("=== Generating serialized file entities ===")
 
-    for pattern in ["*.json", "*.yaml", "*.xml", "*.toml", "*.hcl"]:
+    count = 0
+    for pattern in ["**/*.json", "**/*.jsonl", "**/*.yaml", "**/*.yml", "**/*.xml", "**/*.toml", "**/*.hcl"]:
         for path in store.find_nodes(pattern):
+            if store.node_exists(path):
+                continue
             try:
-                _expand_serialized(path, store)
+                _process_serialized(path, store)
+                count += 1
             except Exception as e:
-                logger.warning(f"Failed to expand {path}: {e}")
+                logger.warning(f"Failed to process {path}: {e}")
+
+    logger.info(f"  Processed {count} new serialized files")
 
 
-def _expand_serialized(path: str, store: Store) -> None:
-    """分析序列化文件结构，更新 _meta.yml，创建 _entity/"""
-    meta = store.get_meta(path)
-    if not meta:
+def _process_serialized(rel_path: str, store: Store) -> None:
+    """处理单个序列化文件：创建文件节点 + 分析结构"""
+    abs_path = os.path.join(store.project_path, rel_path)
+    if not os.path.exists(abs_path):
         return
 
-    if "structure_type" in meta:
-        return
+    stat = os.stat(abs_path)
 
-    rel_path = meta.get("path")
-    file_path = os.path.join(store.project_path, rel_path) if rel_path else None
-    if not file_path or not os.path.exists(file_path):
-        return
+    # 创建文件节点
+    meta = {
+        "path": rel_path,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        "created_at": datetime.now().isoformat(),
+    }
+    store.create_node(rel_path, meta=meta)
+    logger.info(f"  Created file node: {rel_path}")
 
-    try:
-        stat = os.stat(file_path)
-        file_size = stat.st_size
+    # 分析结构
+    file_size = stat.st_size
+    with open(abs_path, 'r', encoding='utf-8', errors='ignore') as f:
+        content = f.read()
 
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
+    line_count = len(content.splitlines())
+    top_info = _analyze_structure(abs_path, content, rel_path)
 
-        line_count = len(content.splitlines())
-        top_info = _analyze_structure(file_path, content, path)
+    store.set_meta(rel_path, {
+        "file_size": file_size,
+        "line_count": line_count,
+        "char_count": len(content),
+        **top_info,
+    })
 
-        store.set_meta(path, {
-            "file_size": file_size,
-            "line_count": line_count,
-            "char_count": len(content),
-            **top_info,
-        })
-
-        logger.info(f"  Entity: {path} ({top_info.get('structure_type', '?')})")
-
-    except Exception as e:
-        logger.debug(f"Could not expand {path}: {e}")
+    logger.info(f"  Entity: {rel_path} ({top_info.get('structure_type', '?')})")
 
 
 def _analyze_structure(file_path: str, content: str, path: str) -> dict:
     """分析文件顶层结构"""
-    # 从路径推断文件类型
-    basename = os.path.basename(path)
-    suffix = os.path.splitext(basename)[1] if '.' in basename else ''
+    suffix = os.path.splitext(path)[1].lower()
 
     if suffix in ('.yml',):
         file_type = 'YAML'
     else:
-        file_type = (suffix or '').lstrip('.').upper()
+        file_type = suffix.lstrip('.').upper()
 
     if file_type == 'JSON':
         import json

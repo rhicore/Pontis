@@ -1,12 +1,9 @@
-"""DB Basic Generator - 数据库实体展开器
+"""DB Basic Generator - 数据库文件发现与实体展开
 
 职责：
-- 匹配所有 *.db 节点
-- 读取 SQLite 数据库结构
-- 在 _entity/ 下创建 .table/ 和 .col/ 子节点
-
-独立执行：
-    python -m extractor.db_basic ./my_data
+1. 通过 store.find_nodes() 发现所有数据库文件（含虚节点）
+2. 为未索引的文件创建节点（含 _inode）
+3. 展开表/视图/列实体
 """
 import os
 import logging
@@ -37,33 +34,41 @@ def _normalize_type(sql_type: str) -> str:
 
 
 def generate(store: Store) -> None:
-    """为所有数据库节点展开实体结构"""
+    """发现所有数据库文件，创建文件节点并展开实体"""
     logger.info("=== Generating DB entities ===")
 
-    for path in store.find_nodes("*.db"):
-        try:
-            _expand_database(path, store)
-        except Exception as e:
-            logger.warning(f"Failed to expand DB {path}: {e}")
+    db_patterns = ["**/*.db", "**/*.sqlite", "**/*.sqlite3", "**/*.duckdb"]
+    count = 0
+    for pattern in db_patterns:
+        for path in store.find_nodes(pattern):
+            if store.node_exists(path):
+                continue  # 已索引，跳过
+            try:
+                _process_database(path, store)
+                count += 1
+            except Exception as e:
+                logger.warning(f"Failed to process DB {path}: {e}")
+
+    logger.info(f"  Processed {count} new database files")
 
 
-def _expand_database(path: str, store: Store) -> None:
-    """展开数据库为表和列实体
+def _process_database(rel_path: str, store: Store) -> None:
+    """处理单个数据库：创建文件节点 + 展开表/视图/列实体"""
+    abs_path = os.path.join(store.project_path, rel_path)
+    stat = os.stat(abs_path)
 
-    结构：
-    _entity/
-        [表名].table/
-        [表名].[列名].[类型].col/
-        [视图名].view/
-        [视图名].[列名].[类型].col/
-    """
-    meta = store.get_meta(path)
-    db_path = os.path.join(store.project_path, meta["path"]) if meta and meta.get("path") else None
-    if not db_path:
-        return
+    # 创建文件节点
+    meta = {
+        "path": rel_path,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        "created_at": datetime.now().isoformat(),
+    }
+    store.create_node(rel_path, meta=meta)
+    logger.info(f"  Created file node: {rel_path}")
 
+    # 展开实体
     import sqlite3
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(abs_path)
     cursor = conn.cursor()
 
     # 获取表
@@ -71,11 +76,9 @@ def _expand_database(path: str, store: Store) -> None:
     for (table_name,) in cursor.fetchall():
         safe_name = table_name.replace("/", "_").replace("\\", "_")
 
-        # 创建表实体
-        store.create_node(f"{path}::{safe_name}.table",
-                            meta={"created_at": datetime.now().isoformat()})
+        store.create_node(f"{rel_path}::{safe_name}.table",
+                          meta={"created_at": datetime.now().isoformat()})
 
-        # 创建列实体 + 边
         col_edges = []
         cursor.execute(f'PRAGMA table_info("{table_name}")')
         for col in cursor.fetchall():
@@ -84,28 +87,28 @@ def _expand_database(path: str, store: Store) -> None:
             safe_col = col_name.replace("/", "_").replace("\\", "_")
 
             col_entity_name = f"{safe_name}.{safe_col}.{col_type}.col"
-            store.create_node(f"{path}::{col_entity_name}",
-                                meta={"created_at": datetime.now().isoformat(),
-                                      "source_table": table_name})
+            store.create_node(f"{rel_path}::{col_entity_name}",
+                              meta={"created_at": datetime.now().isoformat(),
+                                    "source_table": table_name})
 
             col_edges.append({
-                "from": f"{path}::{safe_name}.table",
+                "from": f"{rel_path}::{safe_name}.table",
                 "type": "columns",
-                "to": f"{path}::{col_entity_name}",
+                "to": f"{rel_path}::{col_entity_name}",
             })
 
         if col_edges:
             store.add_edges(col_edges)
 
-        logger.info(f"  Entity: {path}/_entity/{safe_name}.table")
+        logger.info(f"  Entity: {rel_path}::{safe_name}.table")
 
     # 获取视图
     cursor.execute("SELECT name FROM sqlite_master WHERE type='view'")
     for (view_name,) in cursor.fetchall():
         safe_name = view_name.replace("/", "_").replace("\\", "_")
 
-        store.create_node(f"{path}::{safe_name}.view",
-                            meta={"created_at": datetime.now().isoformat()})
+        store.create_node(f"{rel_path}::{safe_name}.view",
+                          meta={"created_at": datetime.now().isoformat()})
 
         view_col_edges = []
         try:
@@ -116,14 +119,14 @@ def _expand_database(path: str, store: Store) -> None:
                 safe_col = col_name.replace("/", "_").replace("\\", "_")
 
                 col_entity_name = f"{safe_name}.{safe_col}.{col_type}.col"
-                store.create_node(f"{path}::{col_entity_name}",
-                                    meta={"created_at": datetime.now().isoformat(),
-                                          "source_view": view_name})
+                store.create_node(f"{rel_path}::{col_entity_name}",
+                                  meta={"created_at": datetime.now().isoformat(),
+                                        "source_view": view_name})
 
                 view_col_edges.append({
-                    "from": f"{path}::{safe_name}.view",
+                    "from": f"{rel_path}::{safe_name}.view",
                     "type": "columns",
-                    "to": f"{path}::{col_entity_name}",
+                    "to": f"{rel_path}::{col_entity_name}",
                 })
         except Exception:
             pass
@@ -131,6 +134,6 @@ def _expand_database(path: str, store: Store) -> None:
         if view_col_edges:
             store.add_edges(view_col_edges)
 
-        logger.info(f"  Entity: {path}/_entity/{safe_name}.view")
+        logger.info(f"  Entity: {rel_path}::{safe_name}.view")
 
     conn.close()

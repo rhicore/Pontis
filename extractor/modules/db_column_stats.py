@@ -15,16 +15,19 @@ from storage import Store
 
 logger = logging.getLogger(__name__)
 
+DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
+
 
 def generate(store: Store) -> None:
     """为所有.col节点生成统计信息"""
     logger.info("=== Generating column statistics ===")
 
-    for ref in store.find_nodes("*.db::*.*.*.col"):
-        try:
-            _generate_for_column(ref, store)
-        except Exception as e:
-            logger.warning(f"Failed to generate stats for {ref}: {e}")
+    for ext in DB_EXTENSIONS:
+        for ref in store.find_nodes(f"{ext}::*.*.*.col"):
+            try:
+                _generate_for_column(ref, store)
+            except Exception as e:
+                logger.warning(f"Failed to generate stats for {ref}: {e}")
 
 
 def _generate_for_column(ref: str, store: Store) -> bool:

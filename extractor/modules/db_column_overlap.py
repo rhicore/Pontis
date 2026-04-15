@@ -30,16 +30,19 @@ COMMON_NOUNS = {'name', 'title', 'description', 'date', 'time', 'value', 'type',
 NLP_STOPWORDS = {'of', 'the', 'and', 'in', 'on', 'at', 'to', 'from', 'a', 'an'}
 ALL_STOPWORDS = STRUCTURE_STOPWORDS | COMMON_NOUNS | NLP_STOPWORDS
 
+DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
+
 
 def generate(store: Store, config=None) -> None:
     """为所有数据库检测列值重叠"""
     logger.info("=== Generating column overlaps ===")
 
-    for path in store.find_nodes("*.db"):
-        try:
-            _generate_for_database(path, store)
-        except Exception as e:
-            logger.warning(f"Failed to generate overlaps for {path}: {e}")
+    for ext in DB_EXTENSIONS:
+        for path in store.find_nodes(ext):
+            try:
+                _generate_for_database(path, store)
+            except Exception as e:
+                logger.warning(f"Failed to generate overlaps for {path}: {e}")
 
 
 def _generate_for_database(path: str, store: Store) -> bool:

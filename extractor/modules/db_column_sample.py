@@ -14,16 +14,19 @@ from storage import Store
 
 logger = logging.getLogger(__name__)
 
+DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
+
 
 def generate(store: Store, sample_size: int = 10) -> None:
     """为所有DB列生成样本"""
     logger.info("=== Generating DB column samples ===")
 
-    for ref in store.find_nodes("*.db::*.*.*.col"):
-        try:
-            _generate_for_column(ref, store, sample_size)
-        except Exception as e:
-            logger.warning(f"Failed to generate sample for {ref}: {e}")
+    for ext in DB_EXTENSIONS:
+        for ref in store.find_nodes(f"{ext}::*.*.*.col"):
+            try:
+                _generate_for_column(ref, store, sample_size)
+            except Exception as e:
+                logger.warning(f"Failed to generate sample for {ref}: {e}")
 
 
 def _generate_for_column(ref: str, store: Store,

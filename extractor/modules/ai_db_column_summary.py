@@ -13,10 +13,12 @@ import os
 import logging
 from typing import Optional
 from storage import Store
-from extractor.utils import get_llm
-from extractor.ai_utils import generate_detail_and_brief
+from extractor.modules._utils import get_llm
+from extractor.modules._ai_utils import generate_detail_and_brief
 
 logger = logging.getLogger(__name__)
+
+DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
 
 
 def generate(store: Store) -> None:
@@ -27,11 +29,12 @@ def generate(store: Store) -> None:
         logger.warning("LLM not configured, skipping AI summary")
         return
 
-    for ref in store.find_nodes("*.db::*.*.*.col"):
-        try:
-            _generate_for_column(ref, store, llm)
-        except Exception as e:
-            logger.warning(f"Failed for {ref}: {e}")
+    for ext in DB_EXTENSIONS:
+        for ref in store.find_nodes(f"{ext}::*.*.*.col"):
+            try:
+                _generate_for_column(ref, store, llm)
+            except Exception as e:
+                logger.warning(f"Failed for {ref}: {e}")
 
 
 def _generate_for_column(ref: str, store: Store, llm) -> bool:
