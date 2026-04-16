@@ -77,6 +77,47 @@ class Store:
     def pontis_exists(self) -> bool:
         return os.path.exists(self._pontis_root)
 
+    @property
+    def index_root(self) -> str:
+        """索引文件根目录 (.pontis/_index/)。"""
+        return os.path.join(self._pontis_root, "_index")
+
+    # ==================== File Allocation ====================
+
+    def create_file(self, ref: str, meta: dict = None,
+                    parent_ref: str = None, edge_type: str = "contains") -> str:
+        """在 .pontis/_blobs/ 下分配一个文件路径，注册为 KG 节点。
+
+        只分配路径并创建节点 + 边，不执行文件 I/O。
+        返回绝对路径，由调用方自行读写文件内容。
+
+        Args:
+            ref: 节点引用 (e.g. "db/event.db::event.id.INT.col.idx")
+            meta: 额外元数据
+            parent_ref: 父节点 ref，自动创建 contains 边
+            edge_type: 边类型
+
+        Returns:
+            分配的文件绝对路径
+        """
+        blob_id = _gen_id()
+        blob_dir = os.path.join(self._pontis_root, "_blobs")
+        os.makedirs(blob_dir, exist_ok=True)
+
+        blob_relpath = os.path.join(".pontis", "_blobs", f"{blob_id}.bin")
+        blob_abs = os.path.join(blob_dir, f"{blob_id}.bin")
+
+        node_meta = {"path": blob_relpath}
+        if meta:
+            node_meta.update(meta)
+
+        self.set_meta(ref, node_meta)
+
+        if parent_ref:
+            self.add_edges([{"from": parent_ref, "to": ref, "type": edge_type}])
+
+        return blob_abs
+
     # ==================== Ref Resolution ====================
 
     def resolve_ref(self, ref: str) -> Tuple[str, str]:
@@ -337,6 +378,20 @@ class Store:
             # 剥离内部字段
             result = {k: v for k, v in result.items() if k not in _INTERNAL_FIELDS}
 
+            # 图谱边虚属性：按出边类型自动分组，生成 {edge_type: [target_ref, ...]}
+            # 例如表节点的 columns 边 → {"columns": ["db/event.db::event.id.INT.col", ...]}
+            # 不覆盖已有字段，完全由图谱结构驱动，无需手动注册
+            self._ensure_index()
+            for edge in self._outgoing.get(ent_id, []):
+                etype = edge["type"]
+                to_ref = self._id_index.get(edge["to"])
+                if to_ref is None:
+                    continue
+                if etype not in result:
+                    result[etype] = [to_ref]
+                elif isinstance(result[etype], list):
+                    result[etype].append(to_ref)
+
             # 虚属性补充（受 include_props 控制）
             if include_props is None or len(include_props) > 0:
                 result = enrich_meta(result, self._project_path, path, entity_name,
@@ -585,9 +640,29 @@ class Store:
 
         自动排除 .pontis/ 路径。
         """
-        import glob as _glob
+        import fnmatch as _fnmatch
         full = os.path.join(self._project_path, pattern)
-        matches = _glob.glob(full, recursive=True)
+        # 手动递归 glob，避免 tool_use.glob 命名冲突
+        matches = []
+        if '**' in pattern:
+            base = os.path.join(self._project_path, pattern.split('**')[0] or '')
+            if not os.path.isdir(base):
+                base = self._project_path
+            tail = '**' + pattern.split('**', 1)[1]
+            for root, dirs, files in os.walk(base):
+                dirs[:] = [d for d in dirs if d != '.pontis']
+                for f in files:
+                    fp = os.path.join(root, f)
+                    rel = os.path.relpath(fp, self._project_path)
+                    if _fnmatch.fnmatch(rel, pattern.replace('\\', '/')):
+                        matches.append(fp)
+        else:
+            dir_part = os.path.dirname(full)
+            pat_part = os.path.basename(full)
+            if os.path.isdir(dir_part):
+                for f in os.listdir(dir_part):
+                    if _fnmatch.fnmatch(f, pat_part):
+                        matches.append(os.path.join(dir_part, f))
         results = []
         for m in matches:
             if not os.path.isfile(m):

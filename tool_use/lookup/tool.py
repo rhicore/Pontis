@@ -1,11 +1,10 @@
 """
 Lookup tool - Value-based search for data entities.
 
-Performs value alignment / predicate matching on:
-- .table / .col: SQL predicate matching (e.g., "INT > 100", "STR = 'active'")
-- .json: Search non-nested primitive values (String, Number, Bool, NULL) and keys
-
-Uses store.find_nodes() to discover files, then queries physical data.
+三层查询策略：
+  Layer 1: 元数据预过滤（min/max/cardinality，不碰索引和SQL）
+  Layer 2: LSH 索引查询（O(1) 等值，O(1) 范围预判）
+  Layer 3: SQL 兜底（仅索引无法确定时，带谓词下推）
 """
 import os
 import re
@@ -81,6 +80,87 @@ def _apply_predicate(value, op: str, target) -> bool:
     return False
 
 
+# ── Index helpers ──────────────────────────────────────────────
+
+def _load_index(store, ref: str):
+    """通过 KG 查找索引节点，加载 LSH 索引。不存在返回 None。"""
+    idx_refs = store.find_connected(ref, edge_type="contains", pattern="*.idx")
+    if not idx_refs:
+        return None
+    try:
+        from extractor.modules._lsh_index import LSHIndexReader
+        idx_meta = store._get_stored_meta(idx_refs[0]) or {}
+        idx_rel = idx_meta.get("path")
+        if not idx_rel:
+            return None
+        idx_path = os.path.join(store.project_path, idx_rel)
+        return LSHIndexReader.load(idx_path)
+    except (ImportError, Exception):
+        return None
+
+
+def _index_lookup(reader, op: str, target_val, col_meta: dict) -> Tuple[bool, bool]:
+    """索引查询。
+
+    Returns:
+        (has_match, need_sql): has_match=False 表示确定无匹配，
+                               need_sql=False 表示索引已直接回答。
+    """
+    if reader is None:
+        return (True, True)
+
+    # Layer 1: 元数据预过滤
+    if op == '=' and target_val is not None:
+        min_v = col_meta.get('min_value')
+        max_v = col_meta.get('max_value')
+        if min_v is not None and isinstance(target_val, (int, float)):
+            try:
+                if float(target_val) < float(min_v):
+                    return (False, False)
+            except (TypeError, ValueError):
+                pass
+        if max_v is not None and isinstance(target_val, (int, float)):
+            try:
+                if float(target_val) > float(max_v):
+                    return (False, False)
+            except (TypeError, ValueError):
+                pass
+
+    # Layer 2: 索引查询
+    if op == '=':
+        return (reader.query_eq(target_val), False)
+
+    if op == '!=':
+        exists = reader.query_eq(target_val)
+        cardinality = col_meta.get('cardinality', 2)
+        if not exists:
+            return (True, False)  # 值不存在，所有行都 !=
+        if cardinality <= 1:
+            return (False, False)  # 只有一个值且就是它，无匹配
+        return (True, False)
+
+    # 范围查询（数值）
+    if op in ('>', '<', '>=', '<=') and reader.has_kll:
+        try:
+            threshold = float(target_val)
+            if op == '>':
+                est = reader.query_range_gt(threshold)
+            elif op == '<':
+                est = reader.query_range_lt(threshold)
+            elif op == '>=':
+                est = reader.query_range_gte(threshold)
+            else:  # <=
+                est = reader.query_range_lte(threshold)
+            if est == 0:
+                return (False, False)
+        except (TypeError, ValueError):
+            pass
+
+    return (True, True)  # 需 SQL 兜底
+
+
+# ── DB lookup ──────────────────────────────────────────────────
+
 def _lookup_db_columns(
     store,
     file_pattern: str,
@@ -94,9 +174,7 @@ def _lookup_db_columns(
     if not store.pontis_exists:
         return "No .pontis directory found"
 
-    # Find matching DB file nodes via store
     db_refs = store.find_nodes(file_pattern)
-    # Filter to file nodes only (no ::)
     db_refs = [r for r in db_refs if "::" not in r]
 
     field, op, target_val = _parse_predicate(predicate)
@@ -107,7 +185,6 @@ def _lookup_db_columns(
         if not db_meta.get("path"):
             continue
 
-        # Find .col entities connected to this file
         entity_refs = store.find_connected(db_ref, edge_type="contains", pattern="*.col")
 
         for entity_ref in entity_refs:
@@ -120,27 +197,63 @@ def _lookup_db_columns(
             col_name = parts[1]
             col_type = parts[2].upper() if len(parts) > 2 else ""
 
-            # Check data type match from entity name
+            # 类型过滤
+            _type = data_type.upper()
+            _STR_TYPES = ('STR', 'STRING', 'TEXT', 'VARCHAR', 'CHAR')
+            _NUM_TYPES = ('INT', 'INTEGER', 'REAL', 'FLOAT', 'DOUBLE', 'NUMERIC')
             type_match = (
-                data_type.upper() in col_type or
-                data_type.upper() == col_type or
-                data_type.upper() == 'NUMBER' and col_type in ('INT', 'INTEGER', 'REAL', 'FLOAT', 'DOUBLE')
+                _type in col_type or
+                _type == col_type or
+                _type == 'NUMBER' and col_type in _NUM_TYPES or
+                _type == 'STR' and col_type in _STR_TYPES or
+                _type in _STR_TYPES and col_type in _STR_TYPES
             )
             if not type_match:
                 continue
 
-            # Query column values from physical DB
+            # 获取列元数据
+            col_meta = store._get_stored_meta(entity_ref) or {}
+
+            # 尝试索引查询
+            reader = _load_index(store, entity_ref)
+            has_match, need_sql = _index_lookup(reader, op, target_val, col_meta)
+
+            if not has_match:
+                continue
+
+            if not need_sql:
+                # 索引直接回答，无需 SQL
+                if output_mode == 'distinct_count' and op == '=':
+                    results.append(f"{db_ref}::{entity_rel}:1:{target_val}")
+                else:
+                    results.append(f"{db_ref}::{entity_rel}:1")
+                continue
+
+            # Layer 3: SQL 兜底（带谓词下推）
             try:
                 conn = sqlite3.connect(db_path)
                 cursor = conn.cursor()
-                cursor.execute(f'SELECT DISTINCT "{col_name}" FROM "{table_name}"')
+
+                if op == '=' and target_val is not None:
+                    cursor.execute(
+                        f'SELECT DISTINCT "{col_name}" FROM "{table_name}" WHERE "{col_name}" = ?',
+                        (target_val,))
+                elif op == '!=' and target_val is not None:
+                    cursor.execute(
+                        f'SELECT DISTINCT "{col_name}" FROM "{table_name}" WHERE "{col_name}" != ?',
+                        (target_val,))
+                elif op in ('>', '<', '>=', '<=') and isinstance(target_val, (int, float)):
+                    cursor.execute(
+                        f'SELECT DISTINCT "{col_name}" FROM "{table_name}" WHERE "{col_name}" {op} ?',
+                        (target_val,))
+                else:
+                    cursor.execute(f'SELECT DISTINCT "{col_name}" FROM "{table_name}"')
+
                 distinct_values = cursor.fetchall()
                 conn.close()
 
-                matching = []
-                for (val,) in distinct_values:
-                    if _apply_predicate(val, op, target_val):
-                        matching.append(val)
+                matching = [v for (v,) in distinct_values
+                            if _apply_predicate(v, op, target_val)]
 
                 if matching:
                     if output_mode == 'distinct_count':
@@ -158,6 +271,8 @@ def _lookup_db_columns(
     return '\n'.join(results)
 
 
+# ── JSON lookup ────────────────────────────────────────────────
+
 def _lookup_json_values(
     store,
     file_pattern: str,
@@ -170,7 +285,6 @@ def _lookup_json_values(
 
     results = []
 
-    # Find matching JSON file nodes via store
     json_refs = store.find_nodes(file_pattern)
     json_refs = [r for r in json_refs if "::" not in r]
 
@@ -235,6 +349,8 @@ def _lookup_json_values(
 
     return '\n'.join(results)
 
+
+# ── Entry point ────────────────────────────────────────────────
 
 def lookup_command(
     store,

@@ -8,7 +8,7 @@ Usage:
 
     # 运行单个模块
     python -m extractor run db_column_stats ./my_data
-    python -m extractor run skeleton ./my_data -v
+    python -m extractor run db_column_stats,db_info ./my_data -v
 
     # 列出可用模块
     python -m extractor list
@@ -22,56 +22,36 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from storage import Store
-from extractor.modules._utils import load_config
-from extractor.registry import _get_registry, _CONFIG_MODULES
+from extractor.engine import get_registry, CONFIG_MODULES, run_pipeline, init_store
 
 
 def _run_full(args):
     """运行完整 pipeline。"""
-    from extractor.registry import extract
+    from extractor.full_extract import extract
     extract(args.target, getattr(args, 'config', None), args.verbose)
 
 
-def _run_module(args):
-    """运行单个模块。"""
-    registry = _get_registry()
-    name = args.module
+def _run_modules(args):
+    """运行指定的模块（逗号分隔）。"""
+    registry = get_registry()
+    names = [n.strip() for n in args.modules.split(',')]
 
-    if name not in registry:
-        print(f"Error: unknown module '{name}'")
-        print(f"Available: {', '.join(sorted(registry))}")
-        sys.exit(1)
+    for name in names:
+        if name not in registry:
+            print(f"Error: unknown module '{name}'")
+            print(f"Available: {', '.join(sorted(registry))}")
+            sys.exit(1)
 
-    level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(level=level,
-                        format='%(message)s' if not args.verbose else '%(levelname)s: %(message)s')
+    store, config = init_store(args.target, getattr(args, 'config', None), args.verbose)
 
-    target_path = Path(args.target).resolve()
-    if not target_path.exists():
-        print(f"Error: {target_path} does not exist", file=sys.stderr)
-        sys.exit(1)
-
-    config = load_config(getattr(args, 'config', None))
-    store = Store(str(target_path))
-    func = registry[name]
-
-    logging.info(f"=== Running module: {name} ===")
-
-    try:
-        if name in _CONFIG_MODULES:
-            func(store, config=config)
-        else:
-            func(store)
-    except Exception as e:
-        logging.error(f"Module {name} failed: {e}")
-        sys.exit(1)
-
+    logging.info(f"=== Running modules: {', '.join(names)} ===")
+    run_pipeline(names, store, config)
     print("Done.")
 
 
 def _list_modules(args):
     """列出可用模块。"""
-    registry = _get_registry()
+    registry = get_registry()
     for name in sorted(registry):
         print(f"  {name}")
     print(f"\n{len(registry)} modules available")
@@ -82,8 +62,8 @@ def main():
         parser = argparse.ArgumentParser(description="Pontis extractor")
         subparsers = parser.add_subparsers(dest='command')
         subparsers.add_parser('list', help='List available modules')
-        run_parser = subparsers.add_parser('run', help='Run a single module')
-        run_parser.add_argument('module', help='Module name')
+        run_parser = subparsers.add_parser('run', help='Run specified modules')
+        run_parser.add_argument('modules', help='Module name(s), comma-separated')
         run_parser.add_argument('target', help='Directory to scan')
         run_parser.add_argument('-c', '--config', help='Config file path')
         run_parser.add_argument('-v', '--verbose', action='store_true')
@@ -91,7 +71,7 @@ def main():
         if args.command == 'list':
             _list_modules(args)
         elif args.command == 'run':
-            _run_module(args)
+            _run_modules(args)
     else:
         # 完整 pipeline（兼容旧用法 python -m extractor ./my_data）
         parser = argparse.ArgumentParser(description="Pontis extractor")
