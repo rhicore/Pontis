@@ -9,8 +9,6 @@ from storage import Store
 
 logger = logging.getLogger(__name__)
 
-MAX_ROUNDS_DEFAULT = 60
-
 PROMPT = """\
 你的任务：分析项目中数据库列之间的关系，找出有意义的关联并创建 .rel 实体。
 
@@ -77,8 +75,7 @@ d. 理解每张表的业务含义（通过表名、列名、数据内容）
 """
 
 
-def generate(store: Store, *, max_rounds: int = MAX_ROUNDS_DEFAULT,
-             debug: bool = False) -> None:
+def generate(store: Store, *, debug: bool = False) -> None:
     """分析所有 DB 文件的列关系，创建 .rel 实体。"""
     from agent.agent import PontisAgent
     from agent.tools import build_writer_registry, enable_debug
@@ -102,5 +99,5 @@ def generate(store: Store, *, max_rounds: int = MAX_ROUNDS_DEFAULT,
         system_prompt=build_prompt("writer", store.project_path, debug=debug),
     )
 
-    agent.chat(PROMPT, max_rounds=max_rounds)
+    agent.chat(PROMPT)
     logger.info("=== Agent Rel Detection done ===")

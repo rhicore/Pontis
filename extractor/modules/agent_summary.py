@@ -8,8 +8,6 @@ from storage import Store
 
 logger = logging.getLogger(__name__)
 
-MAX_ROUNDS_DEFAULT = 100
-
 PROMPT = """\
 你的任务是为项目中所有实体生成 brief 和 detail。很多实体的 summary 从未生成过，\
 你需要覆盖所有实体，不只是补全缺失的。
@@ -64,8 +62,7 @@ JSON、文本等文件不需要子智能体，你直接读取内容并写 brief/
 """
 
 
-def generate(store: Store, *, max_rounds: int = MAX_ROUNDS_DEFAULT,
-             debug: bool = False) -> None:
+def generate(store: Store, *, debug: bool = False) -> None:
     """为所有实体生成/优化 AI 总结。"""
     from agent.agent import PontisAgent
     from agent.tools import build_writer_registry, enable_debug
@@ -89,5 +86,5 @@ def generate(store: Store, *, max_rounds: int = MAX_ROUNDS_DEFAULT,
         system_prompt=build_prompt("writer", store.project_path, debug=debug),
     )
 
-    agent.chat(PROMPT, max_rounds=max_rounds)
+    agent.chat(PROMPT)
     logger.info("=== Agent Summary done ===")

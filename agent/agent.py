@@ -48,17 +48,14 @@ class PontisAgent:
             {"role": "system", "content": self.system_prompt},
         ]
 
-    def chat(self, user_input: str, max_rounds: int = 0) -> str:
+    def chat(self, user_input: str) -> str:
         """Send user input and return the agent's response.
 
-        Args:
-            user_input: User message.
-            max_rounds: Max tool-call rounds. 0 = unlimited (interactive mode).
+        The agent loops until it stops calling tools (outputs text or empty).
         """
         self.messages.append({"role": "user", "content": user_input})
 
         rounds = 0
-        # Loop: LLM may make multiple rounds of tool calls
         while True:
             response = self.client.chat.completions.create(
                 model=self.config["model"],
@@ -71,54 +68,14 @@ class PontisAgent:
             msg = response.choices[0].message
             self.messages.append(msg.to_dict())
 
-            # No tool calls → agent finished (text response or empty)
+            # No tool calls → agent finished
             if not msg.tool_calls:
                 if msg.content:
-                    label = "Agent done" if max_rounds > 0 else "Assistant"
-                    logger.info(f"{label}: {msg.content[:200]}")
-                    logger.debug(f"{label} (full): {msg.content}")
+                    logger.info(f"Agent done: {msg.content}")
                 return msg.content or ""
 
             rounds += 1
-            logger.debug(f"Round {rounds}/{max_rounds}")
-            if 0 < max_rounds <= rounds:
-                # 执行当前轮的 tool call（不浪费这次调用）
-                for tool_call in msg.tool_calls:
-                    name = tool_call.function.name
-                    try:
-                        arguments = json.loads(tool_call.function.arguments)
-                    except json.JSONDecodeError:
-                        arguments = {}
-                    result = self.tools.execute(name, arguments, self.store)
-                    if len(result) > 8000:
-                        result = result[:8000] + "\n... (truncated)"
-                    logger.info(f"Tool result [{name}]: {result[:200]}")
-                    self.messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result,
-                    })
-
-                # 最后一轮：无工具，强制输出任务报告
-                self.messages.append({
-                    "role": "user",
-                    "content": (
-                        "你的轮次已用完，请立即写任务报告。格式：\n"
-                        "## 已完成\n- 逐条列出已完成的工作\n"
-                        "## 未完成\n- 逐条列出未完成的工作\n"
-                        "## 备注\n- 需要父智能体注意的事项\n"
-                        "不要调用任何工具，直接输出报告。"
-                    ),
-                })
-                final = self.client.chat.completions.create(
-                    model=self.config["model"],
-                    messages=self.messages,
-                    max_tokens=self.config["max_tokens"],
-                    temperature=self.config["temperature"],
-                )
-                final_text = final.choices[0].message.content or ""
-                logger.info(f"Assistant (report): {final_text[:300]}")
-                return final_text
+            logger.debug(f"Round {rounds}")
 
             # Execute all tool calls
             for tool_call in msg.tool_calls:
@@ -130,16 +87,13 @@ class PontisAgent:
 
                 print(f"  \033[90m[{name}({arguments})]\033[0m")
                 args_str = json.dumps(arguments, ensure_ascii=False)
-                logger.info(f"Tool call: {name}({args_str[:300]})")
-                logger.debug(f"Tool call (full): {name}({args_str})")
+                logger.info(f"Tool call: {name}({args_str})")
                 result = self.tools.execute(name, arguments, self.store)
 
-                # Truncate very long results to avoid context overflow
                 if len(result) > 8000:
                     result = result[:8000] + "\n... (truncated)"
 
-                logger.info(f"Tool result [{name}]: {result[:200]}")
-                logger.debug(f"Tool result (full) [{name}]: {result}")
+                logger.info(f"Tool result [{name}]: {result}")
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,

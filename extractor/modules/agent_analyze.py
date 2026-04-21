@@ -15,8 +15,6 @@ from storage import Store
 
 logger = logging.getLogger(__name__)
 
-MAX_ROUNDS_DEFAULT = 150
-
 COORDINATOR_PROMPT = """\
 你是数据分析助手，负责深入理解用户的项目数据。
 
@@ -78,8 +76,7 @@ COORDINATOR_PROMPT = """\
 """
 
 
-def generate(store: Store, *, max_rounds: int = MAX_ROUNDS_DEFAULT,
-             debug: bool = False) -> None:
+def generate(store: Store, *, debug: bool = False) -> None:
     """统一分析：关系发现 + 总结生成。"""
     from agent.agent import PontisAgent
     from agent.tools import build_writer_registry, enable_debug
@@ -103,5 +100,5 @@ def generate(store: Store, *, max_rounds: int = MAX_ROUNDS_DEFAULT,
         system_prompt=build_prompt("writer", store.project_path, debug=debug),
     )
 
-    agent.chat(COORDINATOR_PROMPT, max_rounds=max_rounds)
+    agent.chat(COORDINATOR_PROMPT)
     logger.info("=== Agent Analyze done ===")

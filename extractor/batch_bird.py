@@ -106,7 +106,7 @@ def _run_agent(store, *, debug: bool = False) -> float:
         return 0.0
 
     t0 = time.time()
-    registry[AI_MODULE](store, max_rounds=150, debug=debug)
+    registry[AI_MODULE](store, debug=debug)
     return time.time() - t0
 
 

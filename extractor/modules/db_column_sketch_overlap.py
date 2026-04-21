@@ -309,8 +309,7 @@ def _create_overlap_entity(db_ref: str, overlap: Dict, store: Store) -> bool:
 
         store.create_node(full_ref, meta={
             "stats": stats,
-            "brief": f"{from_table}.{from_column} 与 {to_table}.{to_column} 值重叠"
-                     f"（Jaccard={stats['jaccard']}，{match_type}）",
+            "brief": f"J={stats['jaccard']} cov={coverage_a}/{coverage_b} {match_type}",
             "detail": f"{match_type}。{reason}。"
                       f"Jaccard={stats['jaccard']}，估计交集={stats['card_overlap']}。"
                       f"{from_table} 覆盖率 {coverage_a}，"
