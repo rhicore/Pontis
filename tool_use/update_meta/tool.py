@@ -1,11 +1,10 @@
 """
 Update meta tool - Merge-write metadata for existing nodes.
 
-Uses store.set_meta() which:
-- Only updates fields present in `fields` dict
-- Preserves existing fields not mentioned
-- Auto-maintains internal fields (_id, _entity_name, _files, _inode)
+Only allows updating brief and detail fields.
 """
+
+_ALLOWED_FIELDS = {"brief", "detail"}
 
 
 def update_meta_command(
@@ -19,7 +18,7 @@ def update_meta_command(
     Args:
         store: Store instance
         ref: ref string (file path, path::entity, or ent_id)
-        fields: Fields to update/merge
+        fields: Fields to update/merge (only brief and detail allowed)
 
     Returns:
         Success/error message
@@ -27,9 +26,13 @@ def update_meta_command(
     if not store.pontis_exists:
         return f"Error: .pontis directory not found in {store.project_path}"
 
+    # 验证字段白名单
+    invalid = set(fields.keys()) - _ALLOWED_FIELDS
+    if invalid:
+        return f"错误: 不允许修改 {', '.join(sorted(invalid))}。只允许修改: {', '.join(sorted(_ALLOWED_FIELDS))}"
+
     # Verify node exists
     if not store.node_exists(ref):
-        # Also try get_meta for unindexed files
         meta = store.get_meta(ref)
         if meta is None:
             return f"Node not found: {ref}"

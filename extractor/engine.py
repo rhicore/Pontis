@@ -89,6 +89,15 @@ def get_registry() -> Dict[str, object]:
     except ImportError:
         pass
 
+    # Agent 模块（需要 agent API key）
+    try:
+        from extractor.modules.agent_summary import generate as agent_summary
+        from extractor.modules.agent_join_detect import generate as agent_join_detect
+        _REGISTRY["agent_summary"] = agent_summary
+        _REGISTRY["agent_join_detect"] = agent_join_detect
+    except ImportError:
+        pass
+
     return _REGISTRY
 
 

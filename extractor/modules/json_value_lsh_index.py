@@ -1,7 +1,8 @@
 """JSON Value LSH Index — 为 JSON 文件的原始值构建 LSH 索引
 
 遍历 JSON 树，收集所有原始值（String, Number, Bool, NULL）和 key，
-为每个 JSON 文件构建统一索引。通过 store.create_file() 分配路径并注册 KG 节点。
+为每个 JSON 文件构建统一索引。索引文件存储在 .pontis/cache/，
+索引信息记录在 JSON 文件节点的 meta 中。
 """
 import json
 import os
@@ -30,14 +31,13 @@ def _build_index(json_ref: str, store: Store) -> None:
         logger.warning(f"Failed to read {json_ref}: {e}")
         return
 
-    # 单一索引覆盖所有原始值
     writer = LSHIndexWriter(num_buckets=256, is_numeric=False, top_k=100)
 
     def walk(obj, path=""):
         if isinstance(obj, dict):
             for key, val in obj.items():
                 child = f"{path}.{key}" if path else key
-                writer.add_value(key)  # key 也可检索
+                writer.add_value(key)
                 if isinstance(val, (str, int, float, bool)) or val is None:
                     writer.add_value(val)
                 elif isinstance(val, (dict, list)):
@@ -52,17 +52,19 @@ def _build_index(json_ref: str, store: Store) -> None:
 
     walk(data)
 
-    idx_ref = json_ref + "::values.idx"
-    file_path = store.create_file(
-        ref=idx_ref,
-        meta={
-            "index_version": 1,
-            "index_buckets": writer.num_buckets,
-            "index_distinct": writer._distinct_count,
+    # 存储索引文件到 .pontis/cache/lsh/
+    ent_id = store.resolve_ref(json_ref)[0]
+    cache_file = store.cache_path("lsh", f"{ent_id}.lsh")
+
+    writer.write(cache_file)
+
+    store.set_meta(json_ref, {
+        "index": {
+            "version": 1,
+            "buckets": writer.num_buckets,
+            "distinct": writer._distinct_count,
         },
-        parent_ref=json_ref,
-    )
-    writer.write(file_path)
+    })
 
 
 def generate(store: Store) -> None:
@@ -76,8 +78,9 @@ def generate(store: Store) -> None:
                 continue
             if ref.endswith('.jsonl'):
                 continue
-            idx_refs = store.find_connected(ref, edge_type="contains", pattern="*.idx")
-            if idx_refs:
+            # 已有索引则跳过
+            meta = store._get_stored_meta(ref) or {}
+            if meta.get("index"):
                 continue
             try:
                 _build_index(ref, store)

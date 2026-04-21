@@ -61,8 +61,7 @@ class Store:
         self._name_index: Dict[Tuple[str, str], str] = {}  # (path, entity_name) → ent_id
 
         # 边索引：用于 :: 遍历
-        self._outgoing: Dict[str, List[dict]] = {}  # node_id → [{type, to}, ...]
-        self._incoming: Dict[str, List[dict]] = {}  # node_id → [{type, from}, ...]
+        self._adjacent: Dict[str, set] = {}  # node_id → {connected_node_ids}
 
         # 延迟构建索引（首次访问时）
         self._index_built = False
@@ -82,41 +81,40 @@ class Store:
         """索引文件根目录 (.pontis/_index/)。"""
         return os.path.join(self._pontis_root, "_index")
 
-    # ==================== File Allocation ====================
+    # ==================== Cache ====================
 
-    def create_file(self, ref: str, meta: dict = None,
-                    parent_ref: str = None, edge_type: str = "contains") -> str:
-        """在 .pontis/_blobs/ 下分配一个文件路径，注册为 KG 节点。
+    def cache_path(self, *parts: str) -> str:
+        """返回 .pontis/cache/ 下的绝对路径，自动创建父目录。
 
-        只分配路径并创建节点 + 边，不执行文件 I/O。
-        返回绝对路径，由调用方自行读写文件内容。
+        不做文件 I/O，只负责路径分配和目录创建。
+        调用方自行读写该路径的文件。
 
         Args:
-            ref: 节点引用 (e.g. "db/event.db::event.id.INT.col.idx")
-            meta: 额外元数据
-            parent_ref: 父节点 ref，自动创建 contains 边
-            edge_type: 边类型
-
-        Returns:
-            分配的文件绝对路径
+            *parts: 路径段，如 "lsh", "ent_a3f2c801.lsh"
         """
-        blob_id = _gen_id()
-        blob_dir = os.path.join(self._pontis_root, "_blobs")
-        os.makedirs(blob_dir, exist_ok=True)
+        cache_dir = os.path.join(self._pontis_root, "cache")
+        path = os.path.join(cache_dir, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return path
 
-        blob_relpath = os.path.join(".pontis", "_blobs", f"{blob_id}.bin")
-        blob_abs = os.path.join(blob_dir, f"{blob_id}.bin")
+    def cache_find(self, pattern: str) -> list:
+        """在 .pontis/cache/ 下按文件名模式检索，返回匹配的绝对路径列表。
 
-        node_meta = {"path": blob_relpath}
-        if meta:
-            node_meta.update(meta)
-
-        self.set_meta(ref, node_meta)
-
-        if parent_ref:
-            self.add_edges([{"from": parent_ref, "to": ref, "type": edge_type}])
-
-        return blob_abs
+        Args:
+            pattern: glob 模式，如 "lsh/*.lsh", "bm25/*", "**/*.pkl"
+        """
+        import fnmatch as _fnmatch
+        cache_dir = os.path.join(self._pontis_root, "cache")
+        if not os.path.isdir(cache_dir):
+            return []
+        results = []
+        for root, dirs, files in os.walk(cache_dir):
+            for f in files:
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, cache_dir)
+                if _fnmatch.fnmatch(rel, pattern):
+                    results.append(full)
+        return results
 
     # ==================== Ref Resolution ====================
 
@@ -160,8 +158,7 @@ class Store:
         self._id_index.clear()
         self._inode_index.clear()
         self._name_index.clear()
-        self._outgoing.clear()
-        self._incoming.clear()
+        self._adjacent.clear()
 
         if not os.path.exists(self._nodes_root):
             self._index_built = True
@@ -196,18 +193,14 @@ class Store:
             if inode is not None:
                 self._inode_index[inode] = ent_id
 
-        # 构建边索引
+        # 构建邻接索引
         raw_edges = self._read_edges_raw()
         for e in raw_edges:
-            from_id = e.get("from", "")
-            to_id = e.get("to", "")
-            etype = e.get("type", "")
-            self._outgoing.setdefault(from_id, []).append(
-                {"type": etype, "to": to_id}
-            )
-            self._incoming.setdefault(to_id, []).append(
-                {"type": etype, "from": from_id}
-            )
+            nodes = e.get("nodes", [])
+            for nid in nodes:
+                for other in nodes:
+                    if other != nid:
+                        self._adjacent.setdefault(nid, set()).add(other)
 
         self._index_built = True
 
@@ -378,19 +371,24 @@ class Store:
             # 剥离内部字段
             result = {k: v for k, v in result.items() if k not in _INTERNAL_FIELDS}
 
-            # 图谱边虚属性：按出边类型自动分组，生成 {edge_type: [target_ref, ...]}
-            # 例如表节点的 columns 边 → {"columns": ["db/event.db::event.id.INT.col", ...]}
-            # 不覆盖已有字段，完全由图谱结构驱动，无需手动注册
+            # 图谱边虚属性：按邻接节点实体类型后缀自动分组
+            # 例如 event.db → {table: [...], col: [...], view: [...]}
+            # 不覆盖已有字段，完全由图谱结构驱动
             self._ensure_index()
-            for edge in self._outgoing.get(ent_id, []):
-                etype = edge["type"]
-                to_ref = self._id_index.get(edge["to"])
-                if to_ref is None:
+            for adj_id in self._adjacent.get(ent_id, set()):
+                adj_ref = self._id_index.get(adj_id)
+                if adj_ref is None:
                     continue
-                if etype not in result:
-                    result[etype] = [to_ref]
-                elif isinstance(result[etype], list):
-                    result[etype].append(to_ref)
+                # 提取实体类型后缀
+                if "::" in adj_ref:
+                    entity_part = adj_ref.split("::", 1)[1]
+                    suffix = entity_part.rsplit(".", 1)[-1] if "." in entity_part else entity_part
+                else:
+                    suffix = "file"
+                if suffix not in result:
+                    result[suffix] = [adj_ref]
+                elif isinstance(result[suffix], list):
+                    result[suffix].append(adj_ref)
 
             # 虚属性补充（受 include_props 控制）
             if include_props is None or len(include_props) > 0:
@@ -512,13 +510,13 @@ class Store:
 
             self.put_meta(ref, meta)
 
-            # 自动 contains 边 + 用户边
-            contains_edge = {
-                "from": path,
-                "type": "contains",
-                "to": ref,
+            # 自动边：连接文件和实体，实体依赖此边
+            auto_edge = {
+                "a": path,
+                "b": ref,
+                "required_by": [ref],  # 实体节点依赖归属边
             }
-            all_edges = [contains_edge]
+            all_edges = [auto_edge]
             if edges:
                 all_edges.extend(edges)
             self.add_edges(all_edges)
@@ -571,16 +569,14 @@ class Store:
             refs = next_refs
         return refs
 
-    def find_connected(self, ref: str, edge_type: str = None,
-                       pattern: str = "*") -> List[str]:
+    def find_connected(self, ref: str, pattern: str = "*") -> List[str]:
         """从指定节点出发，沿边查找相连节点。
 
         Args:
             ref: 起始节点引用
-            edge_type: 只沿此类型的边遍历（None = 所有类型）
             pattern: 过滤目标节点名
         """
-        return self._traverse(ref, edge_type=edge_type, pattern=pattern)
+        return self._traverse(ref, pattern=pattern)
 
     def _match_all_nodes(self, pattern: str) -> List[str]:
         """匹配所有节点，合并图谱搜索（Layer 1）和文件系统搜索（Layer 2）。
@@ -673,40 +669,22 @@ class Store:
             results.append(rel)
         return sorted(results)
 
-    def _traverse(self, ref: str, edge_type: str = None,
-                  pattern: str = "*") -> List[str]:
-        """从 ref 出发沿边遍历（双向），返回匹配 pattern 的目标节点。"""
+    def _traverse(self, ref: str, pattern: str = "*") -> List[str]:
+        """从 ref 出发遍历邻接节点，返回匹配 pattern 的节点。"""
         self._ensure_index()
         path, entity_name = self.resolve_ref(ref)
         node_id = self._path_to_id(path, entity_name)
         if not node_id:
             return []
 
-        seen = set()
         results = []
-
-        def _try_match(target_id: str):
-            if target_id in seen:
-                return
-            seen.add(target_id)
-            to_ref = self._id_index.get(target_id)
-            if to_ref is None:
-                return
-            name = to_ref.split("::", 1)[1] if "::" in to_ref else to_ref
+        for adj_id in self._adjacent.get(node_id, set()):
+            adj_ref = self._id_index.get(adj_id)
+            if adj_ref is None:
+                continue
+            name = adj_ref.split("::", 1)[1] if "::" in adj_ref else adj_ref
             if fnmatch.fnmatch(name, pattern):
-                results.append(to_ref)
-
-        # 出边
-        for edge in self._outgoing.get(node_id, []):
-            if edge_type and edge["type"] != edge_type:
-                continue
-            _try_match(edge["to"])
-
-        # 入边
-        for edge in self._incoming.get(node_id, []):
-            if edge_type and edge["type"] != edge_type:
-                continue
-            _try_match(edge["from"])
+                results.append(adj_ref)
 
         return results
 
@@ -751,80 +729,166 @@ class Store:
                       default_flow_style=False, allow_unicode=True)
         self._edges_cache = edges
 
-    def get_edges(self, from_ref: str = None, edge_type: str = None,
-                  to_ref: str = None) -> List[dict]:
-        """查询边，参数和返回值都用 ref 格式。"""
+    def get_edges(self, node_ref: str = None) -> List[dict]:
+        """查询边。返回 ref 格式。
+
+        Args:
+            node_ref: 只返回包含此节点的边。None = 全部。
+        """
         self._ensure_index()
         raw_edges = self._read_edges_raw()
 
+        node_id = self._resolve_path_to_id(node_ref) if node_ref else None
+
         result = []
         for e in raw_edges:
-            e_from = self._resolve_edge_ref(e.get("from", ""))
-            e_to = self._resolve_edge_ref(e.get("to", ""))
-            etype = e.get("type", "")
-
-            if from_ref and e_from != from_ref:
-                continue
-            if edge_type and etype != edge_type:
-                continue
-            if to_ref and e_to != to_ref:
+            nodes = e.get("nodes", [])
+            if node_id and node_id not in nodes:
                 continue
 
-            result.append({
-                "from": e_from,
-                "type": etype,
-                "to": e_to,
-            })
+            # 转换为 ref 格式
+            edge_dict = {
+                "nodes": [self._id_index.get(nid, nid) for nid in nodes],
+            }
+            required = e.get("required_by", [])
+            if required:
+                edge_dict["required_by"] = [self._id_index.get(r, r) for r in required]
+            result.append(edge_dict)
 
         return result
 
     def add_edges(self, edges: List[dict]):
-        """添加边（路径格式输入，ID 格式存储，去重）。"""
+        """添加无向边（ref 格式输入，ID 格式存储，去重）。
+
+        边格式：{"a": ref, "b": ref, "required_by": [ref, ...]}
+        """
         self._ensure_index()
         raw = self._read_edges_raw()
-        existing_keys = {(e.get("from", ""), e.get("type", ""), e.get("to", ""))
-                         for e in raw}
+        existing_pairs = {frozenset(e.get("nodes", [])) for e in raw}
 
         for e in edges:
-            from_id = self._resolve_path_to_id(e.get("from", ""))
-            to_id = self._resolve_path_to_id(e.get("to", ""))
-            etype = e.get("type", "")
-
-            key = (from_id, etype, to_id)
-            if key in existing_keys:
+            a_id = self._resolve_path_to_id(e.get("a", ""))
+            b_id = self._resolve_path_to_id(e.get("b", ""))
+            if not a_id or not b_id or a_id == b_id:
                 continue
 
-            entry = {
-                "from": from_id,
-                "from_path": e.get("from", ""),
-                "type": etype,
-                "to": to_id,
-                "to_path": e.get("to", ""),
-            }
-            raw.append(entry)
-            existing_keys.add(key)
+            pair = frozenset({a_id, b_id})
+            if pair in existing_pairs:
+                continue
 
-            # 增量更新边索引
-            self._outgoing.setdefault(from_id, []).append(
-                {"type": etype, "to": to_id}
-            )
-            self._incoming.setdefault(to_id, []).append(
-                {"type": etype, "from": from_id}
-            )
+            # 解析 required_by：支持 "a"/"b" 标签或 ref
+            required_by = []
+            for r in (e.get("required_by") or []):
+                if r == "a":
+                    required_by.append(a_id)
+                elif r == "b":
+                    required_by.append(b_id)
+                else:
+                    rid = self._resolve_path_to_id(r)
+                    if rid in (a_id, b_id):
+                        required_by.append(rid)
+
+            entry = {
+                "nodes": [a_id, b_id],
+            }
+            if required_by:
+                entry["required_by"] = required_by
+            # 可读性：附上 ref
+            entry[a_id] = e.get("a", "")
+            entry[b_id] = e.get("b", "")
+
+            raw.append(entry)
+            existing_pairs.add(pair)
+
+            # 增量更新邻接索引
+            self._adjacent.setdefault(a_id, set()).add(b_id)
+            self._adjacent.setdefault(b_id, set()).add(a_id)
 
         self._write_edges_raw(raw)
 
     def clear_edges(self):
         """清空所有边。"""
         self._write_edges_raw([])
-        self._outgoing.clear()
-        self._incoming.clear()
+        self._adjacent.clear()
 
-    def _resolve_edge_ref(self, ref: str) -> str:
-        """边引用 → 路径格式。如果是 ID 就转换，否则原样返回。"""
-        if ref.startswith("ent_"):
-            return self._id_index.get(ref, ref)
-        return ref
+    # ==================== Delete ====================
+
+    def delete_node(self, ref: str) -> List[str]:
+        """删除节点及其关联边，按 required_by 级联删除依赖节点。
+
+        级联规则：
+          1. 删除节点 meta + 所有连接边
+          2. 对每条被删边检查 required_by：
+             required_by 中列出的节点（如果不在已删集合中）→ 级联删除
+          3. 递归直到无更多级联
+
+        Returns:
+            被删除的节点 ref 列表（含自身）
+        """
+        self._ensure_index()
+
+        ent_id = self._resolve_path_to_id(ref)
+        if not ent_id or not ent_id.startswith("ent_"):
+            return []
+
+        deleted_ids = set()
+        id_to_ref = {}
+        queue = [ent_id]
+
+        while queue:
+            current_id = queue.pop(0)
+            if current_id in deleted_ids:
+                continue
+
+            # 记录 ref
+            deleted_ids.add(current_id)
+            ref_str = self._id_index.get(current_id, current_id)
+            id_to_ref[current_id] = ref_str
+
+            # 移除该节点的所有边，收集级联目标
+            raw = self._read_edges_raw()
+            new_raw = []
+            cascade_ids = set()
+
+            for e in raw:
+                nodes = e.get("nodes", [])
+                if current_id in nodes:
+                    # 边被删除，检查 required_by
+                    for req_id in (e.get("required_by") or []):
+                        if req_id not in deleted_ids:
+                            cascade_ids.add(req_id)
+                else:
+                    new_raw.append(e)
+
+            self._write_edges_raw(new_raw)
+
+            # 清理邻接索引
+            self._adjacent.pop(current_id, None)
+            for adj_set in self._adjacent.values():
+                adj_set.discard(current_id)
+
+            # 删除节点 meta 文件
+            meta_dir = os.path.join(self._nodes_root, current_id)
+            if os.path.isdir(meta_dir):
+                import shutil
+                shutil.rmtree(meta_dir, ignore_errors=True)
+
+            # 清理索引
+            self._id_index.pop(current_id, None)
+            self._meta_cache.pop(current_id, None)
+            if ref_str != current_id:
+                if "::" in ref_str:
+                    path, en = ref_str.split("::", 1)
+                else:
+                    path, en = ref_str, ""
+                self._name_index.pop((path, en), None)
+
+            # 加入级联队列
+            for cid in cascade_ids:
+                if cid not in deleted_ids:
+                    queue.append(cid)
+
+        return [id_to_ref.get(eid, eid) for eid in deleted_ids]
 
     def _resolve_path_to_id(self, ref: str) -> str:
         """路径格式 → ID。如果已是 ID 就原样返回。"""

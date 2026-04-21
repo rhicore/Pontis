@@ -83,18 +83,19 @@ def _apply_predicate(value, op: str, target) -> bool:
 # ── Index helpers ──────────────────────────────────────────────
 
 def _load_index(store, ref: str):
-    """通过 KG 查找索引节点，加载 LSH 索引。不存在返回 None。"""
-    idx_refs = store.find_connected(ref, edge_type="contains", pattern="*.idx")
-    if not idx_refs:
-        return None
+    """从列实体的 meta 推导路径，加载 LSH 索引。不存在返回 None。"""
     try:
-        from extractor.modules._lsh_index import LSHIndexReader
-        idx_meta = store._get_stored_meta(idx_refs[0]) or {}
-        idx_rel = idx_meta.get("path")
-        if not idx_rel:
+        meta = store._get_stored_meta(ref) or {}
+        idx_info = meta.get("index")
+        if not idx_info:
             return None
-        idx_path = os.path.join(store.project_path, idx_rel)
-        return LSHIndexReader.load(idx_path)
+        # 路径由 ent_id 推导：cache/lsh/{ent_id}.lsh
+        ent_id = store.resolve_ref(ref)[0]
+        cache_file = store.cache_path("lsh", f"{ent_id}.lsh")
+        if not os.path.isfile(cache_file):
+            return None
+        from extractor.modules._lsh_index import LSHIndexReader
+        return LSHIndexReader.load(cache_file)
     except (ImportError, Exception):
         return None
 
@@ -185,7 +186,7 @@ def _lookup_db_columns(
         if not db_meta.get("path"):
             continue
 
-        entity_refs = store.find_connected(db_ref, edge_type="contains", pattern="*.col")
+        entity_refs = store.find_connected(db_ref, pattern="*.col")
 
         for entity_ref in entity_refs:
             entity_rel = entity_ref.split("::", 1)[-1] if "::" in entity_ref else entity_ref

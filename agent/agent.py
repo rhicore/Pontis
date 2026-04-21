@@ -8,7 +8,7 @@ from openai import OpenAI
 from storage import Store
 from agent.config import load_agent_config
 from agent.tools import ToolRegistry, build_readonly_registry
-from agent.system_prompt import build_system_prompt
+from agent.prompt import build_prompt
 
 
 class PontisAgent:
@@ -40,16 +40,22 @@ class PontisAgent:
 
         # 可注入的工具和 prompt
         self.tools = tools or build_readonly_registry()
-        self.system_prompt = system_prompt or build_system_prompt(project_path)
+        self.system_prompt = system_prompt or build_prompt("readonly", project_path)
         self.messages = [
             {"role": "system", "content": self.system_prompt},
         ]
 
-    def chat(self, user_input: str) -> str:
-        """Send user input and return the agent's response."""
+    def chat(self, user_input: str, max_rounds: int = 0) -> str:
+        """Send user input and return the agent's response.
+
+        Args:
+            user_input: User message.
+            max_rounds: Max tool-call rounds. 0 = unlimited (interactive mode).
+        """
         self.messages.append({"role": "user", "content": user_input})
 
-        # Loop: LLM may make multiple rounds of tool calls (no limit)
+        rounds = 0
+        # Loop: LLM may make multiple rounds of tool calls
         while True:
             response = self.client.chat.completions.create(
                 model=self.config.model,
@@ -65,6 +71,10 @@ class PontisAgent:
             # If no tool calls, return the text response
             if not msg.tool_calls:
                 return msg.content or ""
+
+            rounds += 1
+            if 0 < max_rounds <= rounds:
+                return msg.content or "[max rounds reached]"
 
             # Execute all tool calls
             for tool_call in msg.tool_calls:
@@ -143,6 +153,10 @@ class PontisAgent:
                     "tool_call_id": tool_call.id,
                     "content": result,
                 })
+
+    def reset_conversation(self):
+        """Clear conversation history (keep system prompt) for a fresh session."""
+        self.messages = [self.messages[0]]
 
     def run(self):
         """Run the interactive REPL."""

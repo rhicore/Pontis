@@ -1,52 +1,105 @@
-"""
-Search tool - Semantic search across files and entities.
-
-Uses natural language queries to find relevant objects.
-Supports optional KG structure enhancement and BM25 keyword search.
-
-NOTE: This is a placeholder implementation. Full implementation requires:
-1. Knowledge Graph (KG) embedding/index infrastructure
-2. BM25 index for keyword search
-3. Embedding model for semantic similarity
-
-Currently falls back to keyword matching in metadata.
-"""
+"""Search tool — BM25 检索实体的 brief 和 detail 字段。"""
+import math
+import re
 import os
+from collections import Counter
 from typing import List, Optional
 
 from tool_use.utils.formatters import get_type_config, format_info_from_meta, get_file_type_from_name
 from tool_use.utils.config import TOOL_PAGINATION
 
 
-def _keyword_search(store, query: str, path_pattern: str = "") -> List[tuple]:
-    """
-    Fallback keyword search in metadata via store.
-    """
-    results = []
-    query_lower = query.lower()
-    query_words = set(query_lower.split())
+def _tokenize(text: str) -> List[str]:
+    """中英文分词：英文按空白拆分，中文按字符拆分，过滤短词。"""
+    tokens = []
+    for part in re.split(r'[\s,，。.!！?？;；:：、/\\|()\[\]{}]+', text.lower()):
+        if not part:
+            continue
+        # 纯 ASCII 词 → 直接加入
+        if re.match(r'^[a-z0-9_]+$', part):
+            if len(part) > 1:
+                tokens.append(part)
+        else:
+            # 含 CJK → 按字符 bigram 拆分
+            chars = [c for c in part if c.strip()]
+            for i in range(len(chars)):
+                tokens.append(chars[i])
+                if i + 1 < len(chars):
+                    tokens.append(chars[i] + chars[i + 1])
+    return tokens
 
+
+def _bm25_search(store, query: str, path_pattern: str = "",
+                 k1: float = 1.5, b: float = 0.75) -> List[tuple]:
+    """BM25 检索，只搜索 brief 和 detail 字段。"""
+    query_tokens = _tokenize(query)
+    if not query_tokens:
+        return []
+
+    # 收集所有文档
+    docs = []  # [(ref, tokens, info_str)]
     for ref, meta in store.walk_metas():
+        # path_pattern 过滤
+        if path_pattern and path_pattern.strip() not in ("", "*"):
+            import fnmatch
+            if not fnmatch.fnmatch(ref.lower(), path_pattern.lower()):
+                continue
+
+        brief = meta.get("brief", "") or ""
+        detail = meta.get("detail", "") or ""
+        doc_text = f"{brief} {detail}"
+        if not doc_text.strip():
+            continue
+
+        tokens = _tokenize(doc_text)
+        if not tokens:
+            continue
+
+        # 显示信息
         name = meta.get('name', os.path.basename(ref))
-        summary = meta.get('short_summary', '') or ''
-        long_summary = meta.get('long_summary', '') or ''
         node_type = meta.get('type', '')
-        semantic_summary = meta.get('semantic_summary', '') or ''
+        file_type = get_file_type_from_name(name, node_type)
+        config = get_type_config(file_type)
+        info = format_info_from_meta(meta, config)
+        display_info = f"{info}, {brief}" if brief and info != "-" else (brief or info)
 
-        # Score based on keyword matches
-        searchable = f"{name} {summary} {long_summary} {node_type} {semantic_summary}".lower()
-        score = sum(1 for w in query_words if w in searchable)
+        docs.append((ref, tokens, display_info))
 
+    if not docs:
+        return []
+
+    # BM25 计算
+    N = len(docs)
+    avgdl = sum(len(t) for _, t, _ in docs) / N
+    query_token_set = set(query_tokens)
+
+    # IDF
+    df = Counter()
+    for _, tokens, _ in docs:
+        seen = set(tokens) & query_token_set
+        for t in seen:
+            df[t] += 1
+
+    idf = {}
+    for t in query_token_set:
+        idf[t] = math.log((N - df.get(t, 0) + 0.5) / (df.get(t, 0) + 0.5) + 1)
+
+    results = []
+    for ref, tokens, info in docs:
+        tf = Counter(tokens)
+        dl = len(tokens)
+        score = 0.0
+        for t in query_token_set:
+            if t not in tf:
+                continue
+            tf_val = tf[t]
+            numerator = tf_val * (k1 + 1)
+            denominator = tf_val + k1 * (1 - b + b * dl / avgdl)
+            score += idf.get(t, 0) * numerator / denominator
         if score > 0:
-            # Get file type and info
-            file_type = get_file_type_from_name(name, node_type)
-            config = get_type_config(file_type)
-            info = format_info_from_meta(meta, config)
-            brief = meta.get("brief", "")
+            results.append((score, ref, info))
 
-            display = ref
-            combined_info = f"{info}, {brief}" if brief and info != "-" else (brief or info)
-            results.append((score, display, combined_info))
+    results.sort(key=lambda x: -x[0])
     return results
 
 
@@ -56,25 +109,16 @@ def search_command(
     query: str,
     offset: int = 0,
     limit: Optional[int] = None,
-    structure_enhance: bool = True,
-    BM25: bool = True,
     current_cwd: str = ""
 ) -> str:
-    """
-    Semantic search across files and entities.
+    """BM25 语义检索，搜索实体的 brief 和 detail。
 
     Args:
-        store: Store instance
-        path_pattern: Glob pattern for narrowing search scope
-        query: Natural language search query
-        offset: Starting index (0-based)
-        limit: Max results per page
-        structure_enhance: Whether to use KG structure (not yet implemented)
-        BM25: Whether to use BM25 keyword search (not yet implemented)
-        current_cwd: Current working directory
-
-    Returns:
-        Formatted results: [name] | [Info]
+        store: Store 实例
+        path_pattern: glob 模式限定搜索范围
+        query: 搜索查询
+        offset: 起始位置
+        limit: 每页最大条数
     """
     if not store.pontis_exists:
         return f"Error: .pontis directory not found in {store.project_path}"
@@ -84,14 +128,10 @@ def search_command(
         limit = page_conf.default_limit
     limit = min(limit, page_conf.max_limit)
 
-    # Fallback: keyword search in metadata
-    results = _keyword_search(store, query, path_pattern)
+    results = _bm25_search(store, query, path_pattern)
 
     if not results:
         return "No objects found"
-
-    # Sort by score (descending)
-    results.sort(key=lambda x: -x[0])
 
     total = len(results)
     page = results[offset:offset + limit]
@@ -99,7 +139,7 @@ def search_command(
     if not page:
         return f"No results at offset {offset}. Total results: {total}"
 
-    lines = [f"{display} | {info}" for score, display, info in page]
+    lines = [f"{ref} | {info}" for _, ref, info in page]
     output = '\n'.join(lines)
 
     end = offset + len(page)
@@ -107,16 +147,3 @@ def search_command(
         output += f"\n(共 {total} 条结果，当前显示第 {offset + 1}-{end} 条。使用 offset={end} 查看后续结果)"
 
     return output
-
-
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 4:
-        print("Usage: python -m tool_use.search.tool <project_path> <path_pattern> <query>")
-        sys.exit(1)
-
-    from storage import Store
-    _store = Store(sys.argv[1])
-    _pattern = sys.argv[2]
-    _query = sys.argv[3]
-    print(search_command(_store, _pattern, _query))

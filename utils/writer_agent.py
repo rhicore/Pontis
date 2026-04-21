@@ -15,13 +15,13 @@ import sys
 
 from agent.agent import PontisAgent
 from agent.tools import build_writer_registry
-from agent.writer_prompt import build_writer_prompt
+from agent.prompt import build_prompt
 
 
 def create_writer_agent(project_path: str) -> PontisAgent:
     """创建写入模式智能体。"""
     tools = build_writer_registry()
-    prompt = build_writer_prompt(project_path)
+    prompt = build_prompt("writer", project_path)
     return PontisAgent(project_path, tools=tools, system_prompt=prompt)
 
 

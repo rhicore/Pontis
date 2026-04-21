@@ -1,12 +1,12 @@
 """
 Create entity tool - Create new entity nodes in the knowledge graph.
 
-Uses store.create_node() which handles:
-- Writing meta to .pontis/nodes/{ent_id}/_meta.yml
-- Auto-recording _inode for file nodes
-- Auto-adding contains edge for entity nodes
-- Adding user-specified edges
+Currently only allows creating .rel entities under .db files.
 """
+
+import re
+
+_ALLOWED_ENTITY_RE = re.compile(r".*\.db::.*\.rel$")
 
 
 def create_entity_command(
@@ -20,9 +20,9 @@ def create_entity_command(
 
     Args:
         store: Store instance
-        ref: Entity ref string, e.g. "event.db::user_event_join.view"
+        ref: Entity ref string, e.g. "event.db::users__orders.rel"
         meta: Initial metadata dict
-        edges: Optional list of edge dicts with {from, type, to}
+        edges: Optional list of edge dicts
 
     Returns:
         Success/error message
@@ -32,6 +32,9 @@ def create_entity_command(
 
     if "::" not in ref:
         return f"Error: ref must contain '::' for entity creation. Got: '{ref}'"
+
+    if not _ALLOWED_ENTITY_RE.match(ref):
+        return f"错误: 目前只允许创建 .rel 实体（逻辑关系），ref 格式应为 *.db::**.rel"
 
     if store.node_exists(ref):
         return f"Entity already exists: {ref}"

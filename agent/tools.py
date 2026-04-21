@@ -7,10 +7,17 @@ import importlib
 from typing import Callable, Dict, List, Any, Tuple
 
 
+# tool_name → tool_use directory mapping
+_TOOL_DIR_MAP = {
+    "agent": "sub_agent",
+}
+
+
 def _load_prompt(tool_name: str) -> str:
     """Load tool prompt from tool_use/<tool>/prompt.py."""
     try:
-        mod = importlib.import_module(f"tool_use.{tool_name}.prompt")
+        dir_name = _TOOL_DIR_MAP.get(tool_name, tool_name)
+        mod = importlib.import_module(f"tool_use.{dir_name}.prompt")
         return mod.get_description()
     except (ImportError, AttributeError):
         return ""
@@ -284,11 +291,15 @@ def _build_write_schemas() -> Dict[str, dict]:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "from": {"type": "string"},
-                                    "type": {"type": "string"},
-                                    "to": {"type": "string"},
+                                    "a": {"type": "string", "description": "节点 ref"},
+                                    "b": {"type": "string", "description": "节点 ref"},
+                                    "required_by": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "依赖方，值为 [\"a\"] 或 [\"b\"]",
+                                    },
                                 },
-                                "required": ["from", "type", "to"],
+                                "required": ["a", "b"],
                             },
                             "description": "要添加的关系边（可选）",
                         },
@@ -316,6 +327,82 @@ def _build_write_schemas() -> Dict[str, dict]:
                     },
                     "required": ["ref", "fields"],
                 },
+            },
+        },
+        "add_edge": {
+            "type": "function",
+            "function": {
+                "name": "add_edge",
+                "description": _load_prompt("add_edge"),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "edges": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "a": {"type": "string", "description": "节点 ref"},
+                                    "b": {"type": "string", "description": "节点 ref"},
+                                    "required_by": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "依赖方列表，值为 [\"a\"] 或 [\"b\"]",
+                                    },
+                                },
+                                "required": ["a", "b"],
+                            },
+                            "description": "要添加的边列表",
+                        },
+                    },
+                    "required": ["edges"],
+                },
+            },
+        },
+        "delete": {
+            "type": "function",
+            "function": {
+                "name": "delete",
+                "description": _load_prompt("delete"),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "ref": {
+                            "type": "string",
+                            "description": "要删除的节点 ref，如 'event.db' 或 'event.db::users.table'",
+                        },
+                    },
+                    "required": ["ref"],
+                },
+            },
+        },
+    }
+
+
+def _build_agent_schema() -> dict:
+    """构建子智能体工具的 OpenAI function schema。"""
+    return {
+        "type": "function",
+        "function": {
+            "name": "agent",
+            "description": _load_prompt("agent"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "详细任务描述。子智能体看不到你的对话历史，需要提供完整背景和具体要求",
+                    },
+                    "max_rounds": {
+                        "type": "integer",
+                        "description": "子智能体最大 tool call 轮次，默认 15",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "简短任务摘要（3-5词），用于日志显示",
+                    },
+                },
+                "required": ["task"],
             },
         },
     }
@@ -418,6 +505,16 @@ def _exec_update_meta(store, arguments: dict) -> str:
     )
 
 
+def _exec_add_edge(store, arguments: dict) -> str:
+    from tool_use.add_edge.tool import add_edge_command
+    return add_edge_command(store, edges=arguments["edges"])
+
+
+def _exec_delete(store, arguments: dict) -> str:
+    from tool_use.delete.tool import delete_command
+    return delete_command(store, ref=arguments["ref"])
+
+
 # ==================== Registry Builders ====================
 
 _READONLY_SCHEMAS = None
@@ -451,24 +548,46 @@ _READONLY_EXECUTORS = {
 _WRITE_EXECUTORS = {
     "create_entity": _exec_create_entity,
     "update_meta": _exec_update_meta,
+    "add_edge": _exec_add_edge,
+    "delete": _exec_delete,
 }
 
 
 def build_readonly_registry() -> ToolRegistry:
-    """构建只读模式工具集。"""
+    """构建只读模式工具集（7 个只读 + agent 子智能体）。"""
     registry = ToolRegistry()
     schemas = _get_readonly_schemas()
     for name, executor in _READONLY_EXECUTORS.items():
         registry.register(name, schemas[name], executor)
+
+    # 子智能体：readonly 模式，创建的子智能体也是 readonly
+    from tool_use.sub_agent.tool import AgentExecutor
+    registry.register("agent", _get_agent_schema(), AgentExecutor(registry, mode="readonly"))
+
     return registry
 
 
+_AGENT_SCHEMA = None
+
+
+def _get_agent_schema() -> dict:
+    global _AGENT_SCHEMA
+    if _AGENT_SCHEMA is None:
+        _AGENT_SCHEMA = _build_agent_schema()
+    return _AGENT_SCHEMA
+
+
 def build_writer_registry() -> ToolRegistry:
-    """构建写入模式工具集（只读工具 + 写入工具）。"""
+    """构建写入模式工具集（只读 + 写入 + writer 子智能体）。"""
     registry = build_readonly_registry()
     write_schemas = _get_write_schemas()
     for name, executor in _WRITE_EXECUTORS.items():
         registry.register(name, write_schemas[name], executor)
+
+    # 替换 agent 为 writer 模式
+    from tool_use.sub_agent.tool import AgentExecutor
+    registry.register("agent", _get_agent_schema(), AgentExecutor(registry, mode="writer"))
+
     return registry
 
 

@@ -1,7 +1,7 @@
 """CSV Column LSH Index — 为 CSV/TSV 列构建 LSH 索引
 
 流式读取 CSV 文件，为每个 .col 实体构建 hash bucket + KLL 索引。
-通过 store.create_file() 分配路径并注册 KG 节点。
+索引文件存储在 .pontis/cache/，索引信息记录在列实体的 meta 中。
 """
 import csv
 import os
@@ -21,10 +21,9 @@ def _parse_col_ref(ref: str):
     if len(parts) != 2:
         return None
     csv_file, entity = parts
-    # entity: stem.col_name.TYPE.col → strip .col, then split
     if not entity.endswith('.col'):
         return None
-    core = entity[:-4]  # stem.col_name.TYPE
+    core = entity[:-4]
     segments = core.rsplit('.', 2)
     if len(segments) != 3:
         return None
@@ -43,7 +42,6 @@ def _build_index(ref: str, store: Store, delimiter: str = ',') -> None:
     if not os.path.isfile(abs_csv):
         return
 
-    # 从元数据获取 cardinality
     cardinality = None
     meta = store._get_stored_meta(ref)
     if meta:
@@ -62,7 +60,6 @@ def _build_index(ref: str, store: Store, delimiter: str = ',') -> None:
                 if not val:
                     writer.add_value(None)
                     continue
-                # 尝试类型转换
                 if is_numeric:
                     try:
                         if '.' in val:
@@ -77,18 +74,20 @@ def _build_index(ref: str, store: Store, delimiter: str = ',') -> None:
         logger.warning(f"Failed to index {ref}: {e}")
         return
 
-    idx_ref = ref + ".idx"
-    file_path = store.create_file(
-        ref=idx_ref,
-        meta={
-            "index_version": 1,
-            "index_buckets": num_buckets,
-            "index_distinct": writer._distinct_count,
-            "index_has_kll": writer._kll is not None,
+    # 存储索引文件到 .pontis/cache/lsh/
+    ent_id = store.resolve_ref(ref)[0]
+    cache_file = store.cache_path("lsh", f"{ent_id}.lsh")
+
+    writer.write(cache_file)
+
+    store.set_meta(ref, {
+        "index": {
+            "version": 1,
+            "buckets": num_buckets,
+            "distinct": writer._distinct_count,
+            "has_kll": writer._kll is not None,
         },
-        parent_ref=ref,
-    )
-    writer.write(file_path)
+    })
 
 
 def generate(store: Store) -> None:
@@ -100,8 +99,8 @@ def generate(store: Store) -> None:
 
     for pattern, delimiter in [("**/*.csv", ','), ("**/*.tsv", '\t')]:
         for ref in store.find_nodes(f"{pattern.split('/')[-1]}::*.*.*.col"):
-            idx_refs = store.find_connected(ref, edge_type="contains", pattern="*.idx")
-            if idx_refs:
+            col_meta = store._get_stored_meta(ref) or {}
+            if col_meta.get("index"):
                 skipped += 1
                 continue
             _build_index(ref, store, delimiter=delimiter)

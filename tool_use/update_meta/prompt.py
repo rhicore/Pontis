@@ -1,6 +1,6 @@
 """Update meta tool prompt — 合并写入元数据。"""
 
-DESCRIPTION = "合并写入节点的元数据字段，仅更新指定的字段，保留已有字段。"
+DESCRIPTION = "更新节点的 brief 和 detail 字段。"
 
 DETAIL = """\
 参数：
@@ -8,17 +8,17 @@ DETAIL = """\
   - 文件路径: "event.db"
   - path::entity: "event.db::users.table"
   - ID 引用: "ent_a3f2c801"
-- fields (必填): 要更新的字段键值对，如 {"brief": "...", "detail": "..."}
+- fields (必填): 只允许更新 brief 和 detail：
+  - brief: 简短描述（≤50字）
+  - detail: 详细描述
 
 更新行为：
 - 合并写入：只更新 fields 中提供的字段，其他字段保持不变
-- 自动维护内部字段（_id, _entity_name, _files, _inode）
-- 如果节点不存在且为文件路径，会自动创建节点
+- 尝试修改其他字段会被拒绝
 
 典型用法：
-- 为表添加描述: update_meta(ref="event.db::users.table", fields={"detail": "用户信息表"})
-- 为列添加语义: update_meta(ref="event.db::users.status.TEXT.col", fields={"brief": "用户状态"})
-- 标记处理状态: update_meta(ref="event.db", fields={"processed": true})\
+- update_meta(ref="event.db::users.table", fields={"brief": "用户表", "detail": "存储所有注册用户的基本信息"})
+- update_meta(ref="event.db::users.status.TEXT.col", fields={"brief": "用户状态"})\
 """
 
 
