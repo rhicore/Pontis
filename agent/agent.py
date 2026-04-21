@@ -1,5 +1,6 @@
 """Pontis Agent - Interactive data analysis agent with tool calling."""
 import json
+import logging
 import sys
 from typing import Iterator, Optional
 
@@ -9,6 +10,8 @@ from storage import Store
 from agent.config import load_agent_config
 from agent.tools import ToolRegistry, build_readonly_registry
 from agent.prompt import build_prompt
+
+logger = logging.getLogger(__name__)
 
 
 class PontisAgent:
@@ -27,15 +30,14 @@ class PontisAgent:
         self.store = Store(project_path)
         self.config = load_agent_config(project_path)
 
-        if not self.config.api_key:
+        if not self.config["api_key"]:
             print("Error: No API key configured.")
-            print("Set OPENAI_API_KEY env var, or create ~/.pontis/agent.yml with:")
-            print("  llm_api_key: your-key-here")
+            print("Set OPENAI_API_KEY env var, or create ~/.pontis/config.yml")
             sys.exit(1)
 
         self.client = OpenAI(
-            api_key=self.config.api_key,
-            base_url=self.config.provider,
+            api_key=self.config["api_key"],
+            base_url=self.config["provider"],
         )
 
         # 可注入的工具和 prompt
@@ -58,11 +60,11 @@ class PontisAgent:
         # Loop: LLM may make multiple rounds of tool calls
         while True:
             response = self.client.chat.completions.create(
-                model=self.config.model,
+                model=self.config["model"],
                 messages=self.messages,
                 tools=self.tools.get_definitions(),
-                max_tokens=self.config.max_tokens,
-                temperature=self.config.temperature,
+                max_tokens=self.config["max_tokens"],
+                temperature=self.config["temperature"],
             )
 
             msg = response.choices[0].message
@@ -70,9 +72,13 @@ class PontisAgent:
 
             # If no tool calls, return the text response
             if not msg.tool_calls:
+                if msg.content:
+                    logger.info(f"Assistant: {msg.content[:200]}")
+                    logger.debug(f"Assistant (full): {msg.content}")
                 return msg.content or ""
 
             rounds += 1
+            logger.debug(f"Round {rounds}/{max_rounds}")
             if 0 < max_rounds <= rounds:
                 return msg.content or "[max rounds reached]"
 
@@ -85,12 +91,17 @@ class PontisAgent:
                     arguments = {}
 
                 print(f"  \033[90m[{name}({arguments})]\033[0m")
+                args_str = json.dumps(arguments, ensure_ascii=False)
+                logger.info(f"Tool call: {name}({args_str[:300]})")
+                logger.debug(f"Tool call (full): {name}({args_str})")
                 result = self.tools.execute(name, arguments, self.store)
 
                 # Truncate very long results to avoid context overflow
                 if len(result) > 8000:
                     result = result[:8000] + "\n... (truncated)"
 
+                logger.info(f"Tool result [{name}]: {result[:200]}")
+                logger.debug(f"Tool result (full) [{name}]: {result}")
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
@@ -109,11 +120,11 @@ class PontisAgent:
 
         while True:
             response = self.client.chat.completions.create(
-                model=self.config.model,
+                model=self.config["model"],
                 messages=self.messages,
                 tools=self.tools.get_definitions(),
-                max_tokens=self.config.max_tokens,
-                temperature=self.config.temperature,
+                max_tokens=self.config["max_tokens"],
+                temperature=self.config["temperature"],
             )
 
             msg = response.choices[0].message
@@ -161,7 +172,7 @@ class PontisAgent:
     def run(self):
         """Run the interactive REPL."""
         print(f"\n\033[1mPontis Agent\033[0m — {self.project_path}")
-        print(f"Model: {self.config.model}")
+        print(f"Model: {self.config['model']}")
         print(f"Type 'exit' or Ctrl+C to quit\n")
 
         while True:

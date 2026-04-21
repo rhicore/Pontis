@@ -168,8 +168,11 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                             "description": "Show all metadata fields, not just defaults",
                         },
                         "property": {
-                            "type": "string",
-                            "description": "Show a specific property only",
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}}
+                            ],
+                            "description": "Show specific property or list of properties, e.g. 'brief' or ['brief','detail']",
                         },
                     },
                     "required": ["path"],
@@ -395,7 +398,7 @@ def _build_agent_schema() -> dict:
                     },
                     "max_rounds": {
                         "type": "integer",
-                        "description": "子智能体最大 tool call 轮次，默认 15",
+                        "description": "子智能体最大 tool call 轮次，默认 25",
                     },
                     "description": {
                         "type": "string",
@@ -587,6 +590,48 @@ def build_writer_registry() -> ToolRegistry:
     # 替换 agent 为 writer 模式
     from tool_use.sub_agent.tool import AgentExecutor
     registry.register("agent", _get_agent_schema(), AgentExecutor(registry, mode="writer"))
+
+    return registry
+
+
+# ==================== Debug Mode ====================
+
+def _build_log_schema() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "log",
+            "description": _load_prompt("log"),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": ["tool_result", "tool_missing", "tool_ux", "prompt_unclear"],
+                        "description": "问题类别",
+                    },
+                    "feedback": {
+                        "type": "string",
+                        "description": "具体问题描述（中文，包含工具名、参数、期望等细节）",
+                    },
+                },
+                "required": ["category", "feedback"],
+            },
+        },
+    }
+
+
+def _exec_log(store, arguments: dict) -> str:
+    from tool_use.log.tool import log_command
+    return log_command(
+        category=arguments["category"],
+        feedback=arguments["feedback"],
+    )
+
+
+def enable_debug(registry: ToolRegistry) -> None:
+    """向已有 registry 注入 log 工具（调试模式）。"""
+    registry.register("log", _build_log_schema(), _exec_log)
 
     return registry
 

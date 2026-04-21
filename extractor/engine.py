@@ -10,7 +10,7 @@ from storage import Store
 logger = logging.getLogger(__name__)
 
 # 需要传 config 参数的模块
-CONFIG_MODULES = {"db_column_overlap", "db_column_rel"}
+CONFIG_MODULES = {"db_column_overlap", "ai_db_column_summary"}
 
 _REGISTRY = None
 
@@ -38,12 +38,7 @@ def get_registry() -> Dict[str, object]:
     from extractor.modules.text_info import generate as text_info
     from extractor.modules.db_table_relations import generate as db_table_relations
     from extractor.modules.db_column_overlap import generate as db_column_overlap
-    from extractor.modules.db_column_rel import generate as db_column_rel
-    from extractor.modules.ai_db_summary import generate as ai_db_summary
-    from extractor.modules.ai_db_table_summary import generate as ai_db_table_summary
     from extractor.modules.ai_db_column_summary import generate as ai_db_column_summary
-    from extractor.modules.ai_json_summary import generate as ai_json_summary
-    from extractor.modules.ai_text_summary import generate as ai_text_summary
 
     _REGISTRY = {
         "db_basic": db_basic,
@@ -63,18 +58,19 @@ def get_registry() -> Dict[str, object]:
         "text_info": text_info,
         "db_table_relations": db_table_relations,
         "db_column_overlap": db_column_overlap,
-        "db_column_rel": db_column_rel,
-        "ai_db_summary": ai_db_summary,
-        "ai_db_table_summary": ai_db_table_summary,
         "ai_db_column_summary": ai_db_column_summary,
-        "ai_json_summary": ai_json_summary,
-        "ai_text_summary": ai_text_summary,
     }
 
     # 尝试注册 sketch 模块
     try:
         from extractor.modules.db_column_sketch_stats import generate as sketch
         _REGISTRY["db_column_sketch_stats"] = sketch
+    except ImportError:
+        pass
+
+    try:
+        from extractor.modules.db_column_sketch_overlap import generate as sketch_overlap
+        _REGISTRY["db_column_sketch_overlap"] = sketch_overlap
     except ImportError:
         pass
 
@@ -91,10 +87,36 @@ def get_registry() -> Dict[str, object]:
 
     # Agent 模块（需要 agent API key）
     try:
+        from extractor.modules.agent_analyze import generate as agent_analyze
+        _REGISTRY["agent_analyze"] = agent_analyze
+    except ImportError:
+        pass
+
+    # Agent 模块 — 独立版（可单独调用）
+    try:
         from extractor.modules.agent_summary import generate as agent_summary
         from extractor.modules.agent_join_detect import generate as agent_join_detect
         _REGISTRY["agent_summary"] = agent_summary
         _REGISTRY["agent_join_detect"] = agent_join_detect
+    except ImportError:
+        pass
+
+    # 可选模块（可能被删除或未安装依赖）
+    try:
+        from extractor.modules.ai_db_summary import generate as ai_db_summary
+        from extractor.modules.ai_db_table_summary import generate as ai_db_table_summary
+        from extractor.modules.ai_json_summary import generate as ai_json_summary
+        from extractor.modules.ai_text_summary import generate as ai_text_summary
+        _REGISTRY["ai_db_summary"] = ai_db_summary
+        _REGISTRY["ai_db_table_summary"] = ai_db_table_summary
+        _REGISTRY["ai_json_summary"] = ai_json_summary
+        _REGISTRY["ai_text_summary"] = ai_text_summary
+    except ImportError:
+        pass
+
+    try:
+        from extractor.modules.db_column_rel import generate as db_column_rel
+        _REGISTRY["db_column_rel"] = db_column_rel
     except ImportError:
         pass
 

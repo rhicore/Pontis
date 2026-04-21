@@ -39,7 +39,11 @@ def update_meta_command(
 
     store.set_meta(ref, fields)
 
-    return f"Updated {ref}: {', '.join(fields.keys())}"
+    # 返回实际写入的值，避免 agent 额外调 meta 验证
+    written = []
+    for k, v in fields.items():
+        written.append(f"  {k}: {v}")
+    return f"Updated {ref}:\n" + "\n".join(written)
 
 
 if __name__ == "__main__":

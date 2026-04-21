@@ -37,7 +37,8 @@ def generate(store: Store) -> None:
     """发现所有数据库文件，创建文件节点并展开实体"""
     logger.info("=== Generating DB entities ===")
 
-    db_patterns = ["**/*.db", "**/*.sqlite", "**/*.sqlite3", "**/*.duckdb"]
+    db_patterns = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb",
+                    "**/*.db", "**/*.sqlite", "**/*.sqlite3", "**/*.duckdb"]
     count = 0
     for pattern in db_patterns:
         for path in store.find_nodes(pattern):

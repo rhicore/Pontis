@@ -14,15 +14,13 @@ from agent.prompt._project import build_project_context
 _VALID_MODES = ("readonly", "writer", "sub_agent")
 
 
-def build_prompt(mode: str, project_path: str) -> str:
+def build_prompt(mode: str, project_path: str, debug: bool = False) -> str:
     """组合完整的系统提示词。
 
     Args:
         mode: "readonly" | "writer" | "sub_agent"
         project_path: 项目目录绝对路径
-
-    Returns:
-        拼接好的系统提示词字符串。
+        debug: 是否注入调试模式提示词
     """
     if mode not in _VALID_MODES:
         raise ValueError(f"Unknown mode {mode!r}; expected one of {_VALID_MODES}")
@@ -39,5 +37,9 @@ def build_prompt(mode: str, project_path: str) -> str:
         # writer 全部能力 + 子智能体行为约束，不加动态层
         parts.append(get_writer_additions())
         parts.append(get_sub_agent_additions())
+
+    if debug:
+        from agent.prompt._debug import get_debug_additions
+        parts.append(get_debug_additions())
 
     return "\n\n".join(parts)

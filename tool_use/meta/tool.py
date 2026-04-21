@@ -8,7 +8,7 @@ Store.get_meta(ref) handles ref resolution internally:
 
 Virtual properties are always computed and included.
 """
-from typing import Optional
+from typing import List, Optional, Union
 
 from tool_use.utils.formatters import get_meta_type_config, format_meta_output
 
@@ -17,7 +17,7 @@ def meta_command(
     store,
     path: str,
     all: bool = False,
-    property: Optional[str] = None,
+    property: Optional[Union[str, List[str]]] = None,
     current_cwd: str = ""
 ) -> str:
     """
@@ -27,7 +27,7 @@ def meta_command(
         store: Store instance
         path: ref string (file path, path::entity, or ent_xxx)
         all: Whether to show all metadata
-        property: Specific property to view
+        property: Specific property or list of properties to view
         current_cwd: Current working directory (unused)
 
     Returns:
@@ -44,14 +44,29 @@ def meta_command(
     if not meta:
         return f"Empty metadata for '{path}'"
 
-    # If specific property requested
+    # Normalize property to list
+    props = None
     if property:
-        value = meta.get(property)
-        if value is None:
-            available = sorted(meta.keys())
-            return f"Property '{property}' not found. Available: {', '.join(available)}"
+        if isinstance(property, str):
+            props = [property]
+        else:
+            props = list(property)
+
+    # If specific property/properties requested
+    if props:
         from tool_use.utils.formatters import _format_meta_value
-        return f"{property}: {_format_meta_value(value, None)}"
+        lines = []
+        missing = []
+        for p in props:
+            value = meta.get(p)
+            if value is None:
+                missing.append(p)
+            else:
+                lines.append(f"{p}: {_format_meta_value(value, None)}")
+        if missing:
+            available = sorted(meta.keys())
+            lines.append(f"未找到: {', '.join(missing)}. 可用字段: {', '.join(available)}")
+        return "\n".join(lines)
 
     # Determine type config by extracting extension from ref
     is_entity = "::" in path
@@ -69,10 +84,10 @@ def meta_command(
     config = get_meta_type_config(file_ext)
 
     # Format output
-    result = format_meta_output(meta, config, show_all=all, specific_key=property)
+    result = format_meta_output(meta, config, show_all=all, specific_key=None)
 
     # Fallback: if default_keys matched nothing, show all fields
-    if not result and not all and not property:
+    if not result and not all:
         lines = []
         for key, value in sorted(meta.items()):
             lines.append(f"{key}: {value}")

@@ -1,8 +1,12 @@
 """Sub-agent tool executor — 创建子智能体执行任务。"""
+import json
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.tools import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class AgentExecutor:
@@ -25,7 +29,7 @@ class AgentExecutor:
         if not task:
             return "错误: task 参数不能为空"
 
-        max_rounds = arguments.get("max_rounds", 15)
+        max_rounds = arguments.get("max_rounds", 25)
         desc = arguments.get("description", "")
 
         if desc:
@@ -55,4 +59,21 @@ class AgentExecutor:
         result = sub_agent.chat(task, max_rounds=max_rounds)
         print(f"  \033[90m    子智能体完成\033[0m")
 
-        return result or "(子智能体未返回结果)"
+        # 收集工具调用统计
+        tool_calls = []
+        for msg in sub_agent.messages[1:]:  # skip system prompt
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                tcs = msg.get("tool_calls") or []
+                for tc in tcs:
+                    tool_calls.append(tc["function"]["name"])
+
+        # 构建结构化报告
+        report = {
+            "status": "completed" if len(tool_calls) < max_rounds else "max_rounds_reached",
+            "rounds_used": len(tool_calls),
+            "max_rounds": max_rounds,
+            "tools_called": list(dict.fromkeys(tool_calls)),  # 去重保序
+            "result": result or "(无文本输出)",
+        }
+
+        return json.dumps(report, ensure_ascii=False, indent=2)

@@ -57,14 +57,11 @@ PIPELINE: List[str] = [
     "csv_column_lsh_index",
     "json_value_lsh_index",
 
-    # ── Phase 6-8: 关系检测 ──
+    # ── Phase 7: 关系检测 ──
     "db_table_relations",
     "db_column_overlap",
-    "db_column_rel",
 
-    # ── Phase 9: AI 总结 ──
-    "ai_db_summary",
-    "ai_db_table_summary",
+    # ── Phase 8: AI 总结（仅列级，库/表级由 agent_summary 完成） ──
     "ai_db_column_summary",
     "ai_json_summary",
     "ai_text_summary",
@@ -74,8 +71,6 @@ PIPELINE: List[str] = [
 def extract(target: str, config_path: str = None, verbose: bool = False) -> None:
     """全量提取入口"""
     store, config = init_store(target, config_path, verbose)
-
-    store.clear_edges()
 
     logger.info(f"=== Pontis Extractor: {store.project_path} ===")
     logger.info(f"Pipeline: {len(PIPELINE)} modules\n")

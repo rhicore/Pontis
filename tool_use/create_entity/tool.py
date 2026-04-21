@@ -6,7 +6,7 @@ Currently only allows creating .rel entities under .db files.
 
 import re
 
-_ALLOWED_ENTITY_RE = re.compile(r".*\.db::.*\.rel$")
+_ALLOWED_ENTITY_RE = re.compile(r".*\.(db|sqlite|sqlite3|duckdb)::.*\.rel$")
 
 
 def create_entity_command(
