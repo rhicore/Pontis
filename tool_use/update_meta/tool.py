@@ -43,7 +43,7 @@ def update_meta_command(
     written = []
     for k, v in fields.items():
         written.append(f"  {k}: {v}")
-    return f"Updated {ref}:\n" + "\n".join(written)
+    return f"OK {ref}:\n" + "\n".join(written)
 
 
 if __name__ == "__main__":

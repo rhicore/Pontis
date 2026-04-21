@@ -131,7 +131,7 @@ def format_meta_output(
         return f"{specific_key}: {_format_meta_value(value, None)}"
 
     if show_all:
-        keys = sorted(meta_dict.keys())
+        keys = sorted(k for k in meta_dict.keys() if not k.startswith("_"))
     else:
         keys = [k for k in config.default_keys if k in meta_dict]
         # If default_keys matched nothing, show all

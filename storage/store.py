@@ -543,21 +543,28 @@ class Store:
     # ==================== Node Discovery ====================
 
     def find_nodes(self, pattern: str) -> List[str]:
-        """按 pattern 查找节点，返回 ref 字符串列表。
+        """按 pattern 查找节点。
+
+        两阶段设计：
+          阶段一（文件发现）：第一段 pattern 通过文件系统 glob 发现文件
+          阶段二（边遍历）：后续段通过 :: 沿边遍历实体
 
         Pattern 语法：
-          "*.db"              → 匹配所有 .db 文件节点
-          "*.table"           → 匹配所有 .table 实体节点（跨文件搜索）
-          "*.db::*.table"     → DB 文件节点 → 遍历边 → 匹配 .table 实体
-          "event.db::*"       → event.db 下所有相连实体
+          "*.db"                           → 所有 .db 文件
+          "**/*.csv"                       → 递归查找 CSV 文件
+          "*.db::*.table"                  → 文件 → 边遍历 → 所有 .table 实体
+          "*.db::*.table::*.*.*.col"       → 多跳：文件 → 表 → 列
+          "event.db::*"                    → event.db 下所有直连实体
+
+        约束：:: 第一段必须是文件级 pattern（匹配物理文件），
+        不能直接用实体后缀（如 "*.table" 无 :: 时返回空）。
         """
         segments = pattern.split("::")
 
-        if len(segments) == 1:
-            return self._match_all_nodes(segments[0])
+        # 阶段一：文件发现
+        refs = self._find_files(segments[0])
 
-        # 多段：逐段遍历（每跳去重）
-        refs = self._match_all_nodes(segments[0])
+        # 阶段二：逐段边遍历
         for seg in segments[1:]:
             next_refs = []
             seen = set()
@@ -570,55 +577,24 @@ class Store:
         return refs
 
     def find_connected(self, ref: str, pattern: str = "*") -> List[str]:
-        """从指定节点出发，沿边查找相连节点。
-
-        Args:
-            ref: 起始节点引用
-            pattern: 过滤目标节点名
-        """
+        """从指定节点出发，沿边查找相连节点。"""
         return self._traverse(ref, pattern=pattern)
 
-    def _match_all_nodes(self, pattern: str) -> List[str]:
-        """匹配所有节点，合并图谱搜索（Layer 1）和文件系统搜索（Layer 2）。
-
-        Layer 1 — 图谱搜索（fnmatch，递归匹配所有节点名）：
-          搜索 .pontis/nodes/ 中的所有显式节点（文件节点 + 实体节点）。
-          fnmatch 的 * 匹配任意字符（含 /），因此 *.db 能匹配 db/event.db。
-          实体名不含 /，含 / 的 pattern 自动跳过实体节点。
-          此层覆盖：已索引的文件 + 所有逻辑实体（.table, .col 等）。
-
-        Layer 2 — 文件系统搜索（glob 语义）：
-          使用 glob.glob 扫描物理文件系统，发现未被索引的文件（虚节点）。
-          遵循标准 glob 语义：*.db = 仅根目录，**/*.db = 递归。
-          此层覆盖：未处理过的文件（无 ent_id，get_meta() 返回纯虚属性）。
-
-        合并策略：Layer 1 结果优先，Layer 2 补充去重。
-        如需禁用某层，注释对应代码块即可。
-        """
+    def _find_files(self, pattern: str) -> List[str]:
+        """文件发现：合并已注册文件节点 + 文件系统 glob。"""
         self._ensure_index()
-        has_slash = "/" in pattern
         results = []
         seen = set()
 
-        # ── Layer 1: 图谱搜索（fnmatch，递历） ──────────────────────
-        # 匹配所有显式节点：已索引的文件节点 + 逻辑实体节点
-        # fnmatch 的 * 匹配任意字符含 /，因此 *.db 匹配任意深度的 .db 节点
-        # 实体名不含 /，含 / 的 pattern 自动跳过实体
+        # 已注册的文件节点（无 :: 的 ref）
         for _ent_id, ref in self._id_index.items():
-            is_entity = "::" in ref
-
-            if has_slash and is_entity:
+            if "::" in ref:
                 continue
-
-            name = ref.split("::", 1)[1] if is_entity else ref
-            if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(ref, pattern):
+            if fnmatch.fnmatch(ref, pattern):
                 seen.add(ref)
                 results.append(ref)
 
-        # ── Layer 2: 文件系统搜索（glob 语义） ──────────────────────
-        # 发现未被 extractor 处理过的文件（虚节点）
-        # glob 语义：*.db = 根目录，**/*.db = 递归，db/*.db = 指定目录
-        # 实体后缀（.table, .col 等）在磁盘上不存在，此层自动返回空
+        # 文件系统 glob 补充未注册文件
         for rel_path in self._scan_project_files(pattern):
             if rel_path not in seen:
                 seen.add(rel_path)

@@ -75,7 +75,7 @@ Pontis 为项目中的数据文件提取**逻辑实体**，形成知识图谱。
 <数据库>::<表A>.<列A>__rel__<表B>.<列B>.rel
 例: california_schools.db::schools.County__rel__satscores.cname.rel
 ```
-由 AI 推断的语义关系，meta 中包含 rel_type、source、reason 等字段。
+由 AI 推断的语义关系，定位信息已编码在 entity name 中，meta 只有 brief 和 detail。
 
 **JSON 路径模式 `.pattern`**：
 ```
@@ -96,51 +96,33 @@ JSON/YAML 文件的结构探查结果。`.pattern` 实体描述了文件中重�
 
 ---
 
-## 3. 实体归属（边遍历）
+## 3. 实体归属（两阶段设计）
 
-实体之间通过**无向边**连接，形成知识图谱。使用 `::` 进行边遍历。
+glob 工具分两个阶段工作：
 
-### 3.1 遍历语法
+1. **文件发现**（`::` 第一段）：扫描文件系统，匹配物理文件（如 `*.db`、`**/*.csv`）
+2. **边遍历**（`::` 后续段）：从找到的节点沿边遍历，匹配实体
+
+因此 `::` 第一段必须是文件级 pattern，不能用实体后缀开头。
 
 ```
-glob "california_schools.db"                        → 文件节点本身
-glob "california_schools.db::*"                     → 该文件的所有直连实体
-glob "california_schools.db::*.table"               → 该文件下的所有表
-glob "california_schools.db::schools.table::*.col"  → schools 表的所有列
-glob "california_schools.db::schools.CDSCode.TEXT.col::*" → CDSCode 列的关联实体（overlap、rel、fk 等）
-glob "*.db::*.table"                                → 所有数据库的所有表
-glob "*.col::*.rel"                                 → 所有列关联的 .rel 关系
-```
-
-### 3.2 图谱结构
-
-典型数据库的图谱层次：
-```
-数据库文件 ──边── 表.table ──边── 列.col
-                │                  ├──边── .overlap（列值重叠）
-                │                  ├──边── .fk（外键）
-                │                  └──边── .rel（语义关系）
-                └──边── 视图.view
+glob "*.db"                                         → 所有 .db 文件（文件发现）
+glob "*.db::*.table"                                → 文件 → 遍历 → 所有表
+glob "*.db::*.table::*.*.*.col"                     → 多跳：文件 → 表 → 列
+glob "db::schools.table::*.col"                     → 指定 db 的指定表的列
+glob "*.db::*.*.*.col::*.rel"                       → 文件 → 列 → rel 关系
 ```
 
-边是**无向**的，可以反向遍历：
+图谱层次：
 ```
-glob "users.table::*"      → 表的列、所属数据库文件
-glob "users.id.INT.col::*" → 列所属的表、列的 overlap/rel/fk
-```
-
-### 3.3 遍历查找关联的技巧
-
-查找某列的所有关系：
-```
-glob "california_schools.db::schools.County.TEXT.col::*"
-→ 返回: schools.table, schools.County__rel__satscores.cname.rel, ...
+文件 ──边── 表.table ──边── 列.col
+              │                  ├──边── .overlap
+              │                  ├──边── .fk
+              │                  └──边── .rel
+              └──边── 视图.view
 ```
 
-查找两个表之间有没有关联：
-```
-glob "california_schools.db::schools.table::*"  → 看表的直连实体
-```
+边是无向的，可以反向遍历：`glob "col::*" → 列所属的表、列的 overlap/rel/fk`
 
 ---
 
@@ -189,17 +171,13 @@ glob "california_schools.db::schools.table::*"  → 看表的直连实体
 
 ### 4.5 关系实体 (.fk / .overlap / .rel)
 
+定位信息（表名、列名）已编码在 entity name 中，不再重复存储。
+
 | 字段 | 说明 |
 |---|---|
-| `from_table` / `from_column` | 源端 |
-| `to_table` / `to_column` | 目标端 |
-| `relation_type` | 关系类型（foreign_key / column_overlap / ...） |
-| `match_type` | 匹配强度（仅 .overlap） |
-| `rel_type` | 语义类型（仅 .rel）：fk / same_meaning / semantic / derived_from |
-| `source` | 发现途径（仅 .rel）：overlap / fk / self_discovered |
-| `reason` | 判断依据 |
+| `brief` | 简述关系类型和方向 |
+| `detail` | 详细说明（含理由、置信度、发现方式等） |
 | `stats` | 统计信息（仅 .overlap）：jaccard / card_overlap / coverage 等 |
-| `confidence` | 置信度（仅 .fk） |
 
 ### 4.6 JSON 模式实体 (.pattern)
 
@@ -213,23 +191,11 @@ glob "california_schools.db::schools.table::*"  → 看表的直连实体
 
 ## 5. 工具使用策略
 
-### 5.1 读取策略
-
 1. **先 glob 后 meta 再 read** — 从宏观到微观，不要一上来就 read
-2. **meta 优先** — 大部分信息通过 meta 就能回答。meta 的 detail 字段通常已包含足够的语义理解
+2. **meta 优先** — 大部分信息通过 meta 就能回答，detail 字段通常已包含足够的语义理解
 3. **meta 支持多属性** — 可以用 `property: ["brief", "detail"]` 一次读取多个字段
 4. **避免全量 read** — read 大文件时务必指定 offset 和 limit 分段读取
 5. **利用上下文** — 如果之前的工具调用已经返回了相关数据，直接引用，不要重新调用
-
-### 5.2 写入策略
-
-1. **update_meta 返回写入值** — 成功后返回值已包含实际写入内容，不需要再调 meta 验证
-2. **create_entity 返回确认** — 创建成功会返回 Created，失败会返回原因
-3. **批量写入** — 连续调用 update_meta，中间不要穿插读取操作
-
-### 5.3 关联查找
-
-1. **用 glob 的 `::` 遍历查找关联** — `entity.col::*` 返回该列的所有关联实体
-2. **不要凭猜测构造 overlap/rel 的 ref** — 用 glob 模糊搜索（如 `*CDSCode*overlap`）或边遍历
-3. **meta 支持模糊 ref** — 如果 ref 的类型后缀不确定，先用 glob 确认完整 ref
+6. **update_meta 返回写入值** — 成功后返回值已包含实际写入内容，不需要再调 meta 验证
+7. **不要凭猜测构造 ref** — 用 glob 的 `::` 遍历确认实体是否存在
 """

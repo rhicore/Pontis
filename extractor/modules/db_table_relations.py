@@ -94,15 +94,26 @@ def _find_foreign_keys(db_path: str, table_name: str) -> List[Dict]:
         import sqlite3
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
+
+        # 构建 table → PK 映射，用于 fk[4] 为空时查找真实 PK
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        all_tables = [row[0] for row in cursor.fetchall()]
+        table_pks = {}
+        for t in all_tables:
+            cursor.execute(f'PRAGMA table_info("{t}")')
+            pk_cols = [c[1] for c in cursor.fetchall() if c[5] == 1]
+            table_pks[t] = pk_cols[0] if pk_cols else "rowid"
+
         cursor.execute(f'PRAGMA foreign_key_list("{table_name}")')
         fks = cursor.fetchall()
 
         for fk in fks:
+            to_col = fk[4] if fk[4] else table_pks.get(fk[2], "rowid")
             relations.append({
                 "type": "foreign_key",
                 "from_column": fk[3],
                 "to_table": fk[2],
-                "to_column": fk[4] if fk[4] else "id",
+                "to_column": to_col,
                 "confidence": 1.0
             })
         conn.close()
@@ -129,7 +140,7 @@ def _find_naming_relations(db_path: str, table_name: str, columns: List[Dict]) -
             cursor.execute(f'PRAGMA table_info("{t}")')
             cols = cursor.fetchall()
             pk_cols = [c[1] for c in cols if c[5] == 1]
-            table_pks[t] = pk_cols[0] if pk_cols else "id"
+            table_pks[t] = pk_cols[0] if pk_cols else "rowid"
 
         conn.close()
 
@@ -187,14 +198,14 @@ def _create_relation_entity(path: str, from_table: str, relation: Dict,
         if store.node_exists(f"{path}::{fk_entity_name}"):
             return False
 
-        # 创建关系meta
+        # 创建关系meta — 定位信息已编码在 entity name 中，不再重复存储
+        rel_type = "显式外键" if relation["type"] == "foreign_key" else "命名约定推断"
+        confidence = relation.get("confidence", 0.5)
+
         fk_meta = {
-            "relation_type": relation["type"],
-            "from_table": from_table,
-            "from_column": from_col,
-            "to_table": to_table,
-            "to_column": to_col,
-            "confidence": relation.get("confidence", 0.5),
+            "brief": f"{from_table}.{from_col} → {to_table}.{to_col} 外键",
+            "detail": f"{from_table} 表的 {from_col} 列引用 {to_table} 表的 {to_col} 列。"
+                      f"来源：{rel_type}（置信度 {confidence}）。",
             "created_at": __import__('datetime').datetime.now().isoformat(),
         }
 
@@ -202,9 +213,8 @@ def _create_relation_entity(path: str, from_table: str, relation: Dict,
 
         # 添加边: table → fk
         store.add_edges([{
-            "from": f"{path}::{from_table}.table",
-            "type": "foreign_keys",
-            "to": f"{path}::{fk_entity_name}",
+            "a": f"{path}::{from_table}.table",
+            "b": f"{path}::{fk_entity_name}",
         }])
 
         return True

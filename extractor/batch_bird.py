@@ -35,12 +35,12 @@ STATIC_PIPELINE = [
     "csv_info",                     # CSV 列统计
     "db_table_relations",
     "db_column_sketch_overlap",
-    "db_column_lsh_index",
-    "csv_column_lsh_index",
-    "ai_db_column_summary",         # 列级 AI 总结（值特征）
 ]
 
-# ── 阶段二：AI 分析 ──
+# ── 阶段二：AI 列总结（并行，prompt caching）──
+AI_COLUMN_MODULE = "ai_db_column_summary"
+
+# ── 阶段三：Agent 分析 ──
 AI_MODULE = "agent_analyze"
 
 # ── 日志格式 ──
@@ -53,6 +53,9 @@ def _setup_logging(log_path: str = None, verbose: bool = False):
     """配置日志：终端摘要 + 可选文件详细记录。"""
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
+
+    # 屏蔽 httpx 请求日志
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     # 终端：简洁
     console = logging.StreamHandler(sys.stdout)
@@ -85,7 +88,17 @@ def _run_static(store, config) -> float:
     return time.time() - t0
 
 
-def _run_ai(store, *, debug: bool = False) -> float:
+def _run_ai_columns(store, config) -> float:
+    """阶段二：AI 列总结（并行），返回耗时秒数。"""
+    t0 = time.time()
+    registry = get_registry()
+    if AI_COLUMN_MODULE not in registry:
+        return 0.0
+    registry[AI_COLUMN_MODULE](store, config=config)
+    return time.time() - t0
+
+
+def _run_agent(store, *, debug: bool = False) -> float:
     """阶段二：AI 分析（agent_analyze），返回耗时秒数。"""
     registry = get_registry()
     if AI_MODULE not in registry:
@@ -122,7 +135,7 @@ def main():
     print(f"Databases: {len(db_dirs)}\n")
 
     success, failed = [], []
-    total_static = total_ai = 0.0
+    total_static = total_ai_col = total_agent = 0.0
 
     for i, db_dir in enumerate(db_dirs, 1):
         name = db_dir.name
@@ -142,19 +155,25 @@ def main():
 
             logger.info(f"=== {name} ===")
 
-            # 阶段一
+            # 阶段一：静态提取
             if not ai_only:
                 dt = _run_static(store, config)
                 total_static += dt
-                print(f"  Static: {dt:.1f}s")
+                print(f"  Static:     {dt:.1f}s")
                 logger.info(f"Static phase done: {dt:.1f}s")
 
-            # 阶段二
+            # 阶段二：AI 列总结（并行）
             if not no_ai:
-                dt = _run_ai(store, debug=debug)
-                total_ai += dt
-                print(f"  AI:     {dt:.1f}s")
-                logger.info(f"AI phase done: {dt:.1f}s")
+                dt = _run_ai_columns(store, config)
+                total_ai_col += dt
+                print(f"  AI Columns: {dt:.1f}s")
+                logger.info(f"AI columns phase done: {dt:.1f}s")
+
+                # 阶段三：Agent 分析
+                dt = _run_agent(store, debug=debug)
+                total_agent += dt
+                print(f"  Agent:      {dt:.1f}s")
+                logger.info(f"Agent phase done: {dt:.1f}s")
 
             success.append(name)
             logger.info(f"=== {name} done ===")
@@ -172,8 +191,9 @@ def main():
     # 汇总
     print("=" * 40)
     print(f"Done: {len(success)} ok, {len(failed)} failed")
-    print(f"Time: static {total_static:.1f}s, AI {total_ai:.1f}s, "
-          f"total {total_static + total_ai:.1f}s")
+    print(f"Time: static {total_static:.1f}s, AI cols {total_ai_col:.1f}s, "
+          f"agent {total_agent:.1f}s, "
+          f"total {total_static + total_ai_col + total_agent:.1f}s")
     if failed:
         print(f"Failed: {', '.join(failed)}")
 

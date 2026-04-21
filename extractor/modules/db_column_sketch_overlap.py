@@ -300,17 +300,21 @@ def _create_overlap_entity(db_ref: str, overlap: Dict, store: Store) -> bool:
         return False
 
     try:
+        # brief/detail 含匹配信息，stats 含数值统计
+        match_type = overlap['match_type']
+        reason = overlap['reason']
+        stats = overlap['stats']
+        coverage_a = stats.get('coverage_A_in_B', 0)
+        coverage_b = stats.get('coverage_B_in_A', 0)
+
         store.create_node(full_ref, meta={
-            "relation_type": "column_overlap",
-            "from_table": from_table,
-            "from_column": from_column,
-            "from_type": overlap['from_type'],
-            "to_table": to_table,
-            "to_column": to_column,
-            "to_type": overlap['to_type'],
-            "match_type": overlap['match_type'],
-            "reason": overlap['reason'],
-            "stats": overlap['stats'],
+            "stats": stats,
+            "brief": f"{from_table}.{from_column} 与 {to_table}.{to_column} 值重叠"
+                     f"（Jaccard={stats['jaccard']}，{match_type}）",
+            "detail": f"{match_type}。{reason}。"
+                      f"Jaccard={stats['jaccard']}，估计交集={stats['card_overlap']}。"
+                      f"{from_table} 覆盖率 {coverage_a}，"
+                      f"{to_table} 覆盖率 {coverage_b}。",
             "created_at": __import__('datetime').datetime.now().isoformat(),
         }, edges=[
             {

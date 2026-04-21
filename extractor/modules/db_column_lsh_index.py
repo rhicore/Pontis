@@ -67,7 +67,7 @@ def _build_index(ref: str, store: Store) -> None:
     writer.write(cache_file)
 
     store.set_meta(ref, {
-        "index": {
+        "_index": {
             "version": 1,
             "buckets": num_buckets,
             "distinct": writer._distinct_count,
@@ -102,7 +102,7 @@ def generate(store: Store) -> None:
         for ref in store.find_nodes(f"{ext}::*.*.*.col"):
             # 已有索引则跳过
             col_meta = store._get_stored_meta(ref) or {}
-            if col_meta.get("index"):
+            if col_meta.get("_index"):
                 skipped += 1
                 continue
             _build_index(ref, store)

@@ -59,7 +59,7 @@ def _build_index(json_ref: str, store: Store) -> None:
     writer.write(cache_file)
 
     store.set_meta(json_ref, {
-        "index": {
+        "_index": {
             "version": 1,
             "buckets": writer.num_buckets,
             "distinct": writer._distinct_count,
@@ -80,7 +80,7 @@ def generate(store: Store) -> None:
                 continue
             # 已有索引则跳过
             meta = store._get_stored_meta(ref) or {}
-            if meta.get("index"):
+            if meta.get("_index"):
                 continue
             try:
                 _build_index(ref, store)

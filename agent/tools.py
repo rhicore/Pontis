@@ -398,7 +398,7 @@ def _build_agent_schema() -> dict:
                     },
                     "max_rounds": {
                         "type": "integer",
-                        "description": "子智能体最大 tool call 轮次，默认 25",
+                        "description": "子智能体最大 tool call 轮次，默认 40",
                     },
                     "description": {
                         "type": "string",

@@ -15,7 +15,7 @@ MAX_BRIEF_CHARS = 50
 
 
 def generate_detail_and_brief(llm, prompt: str, max_tokens: int = 300) -> tuple:
-    """分两次调用 LLM 生成 detail 和 brief。
+    """分两次调用 LLM 生成 detail 和 brief（单 prompt 接口）。
 
     Args:
         llm: LLM 客户端
@@ -45,6 +45,51 @@ Output ONLY the description text, no labels, no markdown formatting."""
         return "", ""
 
     # 第二次调用：基于 detail 生成 brief
+    brief = _generate_brief(llm, detail)
+
+    return detail, brief
+
+
+def generate_with_prefix(llm, prefix_messages: list, max_tokens: int = 300) -> tuple:
+    """分两次调用 LLM 生成 detail 和 brief（messages 接口，支持 prompt caching）。
+
+    Args:
+        llm: LLM 客户端（需要有 complete_messages 方法）
+        prefix_messages: 共享前缀消息列表（system + table context）
+        max_tokens: detail 调用的 max_tokens
+
+    Returns:
+        (detail, brief)
+    """
+    # 第一次调用：生成 detail
+    detail_messages = prefix_messages + [{
+        "role": "user",
+        "content": "Generate a comprehensive description. Be as detailed as possible — "
+                    "no word limit, no character limit. "
+                    "Focus on semantics, purpose, and stable characteristics rather than exact counts. "
+                    "Output ONLY the description text, no labels, no markdown formatting.",
+    }]
+
+    detail = ""
+    try:
+        raw = llm.complete_messages(detail_messages, max_tokens=max_tokens)
+        if raw:
+            detail = _clean(raw)
+    except Exception as e:
+        logger.debug(f"Detail generation failed: {e}")
+        return "", ""
+
+    if not detail:
+        return "", ""
+
+    # 第二次调用：基于 detail 生成 brief（复用前缀）
+    brief = _generate_brief_from_messages(llm, prefix_messages, detail)
+
+    return detail, brief
+
+
+def _generate_brief(llm, detail: str) -> str:
+    """基于 detail 生成 brief（单 prompt 接口）。"""
     brief_prompt = f"""Summarize the following text into exactly one short line, strictly under {MAX_BRIEF_CHARS} characters.
 Be extremely concise — abbreviate, omit articles, compress aggressively.
 Output ONLY the summary text, nothing else.
@@ -52,18 +97,38 @@ Output ONLY the summary text, nothing else.
 Text:
 {detail}"""
 
-    brief = ""
     try:
         raw = llm.complete(brief_prompt, max_tokens=80)
         if raw:
             brief = _clean(raw)
-            # 硬保 brief 不超限（最后手段）
             if len(brief) > MAX_BRIEF_CHARS:
                 brief = brief[:MAX_BRIEF_CHARS].rstrip(" .,;:;") + "..."
+            return brief
     except Exception as e:
         logger.debug(f"Brief generation failed: {e}")
+    return ""
 
-    return detail, brief
+
+def _generate_brief_from_messages(llm, prefix_messages: list, detail: str) -> str:
+    """基于 detail 生成 brief（messages 接口，复用缓存前缀）。"""
+    messages = prefix_messages + [
+        {"role": "assistant", "content": detail},
+        {"role": "user", "content":
+            f"Summarize the following text into exactly one short line, strictly under {MAX_BRIEF_CHARS} characters. "
+            f"Be extremely concise — abbreviate, omit articles, compress aggressively. "
+            f"Output ONLY the summary text, nothing else.\n\nText:\n{detail}"},
+    ]
+
+    try:
+        raw = llm.complete_messages(messages, max_tokens=80)
+        if raw:
+            brief = _clean(raw)
+            if len(brief) > MAX_BRIEF_CHARS:
+                brief = brief[:MAX_BRIEF_CHARS].rstrip(" .,;:;") + "..."
+            return brief
+    except Exception as e:
+        logger.debug(f"Brief generation failed: {e}")
+    return ""
 
 
 def _clean(text: str) -> str:

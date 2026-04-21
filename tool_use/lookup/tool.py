@@ -86,7 +86,7 @@ def _load_index(store, ref: str):
     """从列实体的 meta 推导路径，加载 LSH 索引。不存在返回 None。"""
     try:
         meta = store._get_stored_meta(ref) or {}
-        idx_info = meta.get("index")
+        idx_info = meta.get("_index")
         if not idx_info:
             return None
         # 路径由 ent_id 推导：cache/lsh/{ent_id}.lsh

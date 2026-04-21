@@ -56,9 +56,19 @@ def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
         return False
 
     stats = overlap_meta.get("stats", {})
-    match_type = overlap_meta.get("match_type", "WEAK_MATCH")
-    from_type = overlap_meta.get("from_type", "TEXT")
-    to_type = overlap_meta.get("to_type", "TEXT")
+    # 从 entity name 解析定位信息（overlap meta 不再存储冗余字段）
+    # 格式: from_table.from_col__to__to_table.to_col.overlap
+    base_name = entity_name.replace(".overlap", "")
+    if "__to__" not in base_name:
+        return False
+    left, right = base_name.split("__to__", 1)
+    # left = from_table.from_col, right = to_table.to_col
+    left_parts = left.split(".", 1)
+    right_parts = right.split(".", 1)
+    from_table = left_parts[0] if len(left_parts) >= 1 else ""
+    from_column = left_parts[1] if len(left_parts) >= 2 else ""
+    to_table = right_parts[0] if len(right_parts) >= 1 else ""
+    to_column = right_parts[1] if len(right_parts) >= 2 else ""
 
     # 预筛选
     jaccard = stats.get("jaccard", 0)
@@ -68,11 +78,16 @@ def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
         logger.debug(f"Skipping {entity_name}: too low overlap")
         return False
 
+    match_type = "WEAK_MATCH"  # sketch overlap 不再存储 match_type
+    from_type = "TEXT"  # 从 entity name 不可推断，用默认值
+    to_type = "TEXT"
+
     heuristic_score = _calculate_heuristic_score(
         stats, from_type, to_type, match_type
     )
 
-    llm_result = _llm_score(overlap_meta, stats, heuristic_score, llm)
+    llm_result = _llm_score(from_table, from_column, to_table, to_column,
+                            from_type, to_type, match_type, stats, heuristic_score, llm)
     if not llm_result:
         return False
 
@@ -82,20 +97,15 @@ def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
         logger.debug(f"Filtered {entity_name}: confidence {confidence} < 0.5")
         return False
 
-    # 创建.rel实体
+    # 创建.rel实体 — 定位信息已编码在 entity name 中
+    can_join = llm_result.get("can_join", confidence >= 0.5)
+    reason = llm_result.get("reason", "")
     rel_meta = {
-        "relation_type": "column_relation",
-        "from_table": overlap_meta.get("from_table"),
-        "from_column": overlap_meta.get("from_column"),
-        "from_type": from_type,
-        "to_table": overlap_meta.get("to_table"),
-        "to_column": overlap_meta.get("to_column"),
-        "to_type": to_type,
-        "confidence": confidence,
-        "can_join": llm_result.get("can_join", confidence >= 0.5),
-        "reason": llm_result.get("reason", ""),
-        "heuristic_score": heuristic_score,
-        "overlap_stats": stats,
+        "brief": f"{from_table}.{from_column} 与 {to_table}.{to_column} 关联"
+                 f"（置信度 {confidence:.2f}）",
+        "detail": f"来源：overlap 检测（Jaccard={stats.get('jaccard', 0):.4f}）。"
+                  f"启发式分数={heuristic_score}，LLM置信度={confidence:.2f}。"
+                  f"{'可JOIN' if can_join else '不建议JOIN'}。{reason}",
         "created_at": __import__('datetime').datetime.now().isoformat(),
     }
 
@@ -144,15 +154,9 @@ def _get_type_risk(data_type: str) -> float:
     return 0.2
 
 
-def _llm_score(overlap_meta, stats, heuristic_score, llm) -> Optional[dict]:
+def _llm_score(from_table, from_column, to_table, to_column,
+               from_type, to_type, match_type, stats, heuristic_score, llm) -> Optional[dict]:
     """使用LLM进行关系评分"""
-    from_table = overlap_meta.get("from_table", "")
-    from_column = overlap_meta.get("from_column", "")
-    to_table = overlap_meta.get("to_table", "")
-    to_column = overlap_meta.get("to_column", "")
-    from_type = overlap_meta.get("from_type", "TEXT")
-    to_type = overlap_meta.get("to_type", "TEXT")
-    match_type = overlap_meta.get("match_type", "WEAK_MATCH")
 
     prompt = f"""You are a strict database auditor evaluating potential join relationships.
 

@@ -135,6 +135,22 @@ class LLMClient:
             logger.warning(f"LLM call failed: {e}")
             return ""
 
+    def complete_messages(self, messages: list, max_tokens: int = 500) -> str:
+        """用完整消息列表调用 LLM（支持 prompt caching 前缀共享）。"""
+        client = self._get_client()
+        if not client:
+            return ""
+        try:
+            response = client.chat.completions.create(
+                model=self.config.llm_model,
+                messages=messages,
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            logger.warning(f"LLM call failed: {e}")
+            return ""
+
 
 def get_llm(config: Optional[Config] = None) -> Optional[LLMClient]:
     """Get LLM client. If config not provided, loads default config."""

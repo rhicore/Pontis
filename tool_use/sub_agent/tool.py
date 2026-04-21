@@ -29,7 +29,7 @@ class AgentExecutor:
         if not task:
             return "错误: task 参数不能为空"
 
-        max_rounds = arguments.get("max_rounds", 25)
+        max_rounds = arguments.get("max_rounds", 40)
         desc = arguments.get("description", "")
 
         if desc:

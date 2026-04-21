@@ -22,7 +22,7 @@ COORDINATOR_PROMPT = """\
 
 ## 你的两大目标
 
-1. **关系发现**：找出数据库列之间的有意义关联，创建 .rel 实体
+1. **关系发现**：找出数据库列之间的有意义关联，创建 .rel 实体，为已有的显式fk写ai summary
 2. **总结生成**：为所有实体（表、列、文件）写 brief 和 detail
 
 这两个目标没有严格的先后顺序。你可能在理解某张表时发现了关系，也可能在 \
@@ -35,6 +35,7 @@ COORDINATOR_PROMPT = """\
 - **先读后写** — 写 summary 前先读取当前状态，已有高质量 brief/detail 不要覆盖
 - **用中文** — brief 和 detail 用中文撰写
 - **不要提及内部概念** — 回答中不要出现 Pontis、知识图谱、.pontis 等
+- **不要输出纯文本总结** — 任务完成后直接停止，不要输出"我已完成…"等总结性文字。如果还有未完成的工作，继续调用工具执行
 
 ## 关系发现
 
@@ -50,15 +51,12 @@ COORDINATOR_PROMPT = """\
 - 理解表之间的业务逻辑来推断关联
 
 ### 创建 .rel 实体
-- ref 格式: `[数据库]::[表1].[列1]__rel__[表2].[列2].rel`
-- meta 中包含: from_table, from_column, to_table, to_column, \
-rel_type（fk / same_meaning / semantic）, source（overlap / fk / self_discovered）, \
-reason, brief（≤50字）, detail
-- **edges 必须连接列到 rel 实体**（不是列到列），这样从列出发的 `glob col::*` 才能找到这个 rel。\
-通常需要两条边：
+- ref: `[数据库]::[表1].[列1]__rel__[表2].[列2].rel`
+- meta 只需要 brief 和 detail（关系类型、理由、来源等全写进 detail）
+- edges 必须连接列到 rel（不是列到列），需要两条边：
   - `{"a": "[列1].col", "b": "[rel]"}`
   - `{"a": "[列2].col", "b": "[rel]"}`
-- 已有的 .rel 不要重复创建
+- 创建前先 glob 检查是否已存在
 
 ## 总结生成
 
@@ -71,7 +69,7 @@ reason, brief（≤50字）, detail
 对单张表可以用子智能体写 summary，task 中提供：
 - 这张表的基本信息和你的理解
 - 与其他表的关系（已发现的 .rel）
-- 关键：如果这张表依赖枢纽表，告诉子智能体枢纽表的 summary
+- 总之任何该表外部相关联的信息
 
 ### 处理范围
 - 数据库中的表和列，rel实体，所有表完成后，为数据库文件本身写 brief / detail

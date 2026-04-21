@@ -81,7 +81,7 @@ def _build_index(ref: str, store: Store, delimiter: str = ',') -> None:
     writer.write(cache_file)
 
     store.set_meta(ref, {
-        "index": {
+        "_index": {
             "version": 1,
             "buckets": num_buckets,
             "distinct": writer._distinct_count,
@@ -100,7 +100,7 @@ def generate(store: Store) -> None:
     for pattern, delimiter in [("**/*.csv", ','), ("**/*.tsv", '\t')]:
         for ref in store.find_nodes(f"{pattern.split('/')[-1]}::*.*.*.col"):
             col_meta = store._get_stored_meta(ref) or {}
-            if col_meta.get("index"):
+            if col_meta.get("_index"):
                 skipped += 1
                 continue
             _build_index(ref, store, delimiter=delimiter)

@@ -89,13 +89,11 @@ def _process_database(rel_path: str, store: Store) -> None:
 
             col_entity_name = f"{safe_name}.{safe_col}.{col_type}.col"
             store.create_node(f"{rel_path}::{col_entity_name}",
-                              meta={"created_at": datetime.now().isoformat(),
-                                    "source_table": table_name})
+                              meta={"created_at": datetime.now().isoformat()})
 
             col_edges.append({
-                "from": f"{rel_path}::{safe_name}.table",
-                "type": "columns",
-                "to": f"{rel_path}::{col_entity_name}",
+                "a": f"{rel_path}::{safe_name}.table",
+                "b": f"{rel_path}::{col_entity_name}",
             })
 
         if col_edges:
@@ -125,9 +123,8 @@ def _process_database(rel_path: str, store: Store) -> None:
                                         "source_view": view_name})
 
                 view_col_edges.append({
-                    "from": f"{rel_path}::{safe_name}.view",
-                    "type": "columns",
-                    "to": f"{rel_path}::{col_entity_name}",
+                    "a": f"{rel_path}::{safe_name}.view",
+                    "b": f"{rel_path}::{col_entity_name}",
                 })
         except Exception:
             pass

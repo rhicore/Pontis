@@ -292,14 +292,12 @@ def _create_overlap_entity(path: str, overlap: Dict, store: Store) -> bool:
 
         store.add_edges([
             {
-                "from": f"{path}::{from_table}.{safe_from_col2}.{from_col_type}.col",
-                "type": "overlaps",
-                "to": f"{path}::{overlap_entity_name}",
+                "a": f"{path}::{from_table}.{safe_from_col2}.{from_col_type}.col",
+                "b": f"{path}::{overlap_entity_name}",
             },
             {
-                "from": f"{path}::{to_table}.{safe_to_col2}.{to_col_type}.col",
-                "type": "overlaps",
-                "to": f"{path}::{overlap_entity_name}",
+                "a": f"{path}::{to_table}.{safe_to_col2}.{to_col_type}.col",
+                "b": f"{path}::{overlap_entity_name}",
             },
         ])
 
