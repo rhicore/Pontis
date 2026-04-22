@@ -12,9 +12,9 @@ DETAIL = """\
 - all: 设为 true 显示全部字段。⚠️ 会返回大量无关字段（file_size, created_at, modified_at 等），仅在确实需要时使用
 
 高效用法：
-- 写 brief/detail 时，优先用 property=["sample", "topk", "cardinality"] 精准读取
-- 避免用 all=true，大部分场景下 property 就够了
-- 如果 task 描述中已提供列的统计信息，不要再调 meta 重复获取
+- 优先用 property=["sample", "topk", "cardinality"] 精准读取需要的字段
+- ⚠️ 避免使用 all=true，除非确实需要 file_size、created_at 等字段。all=true 会返回大量无关字段浪费上下文
+- 如果上下文中已提供列的统计信息，不要重复调 meta 获取
 
 典型用法：
 - meta(path="event.db::event.status.TEXT.col", property=["sample", "topk"])

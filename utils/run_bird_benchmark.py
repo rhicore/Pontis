@@ -82,18 +82,7 @@ def is_correct(predicted: set | str, golden: set | str) -> bool:
 #  Prompt
 # ═══════════════════════════════════════════════════════════
 
-_BENCHMARK_SYSTEM_ADDON = """
-## BIRD Benchmark 模式
-
-你正在进行 Text-to-SQL 评测。你的输出会被自动提取并执行，与标准答案逐行比对。请严格遵守：
-
-1. **精准匹配问题意图** — 只 SELECT 问题明确要求的字段，不加额外列（如名称、ID 等）。如果问的是"比率"，只输出比率数值，不要附带学校名
-2. **不做多余变换** — 原始值就是原始值。不要 ROUND、不要乘以 100 变百分比、不要加别名做美化。问题说"rate"，golden SQL 通常就是原始小数
-3. **严格遵循 evidence** — evidence（提示）通常会明确指出列名、计算公式、过滤条件。这是最可靠的线索，必须优先遵循
-4. **WHERE 条件精确** — 不要自作主张加安全条件（如 `> 0`）。如果 golden 用 `IS NOT NULL`，你用 `> 0` 可能导致结果集不同
-5. **禁止用 bash 试查** — 不要用 bash 执行 `sqlite3 "SELECT ..."` 来试运行或调试查询。直接基于 glob/meta 的结构信息生成最终 SQL，输出在 ```sql ``` 代码块中
-6. **输出格式** — 只用 ```sql ``` 代码块输出一条 SELECT 语句，不要解释
-"""
+# Benchmark addon 已移至 agent/prompt/_benchmark.py，通过 build_prompt("benchmark") 组装
 
 QUERY_PROMPT_TEMPLATE = """\
 请根据以下信息生成一条 SQLite SQL 查询。
@@ -118,10 +107,9 @@ def build_query_prompt(question: str, evidence: str) -> str:
 
 
 def build_benchmark_system_prompt(project_path: str) -> str:
-    """构建 benchmark 模式的系统提示词（readonly + benchmark 专用指令）。"""
+    """构建 benchmark 模式的系统提示词（readonly + SQL + benchmark 专用指令）。"""
     from agent.prompt import build_prompt
-    base = build_prompt("readonly", project_path)
-    return base + _BENCHMARK_SYSTEM_ADDON
+    return build_prompt("benchmark", project_path)
 
 
 # ═══════════════════════════════════════════════════════════
