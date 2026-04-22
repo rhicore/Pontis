@@ -20,7 +20,7 @@ class PaginationConfig:
 
 
 TOOL_PAGINATION = {
-    "glob":   PaginationConfig(default_limit=100, max_limit=500),
+    "glob":   PaginationConfig(default_limit=20, max_limit=500),
     "search": PaginationConfig(default_limit=100, max_limit=500),
     "grep":   PaginationConfig(default_limit=250, max_limit=1000),
     "lookup": PaginationConfig(default_limit=50,  max_limit=200),

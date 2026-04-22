@@ -37,6 +37,7 @@ def get_registry() -> Dict[str, object]:
     from extractor.modules.json_pattern import generate as json_pattern
     from extractor.modules.text_info import generate as text_info
     from extractor.modules.db_table_relations import generate as db_table_relations
+    from extractor.modules.db_fk_validate import generate as db_fk_validate
     from extractor.modules.db_column_overlap import generate as db_column_overlap
     from extractor.modules.ai_db_column_summary import generate as ai_db_column_summary
 
@@ -57,6 +58,7 @@ def get_registry() -> Dict[str, object]:
         "json_pattern": json_pattern,
         "text_info": text_info,
         "db_table_relations": db_table_relations,
+        "db_fk_validate": db_fk_validate,
         "db_column_overlap": db_column_overlap,
         "ai_db_column_summary": ai_db_column_summary,
     }

@@ -55,8 +55,8 @@ class AgentExecutor:
         )
 
         # 执行任务
-        print(f"  \033[90m    子智能体启动 ({self._mode}, max_rounds={max_rounds})\033[0m")
-        result = sub_agent.chat(task, max_rounds=max_rounds)
+        print(f"  \033[90m    子智能体启动 ({self._mode})\033[0m")
+        result = sub_agent.chat(task)
         print(f"  \033[90m    子智能体完成\033[0m")
 
         # 收集工具调用统计

@@ -39,6 +39,7 @@ class PontisAgent:
         self.client = OpenAI(
             api_key=self.config["api_key"],
             base_url=self.config["provider"],
+            timeout=120.0,
         )
 
         # 可注入的工具和 prompt
