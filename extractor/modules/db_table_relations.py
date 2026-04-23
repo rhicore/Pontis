@@ -211,11 +211,17 @@ def _create_relation_entity(path: str, from_table: str, relation: Dict,
 
         store.create_node(f"{path}::{fk_entity_name}", meta=fk_meta)
 
-        # 添加边: table → fk
-        store.add_edges([{
-            "a": f"{path}::{from_table}.table",
-            "b": f"{path}::{fk_entity_name}",
-        }])
+        # 添加边: source table → fk, target table → fk
+        store.add_edges([
+            {
+                "a": f"{path}::{from_table}.table",
+                "b": f"{path}::{fk_entity_name}",
+            },
+            {
+                "a": f"{path}::{safe_to_table}.table",
+                "b": f"{path}::{fk_entity_name}",
+            },
+        ])
 
         return True
 

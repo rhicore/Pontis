@@ -111,6 +111,20 @@ def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
 
     store.create_node(f"{path}::{rel_entity_name}", meta=rel_meta)
 
+    # 添加边: source table → rel, target table → rel
+    safe_from_table = from_table.replace("/", "_").replace("\\", "_")
+    safe_to_table = to_table.replace("/", "_").replace("\\", "_")
+    store.add_edges([
+        {
+            "a": f"{path}::{safe_from_table}.table",
+            "b": f"{path}::{rel_entity_name}",
+        },
+        {
+            "a": f"{path}::{safe_to_table}.table",
+            "b": f"{path}::{rel_entity_name}",
+        },
+    ])
+
     logger.info(f"  Relation: {rel_entity_name} (confidence={confidence:.2f})")
     return True
 

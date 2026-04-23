@@ -20,8 +20,10 @@ import logging
 import re
 import sqlite3
 import sys
+import threading
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -134,9 +136,20 @@ def find_db_file(db_dir: Path) -> str | None:
 #  日志
 # ═══════════════════════════════════════════════════════════
 
+class _ThreadFilter(logging.Filter):
+    """只放行创建时所在线程的日志记录，避免并行时日志串文件。"""
+    def __init__(self):
+        super().__init__()
+        self._tid = threading.get_ident()
+
+    def filter(self, record):
+        return threading.get_ident() == self._tid
+
+
 def setup_query_log(log_path: str) -> logging.FileHandler:
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
+    fh.addFilter(_ThreadFilter())
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(name)s | %(message)s", "%H:%M:%S"))
     logging.getLogger().addHandler(fh)
     return fh
@@ -236,6 +249,7 @@ def main():
     parser.add_argument("--skip-extract", action="store_true", help="跳过提取，直接测试")
     parser.add_argument("--force-extract", action="store_true", help="强制重新提取（删除旧 .pontis）")
     parser.add_argument("--extract-only", action="store_true", help="只提取不测试")
+    parser.add_argument("--workers", type=int, default=4, help="并行 worker 数量（默认 4）")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s | %(message)s", datefmt="%H:%M:%S")
@@ -254,7 +268,7 @@ def main():
         by_db[q['db_id']].append(q)
 
     print(f"=== BIRD Benchmark ===")
-    print(f"Databases: {len(by_db)}, Queries: {len(dev_data)}\n")
+    print(f"Databases: {len(by_db)}, Queries: {len(dev_data)}, Workers: {args.workers}\n")
 
     all_results = []
 
@@ -287,20 +301,17 @@ def main():
             print(f"  Error: no database file found")
             continue
 
-        # Phase 3: 测试
+        # Phase 3: 并行测试
         bench_dir = db_dir / ".pontis" / "benchmark"
         bench_dir.mkdir(parents=True, exist_ok=True)
 
-        agent = create_benchmark_agent(str(db_dir))
-
-        db_results = []
-        correct_count = 0
-
-        for q in queries:
+        def run_one(q: dict) -> dict:
+            """单条 query 测试（每个线程独立 agent）。"""
             qid = q['question_id']
             q_log = bench_dir / f"q{qid}.log"
 
             fh = setup_query_log(str(q_log))
+            agent = create_benchmark_agent(str(db_dir))
 
             prompt = build_query_prompt(q['question'], q.get('evidence', ''))
             t0 = time.time()
@@ -313,8 +324,6 @@ def main():
             predicted_result = execute_sql(db_path, predicted_sql) if predicted_sql else "PARSE_ERROR"
 
             correct = is_correct(predicted_result, golden_result)
-            if correct:
-                correct_count += 1
 
             result_str = (
                 "CORRECT" if correct
@@ -332,12 +341,20 @@ def main():
             status = "OK" if correct else "FAIL"
             print(f"  Q{qid} [{q.get('difficulty', '?')}] {status} {result_str} ({elapsed:.1f}s)")
 
-            r = {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
-                 'correct': correct, 'result': result_str, 'elapsed': elapsed}
-            db_results.append(r)
-            all_results.append(r)
+            return {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
+                    'correct': correct, 'result': result_str, 'elapsed': elapsed}
 
-            agent.reset_conversation()
+        db_results = []
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {pool.submit(run_one, q): q['question_id'] for q in queries}
+            for future in as_completed(futures):
+                db_results.append(future.result())
+
+        # 按 question_id 排序保证输出有序
+        db_results.sort(key=lambda r: r['question_id'])
+
+        correct_count = sum(1 for r in db_results if r['correct'])
+        all_results.extend(db_results)
 
         write_db_summary(bench_dir, db_id, db_results)
         pct = correct_count / len(queries) * 100 if queries else 0

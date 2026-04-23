@@ -267,6 +267,56 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                 },
             },
         },
+        "query": {
+            "type": "function",
+            "function": {
+                "name": "query",
+                "description": _load_prompt("query"),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "sql": {
+                            "type": "string",
+                            "description": "SQL query statement (SELECT only)",
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": "Database file path relative to project root, e.g. 'data.sqlite'",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max rows to return, default 100",
+                        },
+                    },
+                    "required": ["sql", "file"],
+                },
+            },
+        },
+        "find_path": {
+            "type": "function",
+            "function": {
+                "name": "find_path",
+                "description": _load_prompt("find_path"),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "from_ref": {
+                            "type": "string",
+                            "description": "起始实体 ref，如 'db::TableA.table'",
+                        },
+                        "to_ref": {
+                            "type": "string",
+                            "description": "目标实体 ref，如 'db::TableB.table'",
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "description": "最大搜索深度（表跳数），默认 4",
+                        },
+                    },
+                    "required": ["from_ref", "to_ref"],
+                },
+            },
+        },
     }
 
 
@@ -489,6 +539,26 @@ def _exec_bash(store, arguments: dict) -> str:
     )
 
 
+def _exec_query(store, arguments: dict) -> str:
+    from tool_use.query.tool import query_command
+    return query_command(
+        store,
+        sql=arguments["sql"],
+        file=arguments["file"],
+        limit=arguments.get("limit", 100),
+    )
+
+
+def _exec_find_path(store, arguments: dict) -> str:
+    from tool_use.find_path.tool import find_path_command
+    return find_path_command(
+        store,
+        from_ref=arguments["from_ref"],
+        to_ref=arguments["to_ref"],
+        max_depth=arguments.get("max_depth", 4),
+    )
+
+
 def _exec_create_entity(store, arguments: dict) -> str:
     from tool_use.create_entity.tool import create_entity_command
     return create_entity_command(
@@ -546,6 +616,8 @@ _READONLY_EXECUTORS = {
     "lookup": _exec_lookup,
     "search": _exec_search,
     "bash": _exec_bash,
+    "query": _exec_query,
+    "find_path": _exec_find_path,
 }
 
 _WRITE_EXECUTORS = {

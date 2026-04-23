@@ -1,10 +1,12 @@
 """实体参考层 — 按文件类型组织的实体命名规则和元数据字段。"""
 
-_ENTITIES_PROMPT = r"""## 数据库文件 (.db / .sqlite)
+_ENTITIES_PROMPT = r"""以下是各文件类型可能产生的实体类型。不是每种文件都会有所有实体，实际存在哪些实体取决于提取结果，用 glob 查看。
+
+## 关系型数据库文件 (.db / .sqlite / .sqlite3 等)
 
 ### 文件节点
 
-ref 就是文件相对路径：`california_schools.db`
+ref 就是文件相对路径：`my_data.db`
 
 | 字段 | 说明 |
 |---|---|
@@ -17,7 +19,7 @@ ref 就是文件相对路径：`california_schools.db`
 
 ```
 <数据库>::<表名>.table
-例: event.db::users.table
+例: my_data.db::users.table
 ```
 
 | 字段 | 说明 |
@@ -30,17 +32,17 @@ ref 就是文件相对路径：`california_schools.db`
 
 ```
 <数据库>::<视图名>.view
-例: event.db::active_users.view
+例: my_data.db::active_users.view
 ```
 
 ### 列 .col
 
 ```
 <数据库>::<表名>.<列名>.<数据类型>.col
-例: event.db::users.id.INT.col
-例: event.db::users.name.TEXT.col
-例: event.db::users.salary.REAL.col
-例: event.db::users.created_at.DATETIME.col
+例: my_data.db::users.id.INT.col
+例: my_data.db::users.name.TEXT.col
+例: my_data.db::users.salary.REAL.col
+例: my_data.db::users.created_at.DATETIME.col
 ```
 
 注意：列名中的特殊字符（空格、括号等）保持原样，如 `frpm.Free Meal Count (K-12).REAL.col`。用 glob 模糊搜索比精确构造更可靠。
@@ -59,7 +61,7 @@ ref 就是文件相对路径：`california_schools.db`
 
 ```
 <数据库>::<源表>.<源列>__to__<目标表>.<目标列>.fk
-例: event.db::orders.user_id__to__users.id.fk
+例: my_data.db::orders.user_id__to__users.id.fk
 ```
 
 | 字段 | 说明 |
@@ -71,7 +73,7 @@ ref 就是文件相对路径：`california_schools.db`
 
 ```
 <数据库>::<表A>.<列A>__to__<表B>.<列B>.overlap
-例: california_schools.db::schools.School__to__frpm.School Name.overlap
+例: my_data.db::schools.School__to__frpm.School Name.overlap
 ```
 
 由静态计算生成（KMV sketch 近似），可能遗漏真实的列关联，仅供参考。
@@ -86,7 +88,7 @@ ref 就是文件相对路径：`california_schools.db`
 
 ```
 <数据库>::<表A>.<列A>__rel__<表B>.<列B>.rel
-例: california_schools.db::schools.County__rel__satscores.cname.rel
+例: my_data.db::schools.County__rel__satscores.cname.rel
 ```
 
 由 AI 推断的语义关系，定位信息已编码在 entity name 中，meta 只有 brief 和 detail。
