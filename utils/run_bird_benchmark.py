@@ -8,6 +8,11 @@
   4. 从 agent 回复提取 SQL，执行并与 golden SQL 比对
   5. 记录日志 + 计算准确率
 
+并行策略：
+  - 数据库级别并行：--db-workers 个数据库同时跑（提取+测试）
+  - Query 级别并行：每个库内 --workers 个 query 同时跑
+  - 总线程数 ≈ db_workers × query_workers，注意 API 限流
+
 Usage:
     python -m utils.run_bird_benchmark                       # 全量
     python -m utils.run_bird_benchmark --db toxicology        # 指定库
@@ -197,7 +202,7 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]):
         if t > 0:
             lines.append(f"  {diff}: {c}/{t} ({c/t*100:.1f}%)")
     lines += ["", "Per query:"]
-    for r in results:
+    for r in sorted(results, key=lambda r: r['question_id']):
         status = "OK" if r['correct'] else r['result']
         lines.append(f"  Q{r['question_id']} [{r.get('difficulty', '?')}] {status} {r['elapsed']:.1f}s")
     (bench_dir / "summary.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -239,6 +244,106 @@ def write_total_summary(all_results: list[dict]):
 
 
 # ═══════════════════════════════════════════════════════════
+#  单库完整流程
+# ═══════════════════════════════════════════════════════════
+
+def run_database(db_id: str, queries: list[dict], args) -> list[dict]:
+    """单个数据库的完整流程：提取 + 测试。可在独立线程中运行。
+
+    Returns:
+        该库的所有 query 结果列表
+    """
+    db_dir = DB_BASE / db_id
+    print(f"[{db_id}] {len(queries)} queries — start")
+
+    if not db_dir.exists():
+        print(f"[{db_id}] Error: directory not found, skipping")
+        return []
+
+    # Phase 1: 提取
+    if not args.skip_extract:
+        from extractor.bird_extract import extract_one
+        t0 = time.time()
+        r = extract_one(str(db_dir), force=args.force_extract)
+        elapsed_extract = time.time() - t0
+        parts = []
+        if r["static"]: parts.append(f"Static {r['static']:.0f}s")
+        if r["ai_columns"]: parts.append(f"AI Cols {r['ai_columns']:.0f}s")
+        if r["agent"]: parts.append(f"Agent {r['agent']:.0f}s")
+        print(f"[{db_id}] Extract done: {', '.join(parts)}")
+
+    if args.extract_only:
+        return []
+
+    # Phase 2: 找数据库文件
+    db_path = find_db_file(db_dir)
+    if not db_path:
+        print(f"[{db_id}] Error: no database file found")
+        return []
+
+    # Phase 3: 并行测试
+    bench_dir = db_dir / ".pontis" / "benchmark"
+    bench_dir.mkdir(parents=True, exist_ok=True)
+
+    def run_one(q: dict) -> dict:
+        """单条 query 测试（每个线程独立 agent）。"""
+        qid = q['question_id']
+        q_log = bench_dir / f"q{qid}.log"
+
+        fh = setup_query_log(str(q_log))
+        agent = create_benchmark_agent(str(db_dir))
+
+        prompt = build_query_prompt(q['question'], q.get('evidence', ''))
+        t0 = time.time()
+        response = agent.chat(prompt)
+        elapsed = time.time() - t0
+
+        predicted_sql = extract_sql(response)
+
+        golden_result = execute_sql(db_path, q['SQL'])
+        predicted_result = execute_sql(db_path, predicted_sql) if predicted_sql else "PARSE_ERROR"
+
+        correct = is_correct(predicted_result, golden_result)
+
+        result_str = (
+            "CORRECT" if correct
+            else "PARSE_ERROR" if predicted_sql is None
+            else "EXEC_ERROR" if isinstance(predicted_result, str)
+            else "WRONG"
+        )
+        pred_rows = len(predicted_result) if isinstance(predicted_result, set) else 0
+        gold_rows = len(golden_result) if isinstance(golden_result, set) else 0
+
+        teardown_log(fh)
+        append_query_result(q_log, q, response, predicted_sql, result_str,
+                            pred_rows, gold_rows, elapsed)
+
+        status = "OK" if correct else "FAIL"
+        print(f"  Q{qid} [{q.get('difficulty', '?')}] {status} {result_str} ({elapsed:.1f}s)")
+
+        return {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
+                'correct': correct, 'result': result_str, 'elapsed': elapsed}
+
+    db_results = []
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {pool.submit(run_one, q): q['question_id'] for q in queries}
+        for future in as_completed(futures):
+            db_results.append(future.result())
+
+    # 按 question_id 排序
+    db_results.sort(key=lambda r: r['question_id'])
+
+    # 写库级 summary
+    write_db_summary(bench_dir, db_id, db_results)
+
+    correct_count = sum(1 for r in db_results if r['correct'])
+    pct = correct_count / len(queries) * 100 if queries else 0
+    print(f"[{db_id}] => {correct_count}/{len(queries)} ({pct:.1f}%)")
+
+    return db_results
+
+
+# ═══════════════════════════════════════════════════════════
 #  主流程
 # ═══════════════════════════════════════════════════════════
 
@@ -249,7 +354,8 @@ def main():
     parser.add_argument("--skip-extract", action="store_true", help="跳过提取，直接测试")
     parser.add_argument("--force-extract", action="store_true", help="强制重新提取（删除旧 .pontis）")
     parser.add_argument("--extract-only", action="store_true", help="只提取不测试")
-    parser.add_argument("--workers", type=int, default=4, help="并行 worker 数量（默认 4）")
+    parser.add_argument("--workers", type=int, default=4, help="每个库内并行 query worker 数量（默认 4）")
+    parser.add_argument("--db-workers", type=int, default=3, help="并行数据库数量（默认 3）")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s | %(message)s", datefmt="%H:%M:%S")
@@ -267,100 +373,31 @@ def main():
     for q in dev_data:
         by_db[q['db_id']].append(q)
 
+    total_queries = sum(len(qs) for qs in by_db.values())
     print(f"=== BIRD Benchmark ===")
-    print(f"Databases: {len(by_db)}, Queries: {len(dev_data)}, Workers: {args.workers}\n")
+    print(f"Databases: {len(by_db)}, Queries: {total_queries}")
+    print(f"DB workers: {args.db_workers}, Query workers/db: {args.workers}")
+    print(f"Max concurrent threads: ~{args.db_workers * args.workers}\n")
 
     all_results = []
 
-    for db_id, queries in sorted(by_db.items()):
-        db_dir = DB_BASE / db_id
-        print(f"[{db_id}] {len(queries)} queries")
-
-        if not db_dir.exists():
-            print(f"  Error: {db_dir} not found, skipping")
-            continue
-
-        # Phase 1: 提取（交给 bird_extract）
-        if not args.skip_extract:
-            from extractor.bird_extract import extract_one
-            t0 = time.time()
-            r = extract_one(str(db_dir), force=args.force_extract)
-            elapsed_extract = time.time() - t0
-            parts = []
-            if r["static"]: parts.append(f"Static {r['static']:.0f}s")
-            if r["ai_columns"]: parts.append(f"AI Cols {r['ai_columns']:.0f}s")
-            if r["agent"]: parts.append(f"Agent {r['agent']:.0f}s")
-            print(f"  Extract: {', '.join(parts)}")
-
-        if args.extract_only:
-            continue
-
-        # Phase 2: 找数据库文件
-        db_path = find_db_file(db_dir)
-        if not db_path:
-            print(f"  Error: no database file found")
-            continue
-
-        # Phase 3: 并行测试
-        bench_dir = db_dir / ".pontis" / "benchmark"
-        bench_dir.mkdir(parents=True, exist_ok=True)
-
-        def run_one(q: dict) -> dict:
-            """单条 query 测试（每个线程独立 agent）。"""
-            qid = q['question_id']
-            q_log = bench_dir / f"q{qid}.log"
-
-            fh = setup_query_log(str(q_log))
-            agent = create_benchmark_agent(str(db_dir))
-
-            prompt = build_query_prompt(q['question'], q.get('evidence', ''))
-            t0 = time.time()
-            response = agent.chat(prompt)
-            elapsed = time.time() - t0
-
-            predicted_sql = extract_sql(response)
-
-            golden_result = execute_sql(db_path, q['SQL'])
-            predicted_result = execute_sql(db_path, predicted_sql) if predicted_sql else "PARSE_ERROR"
-
-            correct = is_correct(predicted_result, golden_result)
-
-            result_str = (
-                "CORRECT" if correct
-                else "PARSE_ERROR" if predicted_sql is None
-                else "EXEC_ERROR" if isinstance(predicted_result, str)
-                else "WRONG"
-            )
-            pred_rows = len(predicted_result) if isinstance(predicted_result, set) else 0
-            gold_rows = len(golden_result) if isinstance(golden_result, set) else 0
-
-            teardown_log(fh)
-            append_query_result(q_log, q, response, predicted_sql, result_str,
-                                pred_rows, gold_rows, elapsed)
-
-            status = "OK" if correct else "FAIL"
-            print(f"  Q{qid} [{q.get('difficulty', '?')}] {status} {result_str} ({elapsed:.1f}s)")
-
-            return {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
-                    'correct': correct, 'result': result_str, 'elapsed': elapsed}
-
-        db_results = []
-        with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = {pool.submit(run_one, q): q['question_id'] for q in queries}
-            for future in as_completed(futures):
-                db_results.append(future.result())
-
-        # 按 question_id 排序保证输出有序
-        db_results.sort(key=lambda r: r['question_id'])
-
-        correct_count = sum(1 for r in db_results if r['correct'])
-        all_results.extend(db_results)
-
-        write_db_summary(bench_dir, db_id, db_results)
-        pct = correct_count / len(queries) * 100 if queries else 0
-        print(f"  => {correct_count}/{len(queries)} ({pct:.1f}%)\n")
+    # 数据库级别并行
+    with ThreadPoolExecutor(max_workers=args.db_workers) as db_pool:
+        futures = {
+            db_pool.submit(run_database, db_id, queries, args): db_id
+            for db_id, queries in sorted(by_db.items())
+        }
+        for future in as_completed(futures):
+            db_id = futures[future]
+            try:
+                db_results = future.result()
+                all_results.extend(db_results)
+            except Exception as e:
+                print(f"[{db_id}] FATAL: {e}")
 
     if all_results and not args.extract_only:
+        # 按 db_id + question_id 排序
+        all_results.sort(key=lambda r: (r['db_id'], r['question_id']))
         write_total_summary(all_results)
 
 

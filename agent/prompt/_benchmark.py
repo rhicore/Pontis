@@ -28,6 +28,8 @@ _BENCHMARK_ADDITIONS = r"""
 - 除非问题明确要求"不同的"或"唯一的"，不要加 `DISTINCT`
 - `COUNT(col)` 和 `COUNT(DISTINCT col)` 结果不同，根据问题语义选择
 - 多条记录的同一列（如球员多次评分），golden 通常不过滤只取最新一条。除非 evidence 或问题明确提到"最新"、"最近"
+- 不要用 `GROUP_CONCAT` 把多行结果合并为一行，除非问题明确要求拼接。保持一行一实体的多行输出格式
+- 返回多个值时用单列多行输出（直接查询），不要横向展开为多列。例如返回两个元素的名称，应该是两行一列，不是一行两列
 
 ## 日期与年龄计算
 
@@ -44,6 +46,7 @@ _BENCHMARK_ADDITIONS = r"""
 
 - evidence 中如果给出了明确的数学公式（如 `average of average = sum(scores) / count(schools)`），必须严格将公式翻译为 SQL 的 GROUP BY + HAVING 或子查询逻辑，不要简化或替换为单行过滤
 - 百分比计算：`CAST(COUNT(...) AS REAL) * 100 / COUNT(...)`，注意用 REAL 避免整数除法截断
+- 百分比的分子和分母必须来自同一数据集（同一子查询或同一 JOIN 结果），不要把分母设为全表 COUNT(*)，除非问题明确说"占所有...的比例"
 """
 
 
