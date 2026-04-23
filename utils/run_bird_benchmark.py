@@ -99,7 +99,8 @@ QUERY_PROMPT_TEMPLATE = """\
 提示：{evidence}
 
 要求：
-- 先用工具（glob、meta 等）了解数据库结构，再生成 SQL
+- 先探索数据库结构：glob 表和列，glob .fk/.rel/.overlap 关系实体了解表间 JOIN 路径，read meta 确认列语义
+- 充分理解 schema 和关系后再写 SQL，不要盲猜列名或 JOIN 条件
 - 只输出一条 SELECT 语句，用 ```sql ``` 代码块包裹
 - 不要解释，只输出 SQL
 - 注意 SQLite 语法：字符串用单引号，列名有特殊字符时用反引号或双引号
@@ -114,15 +115,15 @@ def build_query_prompt(question: str, evidence: str) -> str:
 
 
 def build_benchmark_system_prompt(project_path: str) -> str:
-    """构建 benchmark 模式的系统提示词（low effort + benchmark 专用指令）。"""
+    """构建 benchmark 模式的系统提示词（max effort + benchmark 专用指令）。"""
     from agent.prompt import build_prompt
-    return build_prompt("benchmark", project_path, effort="low")
+    return build_prompt("benchmark", project_path, effort="max")
 
 
 def create_benchmark_agent(project_path: str) -> "PontisAgent":
-    """创建 benchmark 专用的 agent（readonly + low effort）。"""
+    """创建 benchmark 专用的 agent（readonly + max effort = 充分探索，无轮次限制）。"""
     from agent.agent import create_agent, AgentSpec
-    return create_agent(project_path, AgentSpec(mode="benchmark", effort="low"))
+    return create_agent(project_path, AgentSpec(mode="benchmark", effort="max"))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -283,6 +284,9 @@ def run_database(db_id: str, queries: list[dict], args) -> list[dict]:
 
     # Phase 3: 并行测试
     bench_dir = db_dir / ".pontis" / "benchmark"
+    if bench_dir.exists():
+        import shutil
+        shutil.rmtree(bench_dir)
     bench_dir.mkdir(parents=True, exist_ok=True)
 
     def run_one(q: dict) -> dict:

@@ -14,11 +14,7 @@ DETAIL = """\
 
 注意：
 - 合并写入：只更新 fields 中提供的字段，其他字段保持不变
-- 成功后返回值已包含实际写入内容，**不需要再调 meta 验证**——这会浪费一个工具调用轮次
-
-典型用法：
-- update_meta(ref="event.db::users.table", fields={"brief": "用户表", "detail": "存储所有注册用户的基本信息"})
-- update_meta(ref="event.db::users.status.TEXT.col", fields={"brief": "用户状态"})\
+- 成功后返回值已包含实际写入内容\
 """
 
 
