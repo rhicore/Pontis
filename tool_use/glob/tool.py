@@ -29,6 +29,24 @@ def _format_node_info(store, ref: str, meta: dict) -> str:
     return info
 
 
+def _common_ref_prefix(refs: list) -> str:
+    """找所有 ref 的最长公共前缀，停在 :: 边界上。"""
+    if not refs:
+        return ""
+    prefix = refs[0]
+    for s in refs[1:]:
+        while not s.startswith(prefix):
+            prefix = prefix[:-1]
+        if not prefix:
+            return ""
+    # 只在 :: 边界截断，确保缩写后剩余部分仍有意义
+    if "::" not in prefix:
+        return ""  # 没到 entity 层级，不值得缩写
+    # 保留到最后一个 :: 后面（如 "california_schools.db::"）
+    last_sep = prefix.rfind("::")
+    return prefix[:last_sep + 2]
+
+
 def glob_command(
     store,
     path_pattern: str,
@@ -67,26 +85,42 @@ def glob_command(
         return "No objects found"
 
     # Build all result lines
-    all_results = []
+    all_refs = []
+    all_infos = []
     for ref in refs:
         meta = store.get_meta(ref)
         if meta is None:
             continue
         info = _format_node_info(store, ref, meta)
-        all_results.append(f"{ref} | {info}")
+        all_refs.append(ref)
+        all_infos.append(info)
 
-    if not all_results:
+    if not all_refs:
         return "No objects found"
 
-    total = len(all_results)
-    page = all_results[offset:offset + limit]
+    total = len(all_refs)
 
-    if not page:
+    # 检测 ref 公共前缀（如 "california_schools.db::"），缩写以节省 token
+    prefix = _common_ref_prefix(all_refs)
+    if prefix:
+        header = f"[{prefix}]\n"
+    else:
+        header = ""
+        prefix = ""
+
+    page_refs = all_refs[offset:offset + limit]
+    page_infos = all_infos[offset:offset + limit]
+
+    if not page_refs:
         return f"No results at offset {offset}. Total results: {total}"
 
-    output = "\n".join(page)
+    lines = []
+    for ref, info in zip(page_refs, page_infos):
+        display = ref[len(prefix):] if prefix else ref
+        lines.append(f"{display} | {info}")
+    output = header + "\n".join(lines)
 
-    end = offset + len(page)
+    end = offset + len(page_refs)
     if end < total:
         output += f"\n(共 {total} 条结果，当前显示第 {offset + 1}-{end} 条。使用 offset={end} 查看后续结果)"
 

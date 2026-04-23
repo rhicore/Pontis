@@ -107,9 +107,15 @@ def build_query_prompt(question: str, evidence: str) -> str:
 
 
 def build_benchmark_system_prompt(project_path: str) -> str:
-    """构建 benchmark 模式的系统提示词（readonly + SQL + benchmark 专用指令）。"""
+    """构建 benchmark 模式的系统提示词（low effort + benchmark 专用指令）。"""
     from agent.prompt import build_prompt
-    return build_prompt("benchmark", project_path)
+    return build_prompt("benchmark", project_path, effort="low")
+
+
+def create_benchmark_agent(project_path: str) -> "PontisAgent":
+    """创建 benchmark 专用的 agent（readonly + low effort）。"""
+    from agent.agent import create_agent, AgentSpec
+    return create_agent(project_path, AgentSpec(mode="benchmark", effort="low"))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -285,8 +291,7 @@ def main():
         bench_dir = db_dir / ".pontis" / "benchmark"
         bench_dir.mkdir(parents=True, exist_ok=True)
 
-        from agent.agent import PontisAgent
-        agent = PontisAgent(str(db_dir), system_prompt=build_benchmark_system_prompt(str(db_dir)))
+        agent = create_benchmark_agent(str(db_dir))
 
         db_results = []
         correct_count = 0

@@ -19,6 +19,7 @@ def load_agent_config(project_path: str = None) -> dict:
         "api_key": AGENT_API_KEY,
         "max_tokens": AGENT_MAX_TOKENS,
         "temperature": AGENT_TEMPERATURE,
+        "effort": os.environ.get("PONTIS_EFFORT", "mid"),
     }
 
     # 1. ~/.pontis/config.yml
@@ -51,6 +52,7 @@ def _apply_yaml(cfg: dict, path: str):
         "agent_api_key": "api_key",
         "agent_max_tokens": "max_tokens",
         "agent_temperature": "temperature",
+        "agent_effort": "effort",
     }
     for yaml_key, cfg_key in mapping.items():
         if yaml_key in data:

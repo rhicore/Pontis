@@ -21,7 +21,7 @@ class AgentExecutor:
         self._mode = mode
 
     def __call__(self, store, arguments: dict) -> str:
-        from agent.agent import PontisAgent
+        from agent.agent import PontisAgent, AgentSpec
         from agent.tools import ToolRegistry
         from agent.prompt import build_prompt
 
@@ -43,19 +43,18 @@ class AgentExecutor:
                 sub_tools.register(name, schema, executor)
 
         # 按模式选择 prompt
-        if self._mode == "readonly":
-            sub_prompt = build_prompt("readonly", store.project_path)
-        else:
-            sub_prompt = build_prompt("sub_agent", store.project_path)
+        sub_mode = "readonly" if self._mode == "readonly" else "sub_agent"
+        sub_prompt = build_prompt(sub_mode, store.project_path)
 
         sub_agent = PontisAgent(
             store.project_path,
             tools=sub_tools,
             system_prompt=sub_prompt,
         )
+        sub_agent.max_rounds = max_rounds
 
         # 执行任务
-        print(f"  \033[90m    子智能体启动 ({self._mode})\033[0m")
+        print(f"  \033[90m    子智能体启动 ({sub_mode}, max {max_rounds} rounds)\033[0m")
         result = sub_agent.chat(task)
         print(f"  \033[90m    子智能体完成\033[0m")
 

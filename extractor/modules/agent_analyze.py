@@ -31,7 +31,7 @@ COORDINATOR_PROMPT = """\
 
 - **基于证据行动** — 判断关系要有数据支撑（看过列名、抽样值、统计线索），不要凭空猜测
 - **自主探索** — 不只依赖已有的 .overlap / .fk 线索，主动分析列名语义、数据内容、业务逻辑
-- **先读后写** — 写 summary 前先读取当前状态，已有高质量 brief/detail 不要覆盖
+- **先读后写** — 写 summary 前先读取当前状态。如果已有的 brief/detail 是低质量的（如只包含统计信息、语义描述模糊、有错误），应当改进覆盖；如果已有高质量内容则保留
 - **用中文** — brief 和 detail 用中文撰写
 - **不要提及内部概念** — 回答中不要出现 Pontis、知识图谱、.pontis 等
 - **不要输出纯文本总结** — 任务完成后直接停止，不要输出"我已完成…"等总结性文字。如果还有未完成的工作，继续调用工具执行
@@ -89,9 +89,7 @@ COORDINATOR_PROMPT = """\
 
 def generate(store: Store, *, debug: bool = False) -> None:
     """统一分析：关系发现 + 总结生成。"""
-    from agent.agent import PontisAgent
-    from agent.tools import build_writer_registry, enable_debug
-    from agent.prompt import build_prompt
+    from agent.agent import create_agent, AgentSpec
     from agent.config import load_agent_config
 
     config = load_agent_config(store.project_path)
@@ -101,15 +99,10 @@ def generate(store: Store, *, debug: bool = False) -> None:
 
     logger.info("=== Agent Analyze ===")
 
-    registry = build_writer_registry()
-    if debug:
-        enable_debug(registry)
-
-    agent = PontisAgent(
-        store.project_path,
-        tools=registry,
-        system_prompt=build_prompt("writer", store.project_path, debug=debug),
-    )
+    agent = create_agent(store.project_path, AgentSpec(
+        mode="writer",
+        debug=debug,
+    ))
 
     agent.chat(COORDINATOR_PROMPT)
     logger.info("=== Agent Analyze done ===")

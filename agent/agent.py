@@ -2,27 +2,83 @@
 import json
 import logging
 import sys
+from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
 from openai import OpenAI
 
 from storage import Store
 from agent.config import load_agent_config
-from agent.tools import ToolRegistry, build_readonly_registry
+from agent.tools import ToolRegistry, build_readonly_registry, build_writer_registry
 from agent.prompt import build_prompt
+from agent.prompt._effort import get_effort_max_rounds, VALID_EFFORTS
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+_MAX_ROUNDS_STOP_PROMPT = """\
+⚠️ 已达到工具调用上限（{max_rounds} 轮）。请不要再调用任何工具。
+
+基于你目前已掌握的信息，直接完成你的任务：
+- 如果你正在生成 SQL，直接输出你当前最佳理解的 SQL
+- 如果你正在分析数据，总结你已发现的内容
+- 如果你正在写总结，直接输出已有的总结内容
+
+不要解释为什么停止，直接输出结果。"""
+
+
+# ═══════════════════════════════════════════════════════════
+#  Agent 创建配置
+# ═══════════════════════════════════════════════════════════
+
+@dataclass
+class AgentSpec:
+    """Agent 创建参数 — 调用方只需填这个，工厂自动组装 prompt/tools/max_rounds。
+
+    后续可扩展：model override、temperature override、custom tools 等。
+    """
+    mode: str = "readonly"          # readonly | writer | sub_agent | benchmark
+    effort: str = "mid"             # low | mid | high
+    debug: bool = False
+    max_rounds: Optional[int] = None  # None = 按模式默认（readonly 用 effort 推导，writer 无限制）
+
+
+def create_agent(project_path: str, spec: AgentSpec = None) -> "PontisAgent":
+    """工厂：根据 spec 自动组装 prompt + tools + max_rounds，返回就绪的 agent。"""
+    if spec is None:
+        spec = AgentSpec()
+
+    # 1. prompt
+    prompt = build_prompt(spec.mode, project_path, effort=spec.effort, debug=spec.debug)
+
+    # 2. tools
+    if spec.mode in ("writer", "sub_agent"):
+        tools = build_writer_registry()
+    else:
+        tools = build_readonly_registry()
+
+    # 3. max_rounds：
+    #    - 显式指定 → 直接用
+    #    - readonly/benchmark/sub_agent → 从 effort 推导
+    #    - writer → 无限制（None）
+    if spec.max_rounds is not None:
+        max_rounds = spec.max_rounds
+    elif spec.mode == "writer":
+        max_rounds = None
+    else:
+        max_rounds = get_effort_max_rounds(spec.effort)
+
+    agent = PontisAgent(project_path, tools=tools, system_prompt=prompt)
+    agent.max_rounds = max_rounds
+    return agent
+
+
+# ═══════════════════════════════════════════════════════════
+#  PontisAgent
+# ═══════════════════════════════════════════════════════════
 
 class PontisAgent:
-    """Interactive agent that uses Pontis tools to analyze project data.
-
-    Args:
-        project_path: Path to the project directory.
-        tools: ToolRegistry instance. Defaults to readonly registry.
-        system_prompt: System prompt string. Defaults to readonly prompt.
-    """
+    """Interactive agent that uses Pontis tools to analyze project data."""
 
     def __init__(self, project_path: str,
                  tools: Optional[ToolRegistry] = None,
@@ -42,18 +98,20 @@ class PontisAgent:
             timeout=120.0,
         )
 
-        # 可注入的工具和 prompt
         self.tools = tools or build_readonly_registry()
         self.system_prompt = system_prompt or build_prompt("readonly", project_path)
+        self.max_rounds: Optional[int] = None  # 由 create_agent 设置
         self.messages = [
             {"role": "system", "content": self.system_prompt},
         ]
 
-    def chat(self, user_input: str) -> str:
+    def chat(self, user_input: str, max_rounds: Optional[int] = None) -> str:
         """Send user input and return the agent's response.
 
-        The agent loops until it stops calling tools (outputs text or empty).
+        max_rounds 优先级：参数 > self.max_rounds（由 effort 绑定）> 无限制
         """
+        effective_max = max_rounds or self.max_rounds
+
         self.messages.append({"role": "user", "content": user_input})
 
         rounds = 0
@@ -94,23 +152,41 @@ class PontisAgent:
                 if len(result) > 8000:
                     result = result[:8000] + "\n... (truncated)"
 
-                logger.info(f"Tool result [{name}]: {result}")
+                indented = "\n  ".join(result.split("\n"))
+                logger.info(f"Tool result [{name}]:\n  {indented}")
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": result,
                 })
 
-    def chat_stream(self, user_input: str) -> Iterator[dict]:
-        """Stream chat events: tool calls, tool results, and final text.
+            # Max rounds reached → inject stop prompt and get final output
+            if effective_max and rounds >= effective_max:
+                logger.info(f"Max rounds reached ({rounds}/{effective_max}), requesting final output")
+                self.messages.append({
+                    "role": "user",
+                    "content": _MAX_ROUNDS_STOP_PROMPT.format(max_rounds=effective_max),
+                })
+                final_response = self.client.chat.completions.create(
+                    model=self.config["model"],
+                    messages=self.messages,
+                    tools=self.tools.get_definitions(),
+                    max_tokens=self.config["max_tokens"],
+                    temperature=self.config["temperature"],
+                )
+                final_msg = final_response.choices[0].message
+                self.messages.append(final_msg.to_dict())
+                if final_msg.content:
+                    logger.info(f"Agent done (max_rounds): {final_msg.content}")
+                return final_msg.content or ""
 
-        Yields dicts with:
-          {"type": "tool_call", "name": ..., "arguments": ..., "id": ...}
-          {"type": "tool_result", "name": ..., "result": ..., "id": ...}
-          {"type": "done", "content": ...}
-        """
+    def chat_stream(self, user_input: str, max_rounds: Optional[int] = None) -> Iterator[dict]:
+        """Stream chat events: tool calls, tool results, and final text."""
+        effective_max = max_rounds or self.max_rounds
+
         self.messages.append({"role": "user", "content": user_input})
 
+        rounds = 0
         while True:
             response = self.client.chat.completions.create(
                 model=self.config["model"],
@@ -126,6 +202,8 @@ class PontisAgent:
             if not msg.tool_calls:
                 yield {"type": "done", "content": msg.content or ""}
                 return
+
+            rounds += 1
 
             for tool_call in msg.tool_calls:
                 name = tool_call.function.name
@@ -158,6 +236,24 @@ class PontisAgent:
                     "content": result,
                 })
 
+            if effective_max and rounds >= effective_max:
+                logger.info(f"Max rounds reached ({rounds}/{effective_max}), requesting final output")
+                self.messages.append({
+                    "role": "user",
+                    "content": _MAX_ROUNDS_STOP_PROMPT.format(max_rounds=effective_max),
+                })
+                final_response = self.client.chat.completions.create(
+                    model=self.config["model"],
+                    messages=self.messages,
+                    tools=self.tools.get_definitions(),
+                    max_tokens=self.config["max_tokens"],
+                    temperature=self.config["temperature"],
+                )
+                final_msg = final_response.choices[0].message
+                self.messages.append(final_msg.to_dict())
+                yield {"type": "done", "content": final_msg.content or ""}
+                return
+
     def reset_conversation(self):
         """Clear conversation history (keep system prompt) for a fresh session."""
         self.messages = [self.messages[0]]
@@ -166,6 +262,8 @@ class PontisAgent:
         """Run the interactive REPL."""
         print(f"\n\033[1mPontis Agent\033[0m — {self.project_path}")
         print(f"Model: {self.config['model']}")
+        if self.max_rounds:
+            print(f"Max rounds: {self.max_rounds}")
         print(f"Type 'exit' or Ctrl+C to quit\n")
 
         while True:

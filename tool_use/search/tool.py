@@ -139,11 +139,41 @@ def search_command(
     if not page:
         return f"No results at offset {offset}. Total results: {total}"
 
-    lines = [f"{ref} | {info}" for _, ref, info in page]
-    output = '\n'.join(lines)
+    page_refs = [ref for _, ref, _ in page]
+    page_infos = [info for _, _, info in page]
+
+    # 检测 ref 公共前缀缩写
+    prefix = _common_ref_prefix(page_refs)
+    if prefix:
+        header = f"[{prefix}]\n"
+    else:
+        header = ""
+        prefix = ""
+
+    lines = []
+    for ref, info in zip(page_refs, page_infos):
+        display = ref[len(prefix):] if prefix else ref
+        lines.append(f"{display} | {info}")
+    output = header + '\n'.join(lines)
 
     end = offset + len(page)
     if end < total:
         output += f"\n(共 {total} 条结果，当前显示第 {offset + 1}-{end} 条。使用 offset={end} 查看后续结果)"
 
     return output
+
+
+def _common_ref_prefix(refs: list) -> str:
+    """找所有 ref 的最长公共前缀，停在 :: 边界上。"""
+    if not refs:
+        return ""
+    prefix = refs[0]
+    for s in refs[1:]:
+        while not s.startswith(prefix):
+            prefix = prefix[:-1]
+        if not prefix:
+            return ""
+    if "::" not in prefix:
+        return ""
+    last_sep = prefix.rfind("::")
+    return prefix[:last_sep + 2]
