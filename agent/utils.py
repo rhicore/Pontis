@@ -1,11 +1,9 @@
-"""Agent 配置加载
+"""Agent 工具函数
 
-从 config.py 默认值 + YAML + 环境变量加载 agent LLM 配置。
+动态配置加载等杂项函数。
 """
 import os
 import yaml
-
-from openai import OpenAI
 
 
 def load_agent_config(project_path: str = None) -> dict:

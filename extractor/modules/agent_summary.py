@@ -67,7 +67,7 @@ def generate(store: Store, *, debug: bool = False) -> None:
     from agent.agent import PontisAgent
     from agent.tools import build_writer_registry, enable_debug
     from agent.prompt import build_prompt
-    from agent.config import load_agent_config
+    from agent.utils import load_agent_config
 
     config = load_agent_config(store.project_path)
     if not config["api_key"]:

@@ -588,10 +588,11 @@ def _exec_delete(store, arguments: dict) -> str:
     return delete_command(store, ref=arguments["ref"])
 
 
-# ==================== Registry Builders ====================
+# ==================== Schema & Executor Tables ====================
 
 _READONLY_SCHEMAS = None
 _WRITE_SCHEMAS = None
+_AGENT_SCHEMA = None
 
 
 def _get_readonly_schemas() -> Dict[str, dict]:
@@ -608,6 +609,14 @@ def _get_write_schemas() -> Dict[str, dict]:
     return _WRITE_SCHEMAS
 
 
+def _get_agent_schema() -> dict:
+    global _AGENT_SCHEMA
+    if _AGENT_SCHEMA is None:
+        _AGENT_SCHEMA = _build_agent_schema()
+    return _AGENT_SCHEMA
+
+
+# (schema_dict, executor_fn) — 工具注册的原子单元
 _READONLY_EXECUTORS = {
     "glob": _exec_glob,
     "grep": _exec_grep,
@@ -628,45 +637,61 @@ _WRITE_EXECUTORS = {
 }
 
 
-def build_readonly_registry() -> ToolRegistry:
-    """构建只读模式工具集（7 个只读 + agent 子智能体）。"""
-    registry = ToolRegistry()
-    schemas = _get_readonly_schemas()
-    for name, executor in _READONLY_EXECUTORS.items():
-        registry.register(name, schemas[name], executor)
+# ──────────────────────────────────────────────────────────
+#  模式 → 默认工具集
+# ──────────────────────────────────────────────────────────
+# 新增模式只需在此加一行。
 
-    # 子智能体：readonly 模式，创建的子智能体也是 readonly
-    from tool_use.sub_agent.tool import AgentExecutor
-    registry.register("agent", _get_agent_schema(), AgentExecutor(registry, mode="readonly"))
-
-    return registry
-
-
-_AGENT_SCHEMA = None
-
-
-def _get_agent_schema() -> dict:
-    global _AGENT_SCHEMA
-    if _AGENT_SCHEMA is None:
-        _AGENT_SCHEMA = _build_agent_schema()
-    return _AGENT_SCHEMA
+_MODE_TOOLS = {
+    "readonly":  ["glob", "grep", "read", "meta", "lookup", "search",
+                  "bash", "query", "find_path", "agent"],
+    "writer":    ["glob", "grep", "read", "meta", "lookup", "search",
+                  "bash", "query", "find_path", "agent",
+                  "create_entity", "update_meta", "add_edge", "delete"],
+    "sub_agent": ["glob", "grep", "read", "meta", "lookup", "search",
+                  "bash", "query", "find_path",
+                  "create_entity", "update_meta", "add_edge", "delete"],
+    "benchmark": ["glob", "grep", "read", "meta", "lookup", "search",
+                  "bash", "query", "find_path"],
+}
 
 
-def build_writer_registry() -> ToolRegistry:
-    """构建写入模式工具集（只读 + 写入 + writer 子智能体）。"""
-    registry = build_readonly_registry()
+def build_registry(spec) -> ToolRegistry:
+    """根据 AgentSpec 构建工具注册表。
+
+    流程：从 _MODE_TOOLS 取模式默认集合 → 排除 disabled_tools → 逐个注册。
+    特殊处理：agent 工具需要根据 mode 创建 AgentExecutor。
+    """
+    mode = spec.mode
+    base_tools = list(_MODE_TOOLS.get(mode, _MODE_TOOLS["readonly"]))
+    disabled = set(spec.disabled_tools)
+    enabled = [t for t in base_tools if t not in disabled]
+
+    readonly_schemas = _get_readonly_schemas()
     write_schemas = _get_write_schemas()
-    for name, executor in _WRITE_EXECUTORS.items():
-        registry.register(name, write_schemas[name], executor)
 
-    # 替换 agent 为 writer 模式
-    from tool_use.sub_agent.tool import AgentExecutor
-    registry.register("agent", _get_agent_schema(), AgentExecutor(registry, mode="writer"))
+    registry = ToolRegistry()
+
+    for name in enabled:
+        if name == "agent":
+            # agent 工具特殊处理：executor 需要包装 registry 和 mode
+            from tool_use.sub_agent.tool import AgentExecutor
+            sub_mode = "writer" if mode in ("writer", "sub_agent") else "readonly"
+            registry.register("agent", _get_agent_schema(),
+                              AgentExecutor(registry, mode=sub_mode))
+        elif name in readonly_schemas:
+            registry.register(name, readonly_schemas[name], _READONLY_EXECUTORS[name])
+        elif name in write_schemas:
+            registry.register(name, write_schemas[name], _WRITE_EXECUTORS[name])
+
+    # debug 模式注入 log 工具
+    if spec.debug:
+        registry.register("log", _build_log_schema(), _exec_log)
 
     return registry
 
 
-# ==================== Debug Mode ====================
+# ==================== Debug Tool ====================
 
 def _build_log_schema() -> dict:
     return {
@@ -705,18 +730,25 @@ def enable_debug(registry: ToolRegistry) -> None:
     """向已有 registry 注入 log 工具（调试模式）。"""
     registry.register("log", _build_log_schema(), _exec_log)
 
-    return registry
+
+# ==================== 向后兼容封装 ====================
+
+def build_readonly_registry() -> ToolRegistry:
+    """向后兼容：构建只读模式工具集。"""
+    from agent.agent import AgentSpec
+    return build_registry(AgentSpec(mode="readonly"))
 
 
-# ==================== Backward Compatibility ====================
+def build_writer_registry() -> ToolRegistry:
+    """向后兼容：构建写入模式工具集。"""
+    from agent.agent import AgentSpec
+    return build_registry(AgentSpec(mode="writer"))
 
-# 旧代码仍可通过这些名称访问（模块加载时初始化）
-TOOL_DEFINITIONS: List[Dict[str, Any]] = [
-    _build_readonly_schemas()[name] for name in _READONLY_EXECUTORS
-]
 
+# ==================== 向后兼容 ====================
 
 def execute_tool(name: str, arguments: dict, store) -> str:
     """执行工具（向后兼容）。"""
-    registry = build_readonly_registry()
+    from agent.agent import AgentSpec
+    registry = build_registry(AgentSpec())
     return registry.execute(name, arguments, store)

@@ -90,7 +90,7 @@ COORDINATOR_PROMPT = """\
 def generate(store: Store, *, debug: bool = False) -> None:
     """统一分析：关系发现 + 总结生成。"""
     from agent.agent import create_agent, AgentSpec
-    from agent.config import load_agent_config
+    from agent.utils import load_agent_config
 
     config = load_agent_config(store.project_path)
     if not config["api_key"]:

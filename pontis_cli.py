@@ -4,7 +4,6 @@ Pontis CLI - Interactive Data Analysis Agent
 
 Usage:
     pontis <folder>         # Open agent chat for a project folder
-    pontis shell <folder>   # Open legacy VFS shell (debug)
 """
 import os
 import sys
@@ -15,13 +14,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Pontis - Interactive Data Analysis Agent",
     )
-    parser.add_argument("target", nargs="?", help="Project folder to analyze")
-    parser.add_argument("--shell", action="store_true", help="Open legacy VFS shell")
+    parser.add_argument("target", help="Project folder to analyze")
     args = parser.parse_args()
-
-    if not args.target:
-        parser.print_help()
-        sys.exit(1)
 
     project_path = os.path.abspath(args.target)
     if not os.path.isdir(project_path):
@@ -38,14 +32,9 @@ def main():
     project_root = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, project_root)
 
-    if args.shell:
-        from pontis_shell import PontisShell
-        shell = PontisShell(project_path)
-        shell.run()
-    else:
-        from agent.agent import PontisAgent
-        agent = PontisAgent(project_path)
-        agent.run()
+    from agent.agent import PontisAgent
+    agent = PontisAgent(project_path)
+    agent.run()
 
 
 if __name__ == "__main__":

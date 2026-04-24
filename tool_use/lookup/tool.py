@@ -11,7 +11,7 @@ import re
 import sqlite3
 from typing import Optional, List, Tuple
 
-from tool_use.utils.config import TOOL_PAGINATION
+from tool_use.config import TOOL_PAGINATION
 
 
 def _parse_predicate(predicate: str) -> Tuple[str, str, object]:

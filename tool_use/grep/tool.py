@@ -17,7 +17,7 @@ from typing import Optional, List, Tuple
 from dataclasses import dataclass
 
 from tool_use.utils.path_parser import parse_path_pattern
-from tool_use.utils.config import TOOL_PAGINATION
+from tool_use.config import TOOL_PAGINATION
 
 MAX_RESULT_SIZE_CHARS = 20_000
 

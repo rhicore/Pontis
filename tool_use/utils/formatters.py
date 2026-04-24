@@ -8,7 +8,7 @@ Formatters - 共用格式化逻辑
 import re
 from typing import Dict, Any, List, Optional
 
-from tool_use.utils.config import (
+from tool_use.config import (
     InfoTypeConfig, MetaTypeConfig,
     INFO_TYPE_CONFIG, META_TYPE_CONFIG,
 )

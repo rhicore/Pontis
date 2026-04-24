@@ -3,15 +3,15 @@ import json
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import Iterator, Optional
+from typing import Iterator, List, Optional
 
 from openai import OpenAI
 
 from storage import Store
-from agent.config import load_agent_config
-from agent.tools import ToolRegistry, build_readonly_registry, build_writer_registry
+from agent.utils import load_agent_config
+from agent.tools import build_registry
 from agent.prompt import build_prompt
-from agent.prompt._effort import get_effort_max_rounds, VALID_EFFORTS
+from agent.prompt._effort import get_effort_max_rounds
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -28,39 +28,37 @@ _MAX_ROUNDS_STOP_PROMPT = """\
 
 
 # ═══════════════════════════════════════════════════════════
-#  Agent 创建配置
+#  Agent 创建配置 — 单一参数包
 # ═══════════════════════════════════════════════════════════
 
 @dataclass
 class AgentSpec:
-    """Agent 创建参数 — 调用方只需填这个，工厂自动组装 prompt/tools/max_rounds。
+    """Agent 创建的完整参数包。
 
-    后续可扩展：model override、temperature override、custom tools 等。
+    所有组装逻辑（prompt、tools、max_rounds）都从这个 spec 派生。
+    新增参数只需加字段，然后在 PROMPT_LAYERS 或 build_registry 中使用。
     """
-    mode: str = "readonly"          # readonly | writer | sub_agent | benchmark
-    effort: str = "mid"             # low | mid | high
+    project_path: str = ""
+    mode: str = "readonly"              # readonly | writer | sub_agent | benchmark
+    effort: str = "mid"                 # low | mid | high | max
     debug: bool = False
-    max_rounds: Optional[int] = None  # None = 按模式默认（readonly 用 effort 推导，writer 无限制）
+    max_rounds: Optional[int] = None    # None = 按 effort 推导
+    disabled_tools: List[str] = field(default_factory=list)  # 从模式默认集合中排除的工具
 
 
 def create_agent(project_path: str, spec: AgentSpec = None) -> "PontisAgent":
-    """工厂：根据 spec 自动组装 prompt + tools + max_rounds，返回就绪的 agent。"""
+    """工厂：根据 spec 自动组装 prompt + tools + max_rounds。"""
     if spec is None:
         spec = AgentSpec()
+    spec.project_path = project_path
 
-    # 1. prompt
-    prompt = build_prompt(spec.mode, project_path, effort=spec.effort, debug=spec.debug)
+    # 1. prompt — 声明式层组装
+    prompt = build_prompt(spec)
 
-    # 2. tools
-    if spec.mode in ("writer", "sub_agent"):
-        tools = build_writer_registry()
-    else:
-        tools = build_readonly_registry()
+    # 2. tools — spec 驱动注册
+    tools = build_registry(spec)
 
-    # 3. max_rounds：
-    #    - 显式指定 → 直接用
-    #    - readonly/benchmark/sub_agent → 从 effort 推导
-    #    - writer → 无限制（None）
+    # 3. max_rounds 优先级：显式指定 > effort 推导 > writer 无限制
     if spec.max_rounds is not None:
         max_rounds = spec.max_rounds
     elif spec.mode == "writer":
@@ -81,7 +79,7 @@ class PontisAgent:
     """Interactive agent that uses Pontis tools to analyze project data."""
 
     def __init__(self, project_path: str,
-                 tools: Optional[ToolRegistry] = None,
+                 tools=None,
                  system_prompt: Optional[str] = None):
         self.project_path = project_path
         self.store = Store(project_path)
@@ -98,9 +96,9 @@ class PontisAgent:
             timeout=120.0,
         )
 
-        self.tools = tools or build_readonly_registry()
-        self.system_prompt = system_prompt or build_prompt("readonly", project_path)
-        self.max_rounds: Optional[int] = None  # 由 create_agent 设置
+        self.tools = tools or build_registry(AgentSpec())
+        self.system_prompt = system_prompt or build_prompt(AgentSpec(project_path=project_path))
+        self.max_rounds: Optional[int] = None
         self.messages = [
             {"role": "system", "content": self.system_prompt},
         ]

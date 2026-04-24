@@ -10,7 +10,7 @@ import os
 from typing import Optional
 
 from tool_use.utils.formatters import get_type_config, get_file_type_from_name, format_info_from_meta
-from tool_use.utils.config import TOOL_PAGINATION
+from tool_use.config import TOOL_PAGINATION
 
 
 def _format_node_info(store, ref: str, meta: dict) -> str:
