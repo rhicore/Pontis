@@ -42,6 +42,8 @@ STATIC_PIPELINE = [
 
 AI_COLUMN_MODULE = "ai_db_column_summary"
 AI_MODULE = "agent_analyze"
+JOIN_DETECT_MODULE = "agent_join_detect"
+DISAMBIGUATE_MODULE = "agent_disambiguate"
 
 # ── 日志格式 ──
 _CONSOLE_FMT = "%(asctime)s %(levelname)-5s | %(message)s"
@@ -128,6 +130,22 @@ def extract_one(db_dir: str, force: bool = False, no_ai: bool = False,
                 dt = time.time() - t0
                 result["agent"] = dt
                 logger.info(f"Agent phase done: {dt:.1f}s")
+
+            # Agent 关系发现
+            if JOIN_DETECT_MODULE in registry:
+                t0 = time.time()
+                registry[JOIN_DETECT_MODULE](store, debug=debug)
+                dt = time.time() - t0
+                result["join_detect"] = dt
+                logger.info(f"Join detect phase done: {dt:.1f}s")
+
+            # Agent 语义消歧
+            if DISAMBIGUATE_MODULE in registry:
+                t0 = time.time()
+                registry[DISAMBIGUATE_MODULE](store, debug=debug)
+                dt = time.time() - t0
+                result["disambiguate"] = dt
+                logger.info(f"Disambiguate phase done: {dt:.1f}s")
 
         logger.info(f"=== {name} done ===")
 

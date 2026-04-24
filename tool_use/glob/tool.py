@@ -9,7 +9,7 @@ Returns format: [name] | [Info]
 import os
 from typing import Optional
 
-from tool_use.utils.formatters import get_type_config, get_file_type_from_name, format_info_from_meta
+from tool_use.utils.formatters import get_type_config, get_file_type_from_name
 from tool_use.config import TOOL_PAGINATION
 
 
@@ -21,7 +21,7 @@ def _format_node_info(store, ref: str, meta: dict) -> str:
     node_type = meta.get('type', '')
     file_type = get_file_type_from_name(name, node_type)
     config = get_type_config(file_type)
-    info = format_info_from_meta(meta, config)
+    info = config.info_fn(meta)
 
     brief = meta.get("brief", "")
     if brief:

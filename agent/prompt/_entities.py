@@ -93,6 +93,25 @@ ref 就是文件相对路径：`my_data.db`
 
 由 AI 推断的语义关系，定位信息已编码在 entity name 中，meta 只有 brief 和 detail。
 
+### 语义消歧 .disambig
+
+```
+<数据库>::<歧义术语>.disambig
+例: my_data.db::points.disambig
+例: my_data.db::results.disambig
+```
+
+当数据库中存在名称相同或相近但含义不同的实体时，消歧实体记录这些差异。通过边连接到所有涉及的列或表实体。
+
+| 字段 | 说明 |
+|---|---|
+| `level` | 消歧层级：`column`（列级）或 `table`（表级） |
+| `brief` | ≤50字描述歧义 |
+| `detail` | 完整列出每个实体中该术语的具体语义差异 |
+
+- **列级消歧**：同一列名出现在多个表中但含义不同（如 `points` 在 results 表是单场积分，在 standings 表是赛季累计积分）
+- **表级消歧**：名称相近的表服务不同场景（如 `results` vs `constructorResults`）
+
 ---
 
 ## CSV / TSV 文件

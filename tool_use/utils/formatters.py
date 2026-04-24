@@ -2,22 +2,19 @@
 Formatters - 共用格式化逻辑
 
 包含：
-- glob/search 的 info 格式化
+- glob/search 的类型配置获取和文件类型推断
 - meta 的属性格式化
 """
-import re
 from typing import Dict, Any, List, Optional
 
-from tool_use.config import (
-    InfoTypeConfig, MetaTypeConfig,
-    INFO_TYPE_CONFIG, META_TYPE_CONFIG,
-)
+from tool_use.config import MetaTypeConfig, META_TYPE_CONFIG
 
 
 # ========== 配置获取 ==========
 
-def get_type_config(file_type: str) -> InfoTypeConfig:
+def get_type_config(file_type: str):
     """获取文件类型的 info 配置"""
+    from tool_use.config import INFO_TYPE_CONFIG
     file_type = file_type.lower()
     if not file_type.startswith("."):
         file_type = "." + file_type
@@ -68,52 +65,6 @@ def get_file_type_from_name(name: str, node_type: str = "") -> str:
     return "file"
 
 
-# ========== 通用工具 ==========
-
-def _format_file_size(size: int) -> str:
-    """格式化文件大小"""
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
-
-
-# ========== Info 格式化 (glob/search) ==========
-
-def format_info_from_template(template: str, data: Dict[str, Any], max_str_len: int = 30) -> str:
-    """使用字符串模板格式化 Info 字段"""
-    try:
-        formatted_data = {}
-        for key, value in data.items():
-            if value is None:
-                formatted_data[key] = "-"
-            elif key == "file_size" and isinstance(value, int):
-                formatted_data[key] = _format_file_size(value)
-            elif isinstance(value, (int, float)):
-                formatted_data[key] = value
-            elif isinstance(value, str):
-                formatted_data[key] = value if len(value) <= max_str_len else f"({len(value)} chars)"
-            else:
-                formatted_data[key] = str(value)
-
-        # 填充缺失字段为 "-"
-        field_names = re.findall(r'\{(\w+)', template)
-        for field in field_names:
-            if field not in formatted_data:
-                formatted_data[field] = "-"
-
-        result = template.format(**formatted_data)
-        return result.strip() or "-"
-    except (KeyError, ValueError):
-        return "-"
-
-
-def format_info_from_meta(meta: Dict[str, Any], config: InfoTypeConfig) -> str:
-    """根据配置从元数据格式化 Info 字段"""
-    return format_info_from_template(config.info_template, meta, config.max_str_len)
-
-
 # ========== Meta 格式化 ==========
 
 
@@ -161,13 +112,7 @@ def _fold_summary(key: str, value: Any) -> str:
 def _format_meta_value(value: Any, max_len: Optional[int] = None) -> str:
     """格式化 meta 值，可选截断"""
     if isinstance(value, list):
-        # sample / topk 等列表
-        items = []
-        for item in value[:10]:
-            if isinstance(item, dict):
-                items.append(str(item))
-            else:
-                items.append(str(item))
+        items = [str(item) for item in value[:10]]
         text = ", ".join(items)
         if len(value) > 10:
             text += f" ... ({len(value)} total)"

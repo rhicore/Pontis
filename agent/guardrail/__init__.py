@@ -45,6 +45,7 @@ def build_guardrails(spec) -> List[Guardrail]:
     from agent.guardrail.tool_abuse import ToolAbuse
     from agent.guardrail.sql_check import SQLEntityCheck
     from agent.guardrail.sql_join_check import BridgeTableCheck
+    from agent.guardrail.sql_disambig_check import SQLDisambigCheck
 
     guardrails = []
 
@@ -65,5 +66,8 @@ def build_guardrails(spec) -> List[Guardrail]:
 
     # JOIN 路径合理性检测
     guardrails.append(BridgeTableCheck())
+
+    # SQL 语义消歧检查
+    guardrails.append(SQLDisambigCheck())
 
     return guardrails

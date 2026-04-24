@@ -346,11 +346,6 @@ def _build_write_schemas() -> Dict[str, dict]:
                                 "properties": {
                                     "a": {"type": "string", "description": "节点 ref"},
                                     "b": {"type": "string", "description": "节点 ref"},
-                                    "required_by": {
-                                        "type": "array",
-                                        "items": {"type": "string"},
-                                        "description": "依赖方，值为 [\"a\"] 或 [\"b\"]",
-                                    },
                                 },
                                 "required": ["a", "b"],
                             },
@@ -397,11 +392,6 @@ def _build_write_schemas() -> Dict[str, dict]:
                                 "properties": {
                                     "a": {"type": "string", "description": "节点 ref"},
                                     "b": {"type": "string", "description": "节点 ref"},
-                                    "required_by": {
-                                        "type": "array",
-                                        "items": {"type": "string"},
-                                        "description": "依赖方列表，值为 [\"a\"] 或 [\"b\"]",
-                                    },
                                 },
                                 "required": ["a", "b"],
                             },

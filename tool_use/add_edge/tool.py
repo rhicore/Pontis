@@ -6,7 +6,7 @@ def add_edge_command(store, edges: list) -> str:
 
     Args:
         store: Store 实例
-        edges: 边列表 [{"a": "...", "b": "...", "required_by": [...]}, ...]
+        edges: 边列表 [{"a": "...", "b": "..."}, ...]
     """
     if not edges:
         return "错误: edges 不能为空"
@@ -39,8 +39,6 @@ def add_edge_command(store, edges: list) -> str:
     store.add_edges(valid_edges)
     results.insert(0, f"已添加 {len(valid_edges)} 条边:")
     for e in valid_edges:
-        req = e.get("required_by", [])
-        req_str = f" (required_by: {req})" if req else ""
-        results.append(f"  {e['a']} ↔ {e['b']}{req_str}")
+        results.append(f"  {e['a']} ↔ {e['b']}")
 
     return "\n".join(results)

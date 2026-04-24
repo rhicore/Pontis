@@ -13,8 +13,8 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from storage import Store
-from extractor.modules._utils import get_llm
-from extractor.modules._ai_utils import generate_with_prefix
+from extractor.modules.utils.config import Config
+from extractor.modules.utils.ai_utils import generate_with_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ _ANALYSIS_INSTRUCTIONS = """\
 def generate(store: Store, config=None) -> None:
     logger.info("=== AI: DB column summary (parallel) ===")
 
-    llm = get_llm(config=config)
+    llm = config.get_llm() if config else None
     if not llm:
         logger.warning("LLM not configured, skipping AI summary")
         return

@@ -12,6 +12,7 @@ from agent.utils import load_agent_config
 from agent.tools import build_registry
 from agent.prompt import build_prompt
 from agent.guardrail import Guardrail, AgentState, build_guardrails
+from utils.llm import build_thinking_kwargs
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -97,13 +98,28 @@ class PontisAgent:
 
     def _call_llm(self):
         """调用 LLM，返回 response。"""
-        return self.client.chat.completions.create(
-            model=self.config["model"],
-            messages=self.messages,
-            tools=self.tools.get_definitions(),
+        kwargs = {
+            "model": self.config["model"],
+            "messages": self.messages,
+            "tools": self.tools.get_definitions(),
+        }
+        kwargs.update(build_thinking_kwargs(
+            self.config.get("thinking", False),
+            self.config.get("thinking_effort", "high"),
             max_tokens=self.config["max_tokens"],
             temperature=self.config["temperature"],
-        )
+        ))
+        return self.client.chat.completions.create(**kwargs)
+
+    def _msg_to_dict(self, msg) -> dict:
+        """将 LLM response message 转为 dict，保留 reasoning_content（工具调用轮次必须回传）。"""
+        d = msg.to_dict()
+        # DeepSeek 思考模式：有工具调用时必须保留 reasoning_content
+        if self.config.get("thinking") and msg.tool_calls:
+            rc = getattr(msg, "reasoning_content", None)
+            if rc:
+                d["reasoning_content"] = rc
+        return d
 
     # ──────────────── 工具执行 ────────────────
 
@@ -161,7 +177,7 @@ class PontisAgent:
         while True:
             response = self._call_llm()
             msg = response.choices[0].message
-            self.messages.append(msg.to_dict())
+            self.messages.append(self._msg_to_dict(msg))
 
             # ── Guardrail 检查（始终运行）──
             pending = [
@@ -194,7 +210,7 @@ class PontisAgent:
         while True:
             response = self._call_llm()
             msg = response.choices[0].message
-            self.messages.append(msg.to_dict())
+            self.messages.append(self._msg_to_dict(msg))
 
             # ── Guardrail 检查（始终运行）──
             pending = [

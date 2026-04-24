@@ -161,7 +161,7 @@ def _build_table_kmv(db_path: str, table_name: str, cols: List[Dict],
                      signatures: Dict[tuple, list]) -> None:
     """流式扫描一张表，为所有列构建 KMV 签名。"""
     import sqlite3
-    from extractor.modules._lsh_index import _hash_value
+    from extractor.modules.utils.lsh_index import _hash_value
 
     col_names = [c['column'] for c in cols]
     heaps: Dict[str, list] = {c: [] for c in col_names}

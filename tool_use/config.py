@@ -5,8 +5,9 @@ Display Configuration - 工具显示配置
 - TOOL_PAGINATION: 各工具的分页默认值
 - INFO_TYPE_CONFIG: glob/search 的 info 显示模板
 - META_TYPE_CONFIG: meta 命令的显示配置（统一按后缀名匹配）
+- ENTITY_DEPENDENCY_RANK: 实体依赖层级，用于应用层级联删除
 """
-from typing import List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 from dataclasses import dataclass, field
 
 
@@ -30,7 +31,7 @@ TOOL_PAGINATION = {
 @dataclass
 class InfoTypeConfig:
     """glob/search 的类型显示配置"""
-    info_template: str
+    info_fn: Callable[[Dict], str]
     max_str_len: int = 30
 
 
@@ -43,35 +44,67 @@ class MetaTypeConfig:
     untruncated_keys: Set[str] = field(default_factory=lambda: {"detail", "brief"})  # 不截断，完整展示
 
 
+# ========== 辅助函数 ==========
+
+def _v(d, key, default="-"):
+    """获取元属性值，None 时返回 default。file_size 自动格式化。"""
+    val = d.get(key)
+    if val is None:
+        return default
+    if key == "file_size" and isinstance(val, int):
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if val < 1024:
+                return f"{val:.1f} {unit}"
+            val /= 1024
+        return f"{val:.1f} TB"
+    return val
+
+def _c(d, suffix):
+    """获取该实体与某类型邻接实体的数量，>0 返回 '2 rels'，否则返回 None。"""
+    val = d.get(suffix)
+    if isinstance(val, list) and len(val) > 0:
+        return f"{len(val)} {suffix}{'s' if len(val) > 1 else ''}"
+    return None
+
+
 # ========== Info 类型配置 (glob/search) ==========
 
 INFO_TYPE_CONFIG = {
-    ".db": InfoTypeConfig(info_template="{table_count} tables, {view_count} views"),
-    ".database": InfoTypeConfig(info_template="{table_count} tables, {view_count} views"),
-    ".table": InfoTypeConfig(info_template="{row_count} rows, {column_count} cols"),
-    ".view": InfoTypeConfig(info_template="{column_count} cols"),
-    ".col": InfoTypeConfig(info_template="-"),  # 列实体只显示 brief，不显示统计
-    ".fk": InfoTypeConfig(info_template="{brief}"),
-    ".rel": InfoTypeConfig(info_template="{brief}"),
-    ".overlap": InfoTypeConfig(info_template="{brief}"),
-    ".pattern": InfoTypeConfig(info_template="{pattern}", max_str_len=80),
-    ".chunk": InfoTypeConfig(info_template="{char_count} chars"),
-    ".json": InfoTypeConfig(info_template="{structure_type}, {line_count} lines"),
-    ".yaml": InfoTypeConfig(info_template="{structure_type}, {line_count} lines"),
-    ".yml": InfoTypeConfig(info_template="{structure_type}, {line_count} lines"),
-    ".csv": InfoTypeConfig(info_template="{row_count} rows, {column_count} cols"),
-    ".tsv": InfoTypeConfig(info_template="{row_count} rows, {column_count} cols"),
-    ".md": InfoTypeConfig(info_template="{line_count} lines"),
-    ".txt": InfoTypeConfig(info_template="{line_count} lines"),
-    ".directory": InfoTypeConfig(info_template="{file_count} files, {subdir_count} dirs"),
-    ".file": InfoTypeConfig(info_template="{file_size}"),
-    ".dict": InfoTypeConfig(info_template="{count} keys"),
-    ".list": InfoTypeConfig(info_template="{count} items"),
-    ".array": InfoTypeConfig(info_template="{count} items"),
-    ".str": InfoTypeConfig(info_template="{value}", max_str_len=30),
-    ".int": InfoTypeConfig(info_template="{value}"),
-    ".float": InfoTypeConfig(info_template="{value}"),
-    ".bool": InfoTypeConfig(info_template="{value}"),
+    ".db": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'table_count')} tables, {_v(m, 'view_count')} views"),
+    ".database": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'table_count')} tables, {_v(m, 'view_count')} views"),
+    ".table": InfoTypeConfig(info_fn=lambda m: ", ".join(filter(None, [
+        f"{_v(m, 'row_count')} rows, {_v(m, 'column_count')} cols",
+        _c(m, 'fk'), _c(m, 'disambig'),
+    ]))),
+    ".view": InfoTypeConfig(info_fn=lambda m: ", ".join(filter(None, [
+        f"{_v(m, 'column_count')} cols",
+        _c(m, 'fk'), _c(m, 'disambig'),
+    ]))),
+    ".col": InfoTypeConfig(info_fn=lambda m: ", ".join(filter(None, [
+        _c(m, 'rel'), _c(m, 'fk'), _c(m, 'disambig'),
+    ])) or "-"),
+    ".fk": InfoTypeConfig(info_fn=lambda m: _v(m, 'brief')),
+    ".rel": InfoTypeConfig(info_fn=lambda m: _v(m, 'brief')),
+    ".overlap": InfoTypeConfig(info_fn=lambda m: _v(m, 'brief')),
+    ".disambig": InfoTypeConfig(info_fn=lambda m: _v(m, 'brief')),
+    ".pattern": InfoTypeConfig(info_fn=lambda m: _v(m, "pattern"), max_str_len=80),
+    ".chunk": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'char_count')} chars"),
+    ".json": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'structure_type')}, {_v(m, 'line_count')} lines"),
+    ".yaml": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'structure_type')}, {_v(m, 'line_count')} lines"),
+    ".yml": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'structure_type')}, {_v(m, 'line_count')} lines"),
+    ".csv": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'row_count')} rows, {_v(m, 'column_count')} cols"),
+    ".tsv": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'row_count')} rows, {_v(m, 'column_count')} cols"),
+    ".md": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'line_count')} lines"),
+    ".txt": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'line_count')} lines"),
+    ".directory": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'file_count')} files, {_v(m, 'subdir_count')} dirs"),
+    ".file": InfoTypeConfig(info_fn=lambda m: _v(m, "file_size")),
+    ".dict": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'count')} keys"),
+    ".list": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'count')} items"),
+    ".array": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'count')} items"),
+    ".str": InfoTypeConfig(info_fn=lambda m: str(_v(m, "value")), max_str_len=30),
+    ".int": InfoTypeConfig(info_fn=lambda m: str(_v(m, "value"))),
+    ".float": InfoTypeConfig(info_fn=lambda m: str(_v(m, "value"))),
+    ".bool": InfoTypeConfig(info_fn=lambda m: str(_v(m, "value"))),
 }
 
 
@@ -152,4 +185,24 @@ META_TYPE_CONFIG = {
     "default": MetaTypeConfig(
         default_keys=["file_size", "line_count", "char_count", "detail"],
     ),
+}
+
+
+# ========== 实体依赖层级（级联删除用）==========
+
+# 数值越高 = 越是被派生的实体，越依赖其他实体。
+# 用于应用层级联删除：删除源端节点时，rank 更高的邻居也一并删除。
+ENTITY_DEPENDENCY_RANK = {
+    # Rank 0: 文件级（最基础）
+    ".db": 0, ".sqlite": 0, ".sqlite3": 0, ".duckdb": 0,
+    ".csv": 0, ".tsv": 0, ".json": 0, ".yaml": 0, ".yml": 0,
+    ".md": 0, ".txt": 0, ".directory": 0, ".file": 0,
+    # Rank 1: 结构级
+    ".table": 1, ".view": 1,
+    # Rank 2: 列级
+    ".col": 2,
+    # Rank 3: 派生关系
+    ".fk": 3, ".rel": 3, ".overlap": 3,
+    # Rank 4: 语义消歧
+    ".disambig": 4,
 }

@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Optional
 from storage import Store
-from extractor.modules._utils import get_llm
+from extractor.modules.utils.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def generate(store: Store, config=None) -> None:
     """为所有.overlap实体生成LLM关系评分"""
     logger.info("=== Generating column relations (LLM scoring) ===")
 
-    llm = get_llm(config)
+    llm = config.get_llm() if config else None
     if not llm:
         logger.warning("LLM not configured, skipping relation generation")
         return

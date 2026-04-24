@@ -5,7 +5,7 @@ import os
 from collections import Counter
 from typing import List, Optional
 
-from tool_use.utils.formatters import get_type_config, format_info_from_meta, get_file_type_from_name
+from tool_use.utils.formatters import get_type_config, get_file_type_from_name
 from tool_use.config import TOOL_PAGINATION
 
 
@@ -60,7 +60,7 @@ def _bm25_search(store, query: str, path_pattern: str = "",
         node_type = meta.get('type', '')
         file_type = get_file_type_from_name(name, node_type)
         config = get_type_config(file_type)
-        info = format_info_from_meta(meta, config)
+        info = config.info_fn(meta)
         display_info = f"{info}, {brief}" if brief and info != "-" else (brief or info)
 
         docs.append((ref, tokens, display_info))

@@ -1,12 +1,12 @@
 """
 Create entity tool - Create new entity nodes in the knowledge graph.
 
-Currently only allows creating .rel entities under .db files.
+Currently only allows creating .rel and .disambig entities under .db files.
 """
 
 import re
 
-_ALLOWED_ENTITY_RE = re.compile(r".*\.(db|sqlite|sqlite3|duckdb)::.*\.rel$")
+_ALLOWED_ENTITY_RE = re.compile(r".*\.(db|sqlite|sqlite3|duckdb)::.*\.(rel|disambig)$")
 
 
 def create_entity_command(
@@ -34,7 +34,7 @@ def create_entity_command(
         return f"Error: ref must contain '::' for entity creation. Got: '{ref}'"
 
     if not _ALLOWED_ENTITY_RE.match(ref):
-        return f"错误: 目前只允许创建 .rel 实体（逻辑关系），ref 格式应为 *.db::**.rel"
+        return f"错误: 只允许创建 .rel 或 .disambig 实体，ref 格式应为 *.db::**.(rel|disambig)"
 
     if store.node_exists(ref):
         return f"Entity already exists: {ref}"

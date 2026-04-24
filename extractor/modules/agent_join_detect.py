@@ -1,7 +1,7 @@
-"""Agent Join/Rel Detection — Agent 分析列关系，创建 .rel 实体
+"""Agent Join/Rel Detection — 关系发现为主，总结和消歧为辅。
 
-所有关系检测（join、overlap、semantic rel）都由此 agent 完成。
-基于 overlap 统计数据和列实际内容，由 AI 判断是否创建关系实体。
+主目标：发现列之间的关系，创建 .rel 实体
+次目标：为相关实体写 summary、标注发现的歧义
 """
 import logging
 
@@ -10,7 +10,17 @@ from storage import Store
 logger = logging.getLogger(__name__)
 
 PROMPT = """\
-你的任务：分析项目中数据库列之间的关系，找出有意义的关联并创建 .rel 实体。
+你的任务是深入分析项目中数据库列之间的关系，找出有意义的关联并创建 .rel 实体。
+
+## 你的目标
+
+**主要目标**：发现数据库列之间的有意义关联，创建 .rel 实体。\
+这是你最核心的任务，请投入最多的精力确保关系的准确性和完整性。\
+同时覆盖：基于统计线索的关系（overlap/fk）和自主发现的关系。
+
+**同时关注以下任务**，在分析关系的过程中一并完成：
+- 为你分析过的实体写 brief/detail summary，特别是 .rel 实体和涉及关系的列
+- 当你发现不同表中存在名称相似但含义不同的列，在它们的 detail 中明确标注区别
 
 ## 什么是"有意义的关系"
 
@@ -25,7 +35,7 @@ PROMPT = """\
 项目中可能有 .overlap 和 .fk 实体，这些是统计层面的线索。
 **注意**：overlap 是静态近似计算，可能遗漏真正可以 join 的列对。不能只依赖这些线索。
 
-### 途径二：自主判断（更重要）
+### 途径二：自主判断（同样重要）
 除了统计线索，你必须主动分析表结构和列内容来发现关系：
 - 看列名：语义相近的列（如 user_id / uid / customer_id）可能是关联
 - 看数据：用 lookup 或 read 查看列的实际值，判断两列是否有值重叠
@@ -60,11 +70,9 @@ d. 理解每张表的业务含义（通过表名、列名、数据内容）
 对于确认有意义的关联，用 create_entity 创建 .rel 实体：
 - ref 格式: `[数据库]::[表1].[列1]__rel__[表2].[列2].rel`
 - meta 中包含:
-  - from_table, from_column, to_table, to_column
-  - rel_type: 关系类型（fk / same_meaning / semantic）
-  - source: 发现途径（"overlap" / "fk" / "self_discovered"）
-  - reason: 判断依据（你看到了什么证据）
   - brief（≤50字）和 detail（完整描述关系）
+- edges 必须连接列到 rel（不是列到列），需要两条边
+- 创建前先 glob 检查是否已存在
 
 ### 6. 注意
 - 不要只依赖统计重叠，必须验证语义（看实际数据）
@@ -76,10 +84,8 @@ d. 理解每张表的业务含义（通过表名、列名、数据内容）
 
 
 def generate(store: Store, *, debug: bool = False) -> None:
-    """分析所有 DB 文件的列关系，创建 .rel 实体。"""
-    from agent.agent import PontisAgent
-    from agent.tools import build_writer_registry, enable_debug
-    from agent.prompt import build_prompt
+    """关系发现为主，总结和消歧为辅。"""
+    from agent.agent import create_agent, AgentSpec
     from agent.utils import load_agent_config
 
     config = load_agent_config(store.project_path)
@@ -89,15 +95,10 @@ def generate(store: Store, *, debug: bool = False) -> None:
 
     logger.info("=== Agent Rel Detection ===")
 
-    registry = build_writer_registry()
-    if debug:
-        enable_debug(registry)
-
-    agent = PontisAgent(
-        store.project_path,
-        tools=registry,
-        system_prompt=build_prompt("writer", store.project_path, debug=debug),
-    )
+    agent = create_agent(store.project_path, AgentSpec(
+        mode="writer",
+        debug=debug,
+    ))
 
     agent.chat(PROMPT)
     logger.info("=== Agent Rel Detection done ===")

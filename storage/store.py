@@ -510,11 +510,10 @@ class Store:
 
             self.put_meta(ref, meta)
 
-            # 自动边：连接文件和实体，实体依赖此边
+            # 自动边：连接文件和实体（归属关系）
             auto_edge = {
                 "a": path,
                 "b": ref,
-                "required_by": [ref],  # 实体节点依赖归属边
             }
             all_edges = [auto_edge]
             if edges:
@@ -726,9 +725,6 @@ class Store:
             edge_dict = {
                 "nodes": [self._id_index.get(nid, nid) for nid in nodes],
             }
-            required = e.get("required_by", [])
-            if required:
-                edge_dict["required_by"] = [self._id_index.get(r, r) for r in required]
             result.append(edge_dict)
 
         return result
@@ -736,7 +732,7 @@ class Store:
     def add_edges(self, edges: List[dict]):
         """添加无向边（ref 格式输入，ID 格式存储，去重）。
 
-        边格式：{"a": ref, "b": ref, "required_by": [ref, ...]}
+        边格式：{"a": ref, "b": ref}
         """
         self._ensure_index()
         raw = self._read_edges_raw()
@@ -752,23 +748,9 @@ class Store:
             if pair in existing_pairs:
                 continue
 
-            # 解析 required_by：支持 "a"/"b" 标签或 ref
-            required_by = []
-            for r in (e.get("required_by") or []):
-                if r == "a":
-                    required_by.append(a_id)
-                elif r == "b":
-                    required_by.append(b_id)
-                else:
-                    rid = self._resolve_path_to_id(r)
-                    if rid in (a_id, b_id):
-                        required_by.append(rid)
-
             entry = {
                 "nodes": [a_id, b_id],
             }
-            if required_by:
-                entry["required_by"] = required_by
             # 可读性：附上 ref
             entry[a_id] = e.get("a", "")
             entry[b_id] = e.get("b", "")
@@ -789,82 +771,49 @@ class Store:
 
     # ==================== Delete ====================
 
-    def delete_node(self, ref: str) -> List[str]:
-        """删除节点及其关联边，按 required_by 级联删除依赖节点。
+    def delete_node(self, ref: str) -> str:
+        """删除节点及其关联边。
 
-        级联规则：
-          1. 删除节点 meta + 所有连接边
-          2. 对每条被删边检查 required_by：
-             required_by 中列出的节点（如果不在已删集合中）→ 级联删除
-          3. 递归直到无更多级联
+        不变量：删除节点后，不会有悬挂边（所有连接该节点的边一并删除）。
 
         Returns:
-            被删除的节点 ref 列表（含自身）
+            被删除的节点 ref
         """
         self._ensure_index()
 
         ent_id = self._resolve_path_to_id(ref)
         if not ent_id or not ent_id.startswith("ent_"):
-            return []
+            return ""
 
-        deleted_ids = set()
-        id_to_ref = {}
-        queue = [ent_id]
+        ref_str = self._id_index.get(ent_id, ent_id)
 
-        while queue:
-            current_id = queue.pop(0)
-            if current_id in deleted_ids:
-                continue
+        # 移除该节点的所有边
+        raw = self._read_edges_raw()
+        new_raw = [e for e in raw if ent_id not in e.get("nodes", [])]
+        self._write_edges_raw(new_raw)
 
-            # 记录 ref
-            deleted_ids.add(current_id)
-            ref_str = self._id_index.get(current_id, current_id)
-            id_to_ref[current_id] = ref_str
+        # 清理邻接索引
+        self._adjacent.pop(ent_id, None)
+        for adj_set in self._adjacent.values():
+            adj_set.discard(ent_id)
 
-            # 移除该节点的所有边，收集级联目标
-            raw = self._read_edges_raw()
-            new_raw = []
-            cascade_ids = set()
+        # 删除节点 meta 文件
+        meta_dir = os.path.join(self._nodes_root, ent_id)
+        if os.path.isdir(meta_dir):
+            import shutil
+            shutil.rmtree(meta_dir, ignore_errors=True)
 
-            for e in raw:
-                nodes = e.get("nodes", [])
-                if current_id in nodes:
-                    # 边被删除，检查 required_by
-                    for req_id in (e.get("required_by") or []):
-                        if req_id not in deleted_ids:
-                            cascade_ids.add(req_id)
-                else:
-                    new_raw.append(e)
+        # 清理索引
+        self._id_index.pop(ent_id, None)
+        self._meta_cache.pop(ent_id, None)
+        if ref_str != ent_id:
+            if "::" in ref_str:
+                path, en = ref_str.split("::", 1)
+            else:
+                path, en = ref_str, ""
+            self._name_index.pop((path, en), None)
 
-            self._write_edges_raw(new_raw)
-
-            # 清理邻接索引
-            self._adjacent.pop(current_id, None)
-            for adj_set in self._adjacent.values():
-                adj_set.discard(current_id)
-
-            # 删除节点 meta 文件
-            meta_dir = os.path.join(self._nodes_root, current_id)
-            if os.path.isdir(meta_dir):
-                import shutil
-                shutil.rmtree(meta_dir, ignore_errors=True)
-
-            # 清理索引
-            self._id_index.pop(current_id, None)
-            self._meta_cache.pop(current_id, None)
-            if ref_str != current_id:
-                if "::" in ref_str:
-                    path, en = ref_str.split("::", 1)
-                else:
-                    path, en = ref_str, ""
-                self._name_index.pop((path, en), None)
-
-            # 加入级联队列
-            for cid in cascade_ids:
-                if cid not in deleted_ids:
-                    queue.append(cid)
-
-        return [id_to_ref.get(eid, eid) for eid in deleted_ids]
+        return ref_str
 
     def _resolve_path_to_id(self, ref: str) -> str:
         """路径格式 → ID。如果已是 ID 就原样返回。"""

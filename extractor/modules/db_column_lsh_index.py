@@ -7,7 +7,7 @@ import os
 import logging
 
 from storage import Store
-from extractor.modules._lsh_index import LSHIndexWriter, choose_bucket_count
+from extractor.modules.utils.lsh_index import LSHIndexWriter, choose_bucket_count
 
 logger = logging.getLogger(__name__)
 

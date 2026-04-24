@@ -14,17 +14,21 @@
 
 # Extractor profile（廉价模型，用于元数据提取和总结）
 EXTRACTOR_PROVIDER = "https://api.deepseek.com"
-EXTRACTOR_MODEL = "deepseek-chat"
+EXTRACTOR_MODEL = "deepseek-v4-flash"
 EXTRACTOR_API_KEY = "sk-9cf27bbb303c44709d26b60c691e5edb"
 EXTRACTOR_MAX_TOKENS = 2000
 EXTRACTOR_TEMPERATURE = 0.2
+EXTRACTOR_THINKING = True
+EXTRACTOR_THINKING_EFFORT = "high"
 
 # Agent profile（强推理模型，用于交互分析）
 AGENT_PROVIDER = "https://api.deepseek.com"
-AGENT_MODEL = "deepseek-reasoner"
+AGENT_MODEL = "deepseek-v4-flash"
 AGENT_API_KEY = "sk-9cf27bbb303c44709d26b60c691e5edb"
 AGENT_MAX_TOKENS = 4096
 AGENT_TEMPERATURE = 0.3
+AGENT_THINKING = True                       # DeepSeek 思考模式
+AGENT_THINKING_EFFORT = "high"              # high | max
 
 # 共享配置
 PONTIS_DIR_NAME = ".pontis"

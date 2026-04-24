@@ -9,7 +9,7 @@ import os
 import logging
 
 from storage import Store
-from extractor.modules._lsh_index import LSHIndexWriter
+from extractor.modules.utils.lsh_index import LSHIndexWriter
 
 logger = logging.getLogger(__name__)
 

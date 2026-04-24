@@ -3,13 +3,14 @@
 动态配置加载等杂项函数。
 """
 import os
-import yaml
+from utils.llm import apply_yaml
 
 
 def load_agent_config(project_path: str = None) -> dict:
     """加载 agent LLM 配置，返回包含 provider/model/api_key 等的 dict。"""
     from config import (AGENT_PROVIDER, AGENT_MODEL, AGENT_API_KEY,
-                        AGENT_MAX_TOKENS, AGENT_TEMPERATURE)
+                        AGENT_MAX_TOKENS, AGENT_TEMPERATURE,
+                        AGENT_THINKING, AGENT_THINKING_EFFORT)
 
     cfg = {
         "provider": AGENT_PROVIDER,
@@ -18,15 +19,28 @@ def load_agent_config(project_path: str = None) -> dict:
         "max_tokens": AGENT_MAX_TOKENS,
         "temperature": AGENT_TEMPERATURE,
         "effort": os.environ.get("PONTIS_EFFORT", "mid"),
+        "thinking": AGENT_THINKING,
+        "thinking_effort": AGENT_THINKING_EFFORT,
+    }
+
+    AGENT_YAML_MAPPING = {
+        "agent_provider": "provider",
+        "agent_model": "model",
+        "agent_api_key": "api_key",
+        "agent_max_tokens": "max_tokens",
+        "agent_temperature": "temperature",
+        "agent_effort": "effort",
+        "agent_thinking": "thinking",
+        "agent_thinking_effort": "thinking_effort",
     }
 
     # 1. ~/.pontis/config.yml
-    _apply_yaml(cfg, os.path.expanduser("~/.pontis/config.yml"))
+    apply_yaml(cfg, os.path.expanduser("~/.pontis/config.yml"), AGENT_YAML_MAPPING)
 
     # 2. 项目级 pontis.yml
     if project_path:
         for filename in ["pontis.yml", "pontis.yaml"]:
-            _apply_yaml(cfg, os.path.join(project_path, filename))
+            apply_yaml(cfg, os.path.join(project_path, filename), AGENT_YAML_MAPPING)
 
     # 3. 环境变量覆盖
     env_key = os.environ.get("OPENAI_API_KEY", "")
@@ -37,21 +51,3 @@ def load_agent_config(project_path: str = None) -> dict:
         cfg["provider"] = env_url
 
     return cfg
-
-
-def _apply_yaml(cfg: dict, path: str):
-    if not os.path.exists(path):
-        return
-    with open(path, 'r') as f:
-        data = yaml.safe_load(f) or {}
-    mapping = {
-        "agent_provider": "provider",
-        "agent_model": "model",
-        "agent_api_key": "api_key",
-        "agent_max_tokens": "max_tokens",
-        "agent_temperature": "temperature",
-        "agent_effort": "effort",
-    }
-    for yaml_key, cfg_key in mapping.items():
-        if yaml_key in data:
-            cfg[cfg_key] = data[yaml_key]

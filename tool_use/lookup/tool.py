@@ -94,7 +94,7 @@ def _load_index(store, ref: str):
         cache_file = store.cache_path("lsh", f"{ent_id}.lsh")
         if not os.path.isfile(cache_file):
             return None
-        from extractor.modules._lsh_index import LSHIndexReader
+        from extractor.modules.utils.lsh_index import LSHIndexReader
         return LSHIndexReader.load(cache_file)
     except (ImportError, Exception):
         return None
