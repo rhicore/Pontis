@@ -50,6 +50,17 @@ _BENCHMARK_ADDITIONS = r"""## BIRD Benchmark 规则
 - "in 2014" → `SUBSTR(date, 1, 4) = '2014'`（全年）
 - "list all" 类型问题考虑用 LEFT JOIN 避免 INNER JOIN 丢失行
 - 排名问题优先用 RANK() 而非 ROW_NUMBER()，允许并列
+
+### Golden SQL 统计参考（1534 条）
+
+以下是标准答案中各 SQL 模式的使用频率，用于辅助判断：
+- GROUP_CONCAT：0 次 → 不要使用
+- DISTINCT：244 次（其中 COUNT(DISTINCT) 65 次）→ 可用但需有理由
+- IS NOT NULL：73 次 → 可用，常用于排除空值
+- ORDER BY + LIMIT：288 次（top-N 排序）；ORDER BY 无 LIMIT：17 次（RANK/排名场景）
+- 百分比 `* 100 /`：98 次 → 分子分母通常在同一 FROM 范围内
+- ROUND：6 次（仅 toxicology 百分比精度）→ 通常不需要
+- 字符串拼接 ||：2 次 → 仅在需要构造 ID 时使用
 """
 
 
