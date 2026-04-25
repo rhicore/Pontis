@@ -12,7 +12,7 @@
 import os
 import logging
 from storage import Store
-from extractor.modules.utils.config import load_config
+from extractor.modules.utils.loader import load_config
 from extractor.modules.utils.ai_utils import generate_detail_and_brief
 
 logger = logging.getLogger(__name__)

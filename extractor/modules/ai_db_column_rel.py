@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Optional
 from storage import Store
-from extractor.modules.utils.config import Config
+from extractor.modules.utils.loader import Config
 
 logger = logging.getLogger(__name__)
 

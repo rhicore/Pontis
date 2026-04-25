@@ -151,7 +151,7 @@ def init_store(target: str, config_path: str = None, verbose: bool = False) -> t
 
     供各类提取脚本共用的初始化逻辑。
     """
-    from extractor.modules.utils.config import load_config
+    from extractor.modules.utils.loader import load_config
     from pathlib import Path
 
     level = logging.DEBUG if verbose else logging.INFO

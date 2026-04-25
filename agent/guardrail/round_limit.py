@@ -1,6 +1,5 @@
 """轮次上限硬性拦截 — 到达上限要求模型直接输出。"""
-from typing import Optional
-from agent.guardrail import Guardrail, AgentState
+from agent.guardrail_api import Guardrail, GuardrailContext, CallVerdict
 
 _STOP_TEMPLATE = """\
 ⚠️ 已达到工具调用上限（{max_rounds} 轮）。请不要再调用任何工具。
@@ -20,7 +19,9 @@ class RoundLimit(Guardrail):
         self.max_rounds = max_rounds
         self.stop_template = stop_template or _STOP_TEMPLATE
 
-    def check(self, state: AgentState, pending_calls: list) -> Optional[str]:
-        if state.rounds >= self.max_rounds:
-            return self.stop_template.format(max_rounds=self.max_rounds)
-        return None
+    def check(self, ctx: GuardrailContext) -> dict:
+        if ctx.rounds < self.max_rounds:
+            return {}
+        msg = self.stop_template.format(max_rounds=self.max_rounds)
+        return {i: CallVerdict("block", msg)
+                for i in range(len(ctx.pending_calls))}

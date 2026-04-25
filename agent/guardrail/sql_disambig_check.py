@@ -2,53 +2,50 @@
 import re
 from typing import List, Optional, Set, Tuple
 
-from agent.guardrail import Guardrail, AgentState
+from agent.guardrail_api import Guardrail, GuardrailContext, CallVerdict
+from agent.guardrail.sql_utils import has_read, extract_table_names, get_sql_from_messages
 
 
 class SQLDisambigCheck(Guardrail):
     """SQL 语义消歧审查：所有相关 disambig 实体必须读过。"""
 
-    _TABLE_PATTERN = re.compile(r'\bFROM\s+(\w+)|\bJOIN\s+(\w+)', re.IGNORECASE)
-
     def __init__(self):
-        self._meta_read: Set[str] = set()
-        self._sync_idx: int = 0
         self._disambig_cache: Optional[List[Tuple[str, str, Set[str]]]] = None
 
-    def _sync(self, state: AgentState):
-        for name, args, _ in state.tool_history[self._sync_idx:]:
-            if name == "meta":
-                path = args.get("path", "")
-                entity_part = path.split("::", 1)[1] if "::" in path else path
-                self._meta_read.add(entity_part)
-        self._sync_idx = len(state.tool_history)
+    def check(self, ctx: GuardrailContext) -> dict:
+        result = {}
 
-    def _has_read(self, entity_path: str) -> bool:
-        if "::" in entity_path:
-            entity_path = entity_path.split("::", 1)[1]
-        if entity_path in self._meta_read:
-            return True
-        return any(s.startswith(entity_path + ".") for s in self._meta_read)
+        for i, (name, args) in enumerate(ctx.pending_calls):
+            if name != "query":
+                continue
+            sql = args.get("sql", "")
+            if not sql:
+                continue
+            msg = self._check_sql(ctx, sql)
+            if msg:
+                result[i] = CallVerdict("block", msg)
 
-    # ──────────────── 入口 ────────────────
+        if not ctx.pending_calls:
+            sql = get_sql_from_messages(ctx.messages)
+            if sql:
+                msg = self._check_sql(ctx, sql)
+                if msg:
+                    result["text"] = CallVerdict("block", msg)
 
-    def check(self, state: AgentState, pending_calls: list) -> Optional[str]:
-        self._sync(state)
+        return result
 
-        sql = self._get_sql(state, pending_calls)
-        if not sql:
-            return None
-
-        tables = self._extract_tables(sql)
-        cache = self._build_disambig_cache(state.store)
+    def _check_sql(self, ctx, sql) -> str:
+        tables = extract_table_names(sql)
+        cache = self._build_disambig_cache(ctx.store)
         if not cache:
-            return None
+            return ""
 
         tables_lower = {t.lower() for t in tables}
+        history = ctx.tool_history
 
         unread = []
         for ref, term, disambig_tables in cache:
-            if self._has_read(ref):
+            if has_read(history, ref):
                 continue
             if disambig_tables & tables_lower:
                 unread.append(ref)
@@ -56,45 +53,14 @@ class SQLDisambigCheck(Guardrail):
                 unread.append(ref)
 
         if not unread:
-            return None
+            return ""
 
         items = "\n".join(f"  - {ref}" for ref in unread)
-        return (
-            "⚠️ 以下实体存在语义歧义，必须先用 meta 读取确认具体语义：\n"
-            + items
-            + "\n请读取以上实体后重新生成SQL。"
-        )
+        return ("⚠️ 以下实体存在语义歧义，必须先用 meta 读取确认具体语义：\n"
+                + items
+                + "\n读取后请重新思考 SQL 的必需性和正确性，或者需要进一步探索获取信息。")
 
-    # ──────────────── SQL 提取 ────────────────
-
-    @staticmethod
-    def _get_sql(state: AgentState, pending_calls: list) -> Optional[str]:
-        for name, args in pending_calls:
-            if name == "query":
-                sql = args.get("sql", "")
-                if sql:
-                    return sql
-        if pending_calls:
-            return None
-        for msg in reversed(state.messages):
-            if msg.get("role") != "assistant":
-                break
-            content = msg.get("content", "")
-            if not content:
-                continue
-            m = re.search(r'```sql\s*(.*?)\s*```', content, re.DOTALL)
-            if m:
-                return m.group(1)
-        return None
-
-    @staticmethod
-    def _extract_tables(sql: str) -> Set[str]:
-        tables = set()
-        for m in SQLDisambigCheck._TABLE_PATTERN.finditer(sql):
-            tables.add(m.group(1) or m.group(2))
-        return tables
-
-    # ──────────────── 消歧缓存 ────────────────
+    # ──────────────── 消歧缓存（store 缓存）────────────────
 
     def _build_disambig_cache(self, store) -> List[Tuple[str, str, Set[str]]]:
         if self._disambig_cache is not None:

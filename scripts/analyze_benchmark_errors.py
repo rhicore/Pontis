@@ -197,7 +197,7 @@ def scan_logs(db_filter: str | None = None) -> tuple[list[dict], list[dict]]:
 
 def get_client():
     from openai import OpenAI
-    from config import AGENT_API_KEY
+    from agent.config import AGENT_API_KEY
     return OpenAI(api_key=AGENT_API_KEY, base_url="https://api.deepseek.com")
 
 

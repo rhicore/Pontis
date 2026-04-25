@@ -1,59 +1,56 @@
 """SQL JOIN 路径合理性检查 — 检查相邻 JOIN 表对的 fk/rel/overlap 关系。"""
 import re
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from agent.guardrail import Guardrail, AgentState, _get_db_prefix
+from agent.guardrail_api import Guardrail, GuardrailContext, CallVerdict
+from agent.guardrail.sql_utils import get_db_prefix, has_read, extract_join_pairs, get_sql_from_messages
+
+
+_ENTITY_PATTERN = re.compile(
+    r'(\w+)\.\w+__to__(\w+)\.\w+\.(fk|rel|overlap)'
+)
 
 
 class BridgeTableCheck(Guardrail):
     """JOIN 路径合理性检测。"""
 
-    _SQL_PATTERN = re.compile(r'```sql\s*(.*?)\s*```', re.DOTALL)
-    _FROM_PATTERN = re.compile(r'\bFROM\s+(\w+)', re.IGNORECASE)
-    _JOIN_PATTERN = re.compile(r'\bJOIN\s+(\w+)', re.IGNORECASE)
-    _ENTITY_PATTERN = re.compile(
-        r'(\w+)\.\w+__to__(\w+)\.\w+\.(fk|rel|overlap)'
-    )
-
     def __init__(self):
-        self._meta_read: Set[str] = set()
-        self._sync_idx: int = 0
         self._edge_map: Optional[Dict[Tuple[str, str], List[Tuple[str, str]]]] = None
 
-    def _sync(self, state: AgentState):
-        for name, args, _ in state.tool_history[self._sync_idx:]:
-            if name == "meta":
-                path = args.get("path", "")
-                entity_part = path.split("::", 1)[1] if "::" in path else path
-                self._meta_read.add(entity_part)
-        self._sync_idx = len(state.tool_history)
+    def check(self, ctx: GuardrailContext) -> dict:
+        result = {}
 
-    def _has_read(self, entity_path: str) -> bool:
-        if "::" in entity_path:
-            entity_path = entity_path.split("::", 1)[1]
-        if entity_path in self._meta_read:
-            return True
-        return any(s.startswith(entity_path + ".") for s in self._meta_read)
+        for i, (name, args) in enumerate(ctx.pending_calls):
+            if name != "query":
+                continue
+            sql = args.get("sql", "")
+            if not sql:
+                continue
+            msg = self._check_sql(ctx, sql)
+            if msg:
+                result[i] = CallVerdict("block", msg)
 
-    # ──────────────── 入口 ────────────────
+        if not ctx.pending_calls:
+            sql = get_sql_from_messages(ctx.messages)
+            if sql:
+                msg = self._check_sql(ctx, sql)
+                if msg:
+                    result["text"] = CallVerdict("block", msg)
 
-    def check(self, state: AgentState, pending_calls: list) -> Optional[str]:
-        self._sync(state)
+        return result
 
-        sql = self._get_sql(state, pending_calls)
-        if not sql:
-            return None
-
-        pairs = self._extract_join_pairs(sql)
+    def _check_sql(self, ctx, sql) -> str:
+        pairs = extract_join_pairs(sql)
         if not pairs:
-            return None
+            return ""
 
-        edge_map = self._build_edge_map(state.store)
+        edge_map = self._build_edge_map(ctx.store)
         if not edge_map:
-            return None
+            return ""
 
-        db_prefix = _get_db_prefix(state, pending_calls)
+        prefix = get_db_prefix(ctx)
+        history = ctx.tool_history
 
         warnings = []
         for t1, t2 in pairs:
@@ -64,55 +61,32 @@ class BridgeTableCheck(Guardrail):
             overlaps = [(e, t) for e, t in entities if t == "overlap"]
 
             if fk_rels:
-                if not all(self._has_read(e) for e, _ in fk_rels):
-                    names = "\n".join(f"    - {db_prefix}{e}" for e, _ in fk_rels[:3])
+                if not all(has_read(history, e) for e, _ in fk_rels):
+                    names = "\n".join(f"    - {prefix}{e}" for e, _ in fk_rels[:3])
                     warnings.append(
-                        f"  - {t1} 和 {t2} 之间存在 fk/rel 关系：\n{names}\n"
-                        "    请先读取以上实体确认关联语义"
+                        f"  - {t1} 和 {t2} 之间存在 fk/rel 关系，必须先读取确认关联语义：\n{names}"
                     )
             elif overlaps:
-                names = "\n".join(f"    - {db_prefix}{e}" for e, _ in overlaps[:3])
+                names = "\n".join(f"    - {prefix}{e}" for e, _ in overlaps[:3])
                 warnings.append(
-                    f"  - {t1} 和 {t2} 之间仅有 overlap 关系（置信度较低）：\n{names}\n"
-                    "    请确保有充分理由使用此 JOIN 路径"
+                    f"  - {t1} 和 {t2} 之间仅有 overlap 关系（置信度较低），"
+                    "读取后请重新评估这个 JOIN 是否合理：\n{names}"
                 )
             else:
-                if self._already_warned(state.messages, t1, t2):
+                if self._already_warned(ctx.messages, t1, t2):
                     continue
                 warnings.append(
-                    f"  - {t1} 和 {t2} 之间未找到任何 fk/rel/overlap 实体\n"
-                    "    请确认 JOIN 条件是否正确，或使用 find_path 查找桥接表"
+                    f"  - {t1} 和 {t2} 之间未找到任何 fk/rel/overlap 关系，"
+                    "请确认 JOIN 条件是否正确或是否需要桥接表"
                 )
 
         if not warnings:
-            return None
+            return ""
 
-        return ("⚠️ 以下 JOIN 路径需要确认，请读取相关实体后重新生成SQL：\n"
+        return ("⚠️ 以下 JOIN 路径需要确认，读取相关实体后请重新审视 SQL 是否正确，是否需要修改？或根本就无需执行？或者需要进一步探索获取信息？：\n"
                 + "\n".join(warnings))
 
-    # ──────────────── SQL 提取 ────────────────
-
-    @staticmethod
-    def _get_sql(state: AgentState, pending_calls: list) -> Optional[str]:
-        for name, args in pending_calls:
-            if name == "query":
-                sql = args.get("sql", "")
-                if sql:
-                    return sql
-        if pending_calls:
-            return None
-        for msg in reversed(state.messages):
-            if msg.get("role") != "assistant":
-                break
-            content = msg.get("content", "")
-            if not content:
-                continue
-            m = re.search(r'```sql\s*(.*?)\s*```', content, re.DOTALL)
-            if m:
-                return m.group(1)
-        return None
-
-    # ──────────────── 邻接图构建 ────────────────
+    # ──────────────── 邻接图构建（store 缓存）────────────────
 
     def _build_edge_map(self, store) -> Dict[Tuple[str, str], List[Tuple[str, str]]]:
         if self._edge_map is not None:
@@ -133,7 +107,7 @@ class BridgeTableCheck(Guardrail):
             if ".fk" not in entity and ".rel" not in entity and ".overlap" not in entity:
                 continue
 
-            m = self._ENTITY_PATTERN.match(entity)
+            m = _ENTITY_PATTERN.match(entity)
             if not m:
                 continue
 
@@ -146,27 +120,6 @@ class BridgeTableCheck(Guardrail):
 
         self._edge_map = dict(edge_map)
         return self._edge_map
-
-    # ──────────────── 辅助方法 ────────────────
-
-    @staticmethod
-    def _extract_join_pairs(sql: str) -> List[Tuple[str, str]]:
-        tables_in_order = []
-        m = BridgeTableCheck._FROM_PATTERN.search(sql)
-        if m:
-            tables_in_order.append(m.group(1).lower())
-        for m in BridgeTableCheck._JOIN_PATTERN.finditer(sql):
-            tables_in_order.append(m.group(1).lower())
-
-        if len(tables_in_order) < 2:
-            return []
-
-        pairs = []
-        for i in range(len(tables_in_order) - 1):
-            t1, t2 = tables_in_order[i], tables_in_order[i + 1]
-            if t1 != t2:
-                pairs.append((t1, t2))
-        return pairs
 
     @staticmethod
     def _already_warned(messages: list, t1: str, t2: str) -> bool:

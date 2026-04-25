@@ -32,8 +32,8 @@ def main():
     project_root = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, project_root)
 
-    from agent.agent import PontisAgent
-    agent = PontisAgent(project_path)
+    from agent.agent import create_agent
+    agent = create_agent(project_path)
     agent.run()
 
 

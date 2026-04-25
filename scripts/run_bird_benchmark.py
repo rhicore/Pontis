@@ -121,10 +121,11 @@ def build_benchmark_system_prompt(project_path: str) -> str:
     return build_prompt(AgentSpec(mode="benchmark", effort="max", project_path=project_path))
 
 
-def create_benchmark_agent(project_path: str) -> "PontisAgent":
+def create_benchmark_agent(project_path: str, logger_name: str = None) -> "PontisAgent":
     """创建 benchmark 专用的 agent（readonly + max effort = 充分探索，无轮次限制）。"""
     from agent.agent import create_agent, AgentSpec
-    return create_agent(project_path, AgentSpec(mode="benchmark", effort="max"))
+    return create_agent(project_path, AgentSpec(mode="benchmark", effort="max"),
+                        logger_name=logger_name)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -291,12 +292,20 @@ def run_database(db_id: str, queries: list[dict], args) -> list[dict]:
         old_log.unlink(missing_ok=True)
 
     def run_one(q: dict) -> dict:
-        """单条 query 测试（每个线程独立 agent）。"""
+        """单条 query 测试（每个线程独立 agent + 独立 logger）。"""
         qid = q['question_id']
         q_log = bench_dir / f"q{qid}.log"
 
-        fh = setup_query_log(str(q_log))
-        agent = create_benchmark_agent(str(db_dir))
+        # 每条 query 用独立的 logger + handler，彻底隔离
+        logger_name = f"benchmark.q{qid}"
+        q_logger = logging.getLogger(logger_name)
+        fh = logging.FileHandler(str(q_log), encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(name)s | %(message)s", "%H:%M:%S"))
+        q_logger.addHandler(fh)
+        q_logger.setLevel(logging.DEBUG)
+
+        agent = create_benchmark_agent(str(db_dir), logger_name=logger_name)
 
         prompt = build_query_prompt(q['question'], q.get('evidence', ''))
         t0 = time.time()
@@ -319,7 +328,11 @@ def run_database(db_id: str, queries: list[dict], args) -> list[dict]:
         pred_rows = len(predicted_result) if isinstance(predicted_result, set) else 0
         gold_rows = len(golden_result) if isinstance(golden_result, set) else 0
 
-        teardown_log(fh)
+        # 清理独立 logger
+        q_logger.removeHandler(fh)
+        fh.close()
+        # 清除 logger 引用，防止内存泄漏
+        logging.getLogger(logger_name).handlers.clear()
         append_query_result(q_log, q, response, predicted_sql, result_str,
                             pred_rows, gold_rows, elapsed)
 

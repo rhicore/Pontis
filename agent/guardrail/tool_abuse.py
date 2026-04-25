@@ -1,14 +1,9 @@
 """连续调用同一工具时提醒 — 防止模型反复 query 试错。"""
-from typing import Optional
-from agent.guardrail import Guardrail, AgentState
+from agent.guardrail_api import Guardrail, GuardrailContext, CallVerdict
 
 
 class ToolAbuse(Guardrail):
-    """连续调用同一工具时提醒（不阻止执行，仅追加提醒）。
-
-    检查 tool_history 中最近 N 次调用是否全部为同一工具。
-    """
-    blocking = False
+    """连续调用同一工具时提醒（不阻止执行，仅追加提醒）。"""
 
     def __init__(self, tool_name: str, consecutive_limit: int = 3,
                  message: str = None):
@@ -19,16 +14,12 @@ class ToolAbuse(Guardrail):
             "换一个思路或直接基于已有信息输出结论。"
         )
 
-    def check(self, state: AgentState, pending_calls: list) -> Optional[str]:
-        # 累积历史 + 即将执行的调用
-        past_names = [name for name, _, _ in state.tool_history]
-        pending_names = [name for name, _ in pending_calls]
-        all_names = past_names + pending_names
-
-        if len(all_names) < self.limit:
-            return None
-
-        tail = all_names[-self.limit:]
-        if all(n == self.tool_name for n in tail):
-            return self.message
-        return None
+    def check(self, ctx: GuardrailContext) -> dict:
+        names = [n for n, _, _ in ctx.tool_history] + [n for n, _ in ctx.pending_calls]
+        if len(names) < self.limit:
+            return {}
+        if not all(n == self.tool_name for n in names[-self.limit:]):
+            return {}
+        return {i: CallVerdict("warn", self.message)
+                for i, (name, _) in enumerate(ctx.pending_calls)
+                if name == self.tool_name}
