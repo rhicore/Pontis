@@ -8,6 +8,7 @@ Guardrail 是纯粹的 supervisor：观测状态 → 决定是否干预 → 打�
   2. 实现 check(state, pending_calls) 方法
   3. 在 build_guardrails() 中注册
 """
+import json
 from abc import ABC
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple
@@ -22,8 +23,33 @@ class AgentState:
     store: object = None                                     # Store 实例（只读）
 
 
+def _get_db_prefix(state: "AgentState", pending_calls: list) -> str:
+    """从 query 工具调用的 file 参数提取数据库文件前缀。
+
+    Returns: "formula_1.sqlite::" 或 ""
+    """
+    for name, args in pending_calls:
+        if name == "query":
+            f = args.get("file", "")
+            if f:
+                return f + "::"
+    for msg in state.messages:
+        for tc in msg.get("tool_calls") or []:
+            if tc.get("function", {}).get("name") == "query":
+                try:
+                    args = json.loads(tc["function"]["arguments"])
+                    f = args.get("file", "")
+                    if f:
+                        return f + "::"
+                except (json.JSONDecodeError, KeyError):
+                    pass
+    return ""
+
+
 class Guardrail(ABC):
     """监控器基类。"""
+
+    blocking: bool = True  # True = 阻止工具执行，False = 执行后追加提醒
 
     def check(self, state: AgentState, pending_calls: List[Tuple[str, dict]]) -> Optional[str]:
         """检查 agent 状态，决定是否干预。

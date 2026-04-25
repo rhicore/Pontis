@@ -116,8 +116,9 @@ def build_query_prompt(question: str, evidence: str) -> str:
 
 def build_benchmark_system_prompt(project_path: str) -> str:
     """构建 benchmark 模式的系统提示词（max effort + benchmark 专用指令）。"""
+    from agent.agent import AgentSpec
     from agent.prompt import build_prompt
-    return build_prompt("benchmark", project_path, effort="max")
+    return build_prompt(AgentSpec(mode="benchmark", effort="max", project_path=project_path))
 
 
 def create_benchmark_agent(project_path: str) -> "PontisAgent":
@@ -284,10 +285,10 @@ def run_database(db_id: str, queries: list[dict], args) -> list[dict]:
 
     # Phase 3: 并行测试
     bench_dir = db_dir / ".pontis" / "benchmark"
-    if bench_dir.exists():
-        import shutil
-        shutil.rmtree(bench_dir)
     bench_dir.mkdir(parents=True, exist_ok=True)
+    # 清理旧日志（NFS 可能残留 .nfs 锁文件，ignore_errors 跳过）
+    for old_log in bench_dir.glob("*.log"):
+        old_log.unlink(missing_ok=True)
 
     def run_one(q: dict) -> dict:
         """单条 query 测试（每个线程独立 agent）。"""

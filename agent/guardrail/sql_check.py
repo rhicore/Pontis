@@ -1,77 +1,125 @@
-"""SQL 实体审查 — 检查 SQL 涉及的表是否已读 meta。
-
-触发场景：
-  1. 模型调用 query 工具时（从 args["sql"] 提取）
-  2. 模型以文本回复包含 SQL 代码块时（从 messages 提取）
-"""
+"""SQL 实体审查 — SQL 中涉及的每个表和列都必须通过 meta 读取，缺一不可。"""
 import re
-from typing import Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
-from agent.guardrail import Guardrail, AgentState
+from agent.guardrail import Guardrail, AgentState, _get_db_prefix
 
 
 class SQLEntityCheck(Guardrail):
-    """SQL 输出实体审查。"""
+    """SQL 全量实体审查：表 + 列必须全部 meta 过。"""
 
-    _SQL_PATTERN = re.compile(r'```sql\s*(.*?)\s*```', re.DOTALL)
-    _TABLE_PATTERN = re.compile(r'\bFROM\s+(\w+)|\bJOIN\s+(\w+)', re.IGNORECASE)
+    _TABLE_PATTERN = re.compile(
+        r'\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?|\bJOIN\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?',
+        re.IGNORECASE)
+    _COL_REF_PATTERN = re.compile(r'\b(\w+)\.(\w+)\b')
+
+    def __init__(self):
+        self._meta_read: Set[str] = set()
+        self._sync_idx: int = 0
+
+    def _sync(self, state: AgentState):
+        """从 tool_history 增量同步已读 meta 实体。"""
+        for name, args, _ in state.tool_history[self._sync_idx:]:
+            if name == "meta":
+                path = args.get("path", "")
+                entity_part = path.split("::", 1)[1] if "::" in path else path
+                self._meta_read.add(entity_part)
+        self._sync_idx = len(state.tool_history)
+
+    def _has_read(self, entity_path: str) -> bool:
+        if "::" in entity_path:
+            entity_path = entity_path.split("::", 1)[1]
+        if entity_path in self._meta_read:
+            return True
+        return any(s.startswith(entity_path + ".") for s in self._meta_read)
 
     def check(self, state: AgentState, pending_calls: list) -> Optional[str]:
+        self._sync(state)
+
         sql = self._get_sql(state, pending_calls)
         if not sql:
             return None
 
-        tables = self._extract_tables(sql)
+        tables, aliases = self._extract_tables(sql)
         if not tables:
             return None
 
-        read_tables = self._find_read_tables(state.messages, tables)
-        unread = tables - read_tables
-        if unread:
-            return (
-                f"⚠️ 你的 SQL 涉及表 {unread}，但你尚未读取这些表的 meta detail。"
-                "请先用 meta 工具确认每个表的语义后再输出 SQL。"
-            )
-        return None
+        db_prefix = _get_db_prefix(state, pending_calls)
+
+        missing = []
+        for t in sorted(tables):
+            if not self._has_read(f"{t}.table"):
+                missing.append(f"{db_prefix}{t}.table" if db_prefix else f"{t}.table")
+
+        col_refs = self._extract_col_refs(sql, aliases)
+        for table, col in col_refs:
+            key = f"{table}.{col}"
+            if not self._has_read(key):
+                missing.append(f"{db_prefix}{key}" if db_prefix else key)
+
+        if not missing:
+            return None
+
+        items = "\n".join(f"  - {m}" for m in missing[:12])
+        return ("⚠️ 以下实体尚未通过 meta 读取，必须全部读取后才能输出 SQL：\n"
+                + items
+                + "\n请读取以上实体后重新生成SQL。")
 
     # ──────────────── SQL 提取 ────────────────
 
     @staticmethod
     def _get_sql(state: AgentState, pending_calls: list) -> Optional[str]:
-        """从 query 工具参数或文本回复中提取 SQL。"""
-        # 优先从 query 工具参数提取
         for name, args in pending_calls:
             if name == "query":
                 sql = args.get("sql", "")
                 if sql:
                     return sql
-        # 其次从最新 assistant 消息的文本提取
-        last_msg = state.messages[-1] if state.messages else {}
-        if last_msg.get("role") == "assistant" and last_msg.get("content"):
-            return SQLEntityCheck._extract_sql(last_msg["content"])
+        if pending_calls:
+            return None
+        for msg in reversed(state.messages):
+            if msg.get("role") != "assistant":
+                break
+            content = msg.get("content", "")
+            if not content:
+                continue
+            m = re.search(r'```sql\s*(.*?)\s*```', content, re.DOTALL)
+            if m:
+                return m.group(1)
         return None
 
-    @staticmethod
-    def _extract_sql(content: str) -> Optional[str]:
-        m = SQLEntityCheck._SQL_PATTERN.search(content)
-        return m.group(1).strip() if m else None
+    # ──────────────── 表 + 别名 ────────────────
 
     @staticmethod
-    def _extract_tables(sql: str) -> Set[str]:
+    def _extract_tables(sql: str) -> Tuple[Set[str], Dict[str, str]]:
         tables = set()
+        aliases: Dict[str, str] = {}
         for m in SQLEntityCheck._TABLE_PATTERN.finditer(sql):
-            tables.add(m.group(1) or m.group(2))
-        return tables
+            table = m.group(1) or m.group(3)
+            alias = m.group(2) or m.group(4)
+            if table:
+                tables.add(table)
+                if alias and alias.lower() != table.lower():
+                    aliases[alias.lower()] = table
+        return tables, aliases
+
+    # ──────────────── 列引用 ────────────────
 
     @staticmethod
-    def _find_read_tables(messages: list, target_tables: Set[str]) -> Set[str]:
-        """扫描对话历史，检查 meta 工具是否读取过目标表。"""
-        found = set()
-        for msg in messages:
-            content = msg.get("content", "")
-            if not isinstance(content, str):
+    def _extract_col_refs(sql: str, aliases: Dict[str, str]) -> List[Tuple[str, str]]:
+        seen = set()
+        result = []
+        for m in SQLEntityCheck._COL_REF_PATTERN.finditer(sql):
+            prefix = m.group(1)
+            col = m.group(2)
+            if prefix.upper() in ('SELECT', 'FROM', 'WHERE', 'JOIN', 'ON', 'AND',
+                                   'OR', 'NOT', 'IN', 'IS', 'AS', 'BY', 'ORDER',
+                                   'GROUP', 'HAVING', 'LIMIT', 'DISTINCT', 'NULL',
+                                   'CAST', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
+                                   'LEFT', 'RIGHT', 'INNER', 'OUTER', 'CROSS'):
                 continue
-            for t in target_tables:
-                if f"{t}.table" in content:
-                    found.add(t)
-        return found
+            table = aliases.get(prefix.lower(), prefix)
+            key = (table, col)
+            if key not in seen:
+                seen.add(key)
+                result.append(key)
+        return result

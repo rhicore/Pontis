@@ -4,10 +4,11 @@ from agent.guardrail import Guardrail, AgentState
 
 
 class ToolAbuse(Guardrail):
-    """连续调用同一工具时提醒。
+    """连续调用同一工具时提醒（不阻止执行，仅追加提醒）。
 
     检查 tool_history 中最近 N 次调用是否全部为同一工具。
     """
+    blocking = False
 
     def __init__(self, tool_name: str, consecutive_limit: int = 3,
                  message: str = None):

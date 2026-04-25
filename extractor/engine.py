@@ -96,10 +96,8 @@ def get_registry() -> Dict[str, object]:
 
     # Agent 模块 — 独立版（可单独调用）
     try:
-        from extractor.modules.agent_summary import generate as agent_summary
         from extractor.modules.agent_join_detect import generate as agent_join_detect
         from extractor.modules.agent_disambiguate import generate as agent_disambiguate
-        _REGISTRY["agent_summary"] = agent_summary
         _REGISTRY["agent_join_detect"] = agent_join_detect
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
     except ImportError:

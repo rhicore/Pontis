@@ -10,3 +10,4 @@ wheels/
 
 example_data
 rubbish
+.env

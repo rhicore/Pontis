@@ -13,7 +13,7 @@ Python API:
 import argparse
 import sys
 
-from agent.agent import PontisAgent
+from agent.agent import PontisAgent, AgentSpec
 from agent.tools import build_writer_registry
 from agent.prompt import build_prompt
 
@@ -21,7 +21,7 @@ from agent.prompt import build_prompt
 def create_writer_agent(project_path: str) -> PontisAgent:
     """创建写入模式智能体。"""
     tools = build_writer_registry()
-    prompt = build_prompt("writer", project_path)
+    prompt = build_prompt(AgentSpec(mode="writer", project_path=project_path))
     return PontisAgent(project_path, tools=tools, system_prompt=prompt)
 
 
