@@ -215,6 +215,10 @@ class PontisAgent:
             return
 
         # ── 工具调用：per-call 聚合 + 执行 ──
+        # ⚠️ OpenAI API 要求：assistant tool_calls 后必须紧跟对应 tool 消息，
+        # 所有 tool 消息完成后才能出现其他 role。因此 warn 的 user 消息需要延迟追加。
+        deferred_warnings = []
+
         for i, tc in enumerate(tool_calls):
             name = tc.function.name
             call_vs = verdicts.get(i, [])
@@ -248,13 +252,17 @@ class PontisAgent:
             yield {"type": "tool_result", "name": name,
                    "result": result, "id": tc.id}
 
-            # 警告（执行后追加）
+            # 警告收集（延迟追加，避免打断 tool 消息序列）
             if action == "warn":
                 sources = "+".join(s for s, v in call_vs if v.action == "warn")
                 self.logger.info(f"Guardrail warn [{sources}] call#{i}({name}): {message}")
                 yield {"type": "warning", "guardrail": sources,
                        "call_index": i, "content": message}
-                self.messages.append({"role": "user", "content": message})
+                deferred_warnings.append(message)
+
+        # 所有 tool 处理完成后，统一追加警告消息
+        for wmsg in deferred_warnings:
+            self.messages.append({"role": "user", "content": wmsg})
 
     # ──────────────── 核心循环 ────────────────
 

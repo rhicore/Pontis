@@ -23,7 +23,7 @@ def build_guardrails(spec) -> list:
     if max_rounds:
         guardrails.append(RoundLimit(max_rounds))
 
-    guardrails.append(ToolAbuse("query", consecutive_limit=3))
+    guardrails.append(ToolAbuse("query", total_limit=5, consecutive_limit=3))
     guardrails.append(SQLEntityCheck())
     guardrails.append(BridgeTableCheck())
     guardrails.append(SQLDisambigCheck())

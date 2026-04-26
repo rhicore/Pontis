@@ -1,10 +1,38 @@
 """SQL 解析和 store 查询工具 — guardrail 业务逻辑层。
 
 从各 guardrail 提取的通用业务逻辑，不涉及框架 API。
+SQL 解析使用 sqlglot，正确处理字符串字面量、子查询等边界情况。
 """
 import json
 import re
 from typing import Dict, List, Optional, Set, Tuple
+
+import sqlglot
+
+
+# ═══════════════════════════════════════════════════════════
+#  实体列表格式化（与 glob/search 共用逻辑）
+# ═══════════════════════════════════════════════════════════
+
+def format_entity_list(store, refs: list[str]) -> str:
+    """格式化实体列表，显示 brief（与 glob/search 一致的展示风格）。
+
+    Args:
+        store: Store 实例
+        refs: 实体 ref 列表（如 "formula_1.sqlite::position.disambig"）
+
+    Returns:
+        格式化的多行字符串，每行 "  - ref | brief"
+    """
+    lines = []
+    for ref in refs:
+        meta = store.get_meta(ref, include_props=[]) if store else None
+        if meta and meta.get("brief"):
+            lines.append(f"  - {ref} | {meta['brief']}")
+        else:
+            lines.append(f"  - {ref}")
+    return "\n".join(lines)
+from sqlglot import exp
 
 
 # ═══════════════════════════════════════════════════════════
@@ -93,55 +121,95 @@ def has_read(tool_history: list, entity: str) -> bool:
     return any(s.startswith(entity + ".") for s in read)
 
 
+def resolve_entity_ref(store, table: str, column: str = None) -> str:
+    """从 store 查找实体的完整引用路径（含类型后缀），大小写不敏感。
+
+    table="qualifying", column=None → "formula_1.sqlite::qualifying.table"
+    table="qualifying", column="raceId" → "formula_1.sqlite::qualifying.raceId.INT.col"
+    找不到时返回 None。
+    """
+    if store is None:
+        return None
+    store._ensure_index()
+    if column is None:
+        # 查表实体：ref 以 ::table.table 结尾，大小写不敏感
+        suffix_lower = f"::{table.lower()}.table"
+        for ref in store._id_index.values():
+            if ref.lower().endswith(suffix_lower):
+                return ref
+    else:
+        # 查列实体：entity 部分为 table.column.TYPE.col，大小写不敏感
+        prefix_lower = f"{table.lower()}.{column.lower()}."
+        for ref in store._id_index.values():
+            entity = ref.split("::", 1)[1] if "::" in ref else ref
+            if entity.lower().startswith(prefix_lower) and entity.lower().endswith(".col"):
+                return ref
+    return None
+
+
 # ═══════════════════════════════════════════════════════════
-#  SQL 表 / 列 / JOIN 解析
+#  SQL 表 / 列 / JOIN 解析（sqlglot）
 # ═══════════════════════════════════════════════════════════
 
-_TABLE_PATTERN = re.compile(
-    r'\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?|\bJOIN\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?',
-    re.IGNORECASE)
+_VALID_IDENTIFIER = re.compile(r'^[A-Za-z_]\w*$')
 
-_COL_REF_PATTERN = re.compile(r'\b(\w+)\.(\w+)\b')
 
-_SQL_KEYWORDS = frozenset({
-    'SELECT', 'FROM', 'WHERE', 'JOIN', 'ON', 'AND', 'OR', 'NOT', 'IN',
-    'IS', 'AS', 'BY', 'ORDER', 'GROUP', 'HAVING', 'LIMIT', 'DISTINCT',
-    'NULL', 'CAST', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
-    'LEFT', 'RIGHT', 'INNER', 'OUTER', 'CROSS',
-})
-
-_FROM_PATTERN = re.compile(r'\bFROM\s+(\w+)', re.IGNORECASE)
-
-_JOIN_PATTERN = re.compile(r'\bJOIN\s+(\w+)', re.IGNORECASE)
-
-_TABLE_ONLY_PATTERN = re.compile(r'\bFROM\s+(\w+)|\bJOIN\s+(\w+)', re.IGNORECASE)
+def _parse(sql: str) -> Optional[exp.Expression]:
+    """解析 SQL，解析失败时返回 None。"""
+    try:
+        return sqlglot.parse_one(sql, dialect="sqlite")
+    except sqlglot.errors.ParseError:
+        return None
 
 
 def extract_tables(sql: str) -> Tuple[Set[str], Dict[str, str]]:
     """提取表名和别名映射。"""
-    tables = set()
+    tree = _parse(sql)
+    if tree is None:
+        return set(), {}
+
+    tables: Set[str] = set()
     aliases: Dict[str, str] = {}
-    for m in _TABLE_PATTERN.finditer(sql):
-        table = m.group(1) or m.group(3)
-        alias = m.group(2) or m.group(4)
-        if table:
-            tables.add(table)
-            if alias and alias.lower() != table.lower():
-                aliases[alias.lower()] = table
+    for t in tree.find_all(exp.Table):
+        name = t.name
+        alias = t.alias
+        tables.add(name)
+        if alias and alias.lower() != name.lower():
+            aliases[alias.lower()] = name
     return tables, aliases
 
 
-def extract_col_refs(sql: str, aliases: Dict[str, str]) -> List[Tuple[str, str]]:
-    """提取列引用 (table, col)，过滤 SQL 关键字。"""
-    seen = set()
-    result = []
-    for m in _COL_REF_PATTERN.finditer(sql):
-        prefix = m.group(1)
-        col = m.group(2)
-        if prefix.upper() in _SQL_KEYWORDS or prefix.isdigit():
+def extract_col_refs(sql: str, aliases: Dict[str, str] = None) -> List[Tuple[str, str]]:
+    """提取列引用 (table, col)，自动解析别名。
+
+    有限定前缀的列（如 t.col）直接解析。
+    无限定列（如 col）：单表查询时归属到该表；多表查询时无法确定归属，跳过。
+    """
+    tree = _parse(sql)
+    if tree is None:
+        return []
+
+    _aliases = aliases or {}
+    all_tables: Set[str] = set()
+    for t in tree.find_all(exp.Table):
+        all_tables.add(_aliases.get(t.name.lower(), t.name) if t.alias
+                       else t.name)
+    single_table = next(iter(all_tables)) if len(all_tables) == 1 else None
+
+    seen: Set[Tuple[str, str]] = set()
+    result: List[Tuple[str, str]] = []
+    for col in tree.find_all(exp.Column):
+        col_name = col.name
+        if not _VALID_IDENTIFIER.match(col_name):
             continue
-        table = aliases.get(prefix.lower(), prefix)
-        key = (table, col)
+        table_prefix = col.table
+        if table_prefix:
+            resolved = _aliases.get(table_prefix.lower(), table_prefix)
+        elif single_table:
+            resolved = single_table
+        else:
+            continue
+        key = (resolved, col_name)
         if key not in seen:
             seen.add(key)
             result.append(key)
@@ -150,12 +218,18 @@ def extract_col_refs(sql: str, aliases: Dict[str, str]) -> List[Tuple[str, str]]
 
 def extract_join_pairs(sql: str) -> List[Tuple[str, str]]:
     """提取相邻 JOIN 表对（按 FROM → JOIN 顺序）。"""
-    tables_in_order = []
-    m = _FROM_PATTERN.search(sql)
-    if m:
-        tables_in_order.append(m.group(1).lower())
-    for m in _JOIN_PATTERN.finditer(sql):
-        tables_in_order.append(m.group(1).lower())
+    tree = _parse(sql)
+    if tree is None:
+        return []
+
+    tables_in_order: List[str] = []
+    from_clause = tree.find(exp.From)
+    if from_clause:
+        for t in from_clause.find_all(exp.Table):
+            tables_in_order.append(t.name.lower())
+    for join in tree.find_all(exp.Join):
+        for t in join.find_all(exp.Table):
+            tables_in_order.append(t.name.lower())
 
     if len(tables_in_order) < 2:
         return []
@@ -170,7 +244,49 @@ def extract_join_pairs(sql: str) -> List[Tuple[str, str]]:
 
 def extract_table_names(sql: str) -> Set[str]:
     """提取所有表名（不含别名）。"""
-    tables = set()
-    for m in _TABLE_ONLY_PATTERN.finditer(sql):
-        tables.add(m.group(1) or m.group(2))
-    return tables
+    tree = _parse(sql)
+    if tree is None:
+        return set()
+    return {t.name for t in tree.find_all(exp.Table)}
+
+
+def extract_join_col_pairs(sql: str) -> List[Tuple[str, str, str, str]]:
+    """提取 JOIN 的列对 (table1, col1, table2, col2)。
+
+    从 ON 子句中的等值条件提取，如
+    `JOIN results r ON ds.driverId = r.driverId` →
+    `('driverstandings', 'driverId', 'results', 'driverId')`
+    """
+    tree = _parse(sql)
+    if tree is None:
+        return []
+
+    # 构建别名映射
+    aliases: Dict[str, str] = {}
+    for t in tree.find_all(exp.Table):
+        name = t.name.lower()
+        if t.alias:
+            aliases[t.alias.lower()] = name
+
+    pairs: List[Tuple[str, str, str, str]] = []
+    for join in tree.find_all(exp.Join):
+        join_table = join.find(exp.Table)
+        if not join_table:
+            continue
+        right_table = join_table.name.lower()
+
+        # ON 子句中的等值条件
+        for eq in join.find_all(exp.EQ):
+            left = eq.left
+            right = eq.right
+            if not isinstance(left, exp.Column) or not isinstance(right, exp.Column):
+                continue
+            t1 = aliases.get(left.table.lower(), left.table.lower()) if left.table else ""
+            t2 = aliases.get(right.table.lower(), right.table.lower()) if right.table else ""
+            c1 = left.name
+            c2 = right.name
+            if not t1 or not t2:
+                continue
+            pairs.append((t1, c1, t2, c2))
+
+    return pairs

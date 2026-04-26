@@ -1,10 +1,10 @@
-"""SQL JOIN 路径合理性检查 — 检查相邻 JOIN 表对的 fk/rel/overlap 关系。"""
+"""SQL JOIN 路径合理性检查 — query 工具 warn 提醒，最终 SQL 文本输出 block。"""
 import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 from agent.guardrail_api import Guardrail, GuardrailContext, CallVerdict
-from agent.guardrail.sql_utils import get_db_prefix, has_read, extract_join_pairs, get_sql_from_messages
+from agent.guardrail.sql_utils import get_db_prefix, has_read, extract_join_col_pairs, get_sql_from_messages, format_entity_list
 
 
 _ENTITY_PATTERN = re.compile(
@@ -13,10 +13,16 @@ _ENTITY_PATTERN = re.compile(
 
 
 class BridgeTableCheck(Guardrail):
-    """JOIN 路径合理性检测。"""
+    """JOIN 路径合理性检测。
+
+    query 工具调用 → warn（柔和提醒，允许执行）
+    文本 SQL 输出 → block（必须确认 JOIN 路径才能输出）
+    """
 
     def __init__(self):
         self._edge_map: Optional[Dict[Tuple[str, str], List[Tuple[str, str]]]] = None
+        self._warned: set = set()       # 已提醒过的关系实体 ref
+        self._warned_pairs: set = set() # 已提醒过的列对 (t1,c1,t2,c2)
 
     def check(self, ctx: GuardrailContext) -> dict:
         result = {}
@@ -27,22 +33,22 @@ class BridgeTableCheck(Guardrail):
             sql = args.get("sql", "")
             if not sql:
                 continue
-            msg = self._check_sql(ctx, sql)
+            msg = self._check_sql(ctx, sql, strict=False)
             if msg:
-                result[i] = CallVerdict("block", msg)
+                result[i] = CallVerdict("warn", msg)
 
         if not ctx.pending_calls:
             sql = get_sql_from_messages(ctx.messages)
             if sql:
-                msg = self._check_sql(ctx, sql)
+                msg = self._check_sql(ctx, sql, strict=True)
                 if msg:
                     result["text"] = CallVerdict("block", msg)
 
         return result
 
-    def _check_sql(self, ctx, sql) -> str:
-        pairs = extract_join_pairs(sql)
-        if not pairs:
+    def _check_sql(self, ctx, sql, strict: bool = False) -> str:
+        col_pairs = extract_join_col_pairs(sql)
+        if not col_pairs:
             return ""
 
         edge_map = self._build_edge_map(ctx.store)
@@ -52,39 +58,70 @@ class BridgeTableCheck(Guardrail):
         prefix = get_db_prefix(ctx)
         history = ctx.tool_history
 
-        warnings = []
-        for t1, t2 in pairs:
+        # 按提取的列对分组，查找对应关系实体
+        lines = []
+        for t1, c1, t2, c2 in col_pairs:
+            pair_key = (t1, c1, t2, c2)
+            if pair_key in self._warned_pairs:
+                continue
+
             key = tuple(sorted([t1, t2]))
             entities = edge_map.get(key, [])
 
-            fk_rels = [(e, t) for e, t in entities if t in ("fk", "rel")]
-            overlaps = [(e, t) for e, t in entities if t == "overlap"]
-
-            if fk_rels:
-                if not all(has_read(history, e) for e, _ in fk_rels):
-                    names = "\n".join(f"    - {prefix}{e}" for e, _ in fk_rels[:3])
-                    warnings.append(
-                        f"  - {t1} 和 {t2} 之间存在 fk/rel 关系，必须先读取确认关联语义：\n{names}"
-                    )
-            elif overlaps:
-                names = "\n".join(f"    - {prefix}{e}" for e, _ in overlaps[:3])
-                warnings.append(
-                    f"  - {t1} 和 {t2} 之间仅有 overlap 关系（置信度较低），"
-                    "读取后请重新评估这个 JOIN 是否合理：\n{names}"
-                )
-            else:
-                if self._already_warned(ctx.messages, t1, t2):
+            # 筛选与列对匹配的关系实体
+            matched = []
+            for e, rtype in entities:
+                # 匹配列名（大小写不敏感）
+                col_pair = _parse_col_pair(e)
+                if not col_pair:
                     continue
-                warnings.append(
-                    f"  - {t1} 和 {t2} 之间未找到任何 fk/rel/overlap 关系，"
-                    "请确认 JOIN 条件是否正确或是否需要桥接表"
+                et1, ec1, et2, ec2 = col_pair
+                pair_match = (
+                    (et1.lower() == t1 and ec1.lower() == c1.lower() and
+                     et2.lower() == t2 and ec2.lower() == c2.lower()) or
+                    (et1.lower() == t2 and ec1.lower() == c2.lower() and
+                     et2.lower() == t1 and ec2.lower() == c1.lower())
+                )
+                if not pair_match:
+                    continue
+                full_ref = f"{prefix}{e}"
+                if full_ref in self._warned:
+                    continue
+                if has_read(history, e):
+                    continue
+                self._warned.add(full_ref)
+                matched.append((full_ref, rtype))
+
+            self._warned_pairs.add(pair_key)
+
+            if matched:
+                types = {rtype for _, rtype in matched}
+                has_fk_rel = bool(types & {"fk", "rel"})
+                if has_fk_rel:
+                    hint = "存在 fk/rel 关系，建议读取确认"
+                else:
+                    hint = "仅有 overlap（置信度较低）"
+                lines.append(f"  - {t1}.{c1} ↔ {t2}.{c2}（{hint}）：")
+                for full_ref, _ in matched:
+                    lines.append(f"    - {full_ref}")
+            else:
+                lines.append(
+                    f"  - {t1}.{c1} ↔ {t2}.{c2}（"
+                    "未找到任何 fk/rel/overlap 关系，请确认 JOIN 条件是否正确或需要桥接表）"
                 )
 
-        if not warnings:
+        if not lines:
             return ""
 
-        return ("⚠️ 以下 JOIN 路径需要确认，读取相关实体后请重新审视 SQL 是否正确，是否需要修改？或根本就无需执行？或者需要进一步探索获取信息？：\n"
-                + "\n".join(warnings))
+        body = "\n".join(lines)
+        if strict:
+            return ("🚫 最终 SQL 输出被拦截：以下 JOIN 关系尚未确认，"
+                    "必须先读取相关实体确认后才能输出最终 SQL：\n"
+                    + body
+                    + "\n\n请使用 meta 工具读取对应实体，确保理解数据库结构和SQL正确性后再输出。")
+        return ("⚠️ 以下 JOIN 关系尚未确认，如果你对关联语义有信心可以继续执行，"
+                "但建议先读取确认：\n"
+                + body)
 
     # ──────────────── 邻接图构建（store 缓存）────────────────
 
@@ -121,15 +158,21 @@ class BridgeTableCheck(Guardrail):
         self._edge_map = dict(edge_map)
         return self._edge_map
 
-    @staticmethod
-    def _already_warned(messages: list, t1: str, t2: str) -> bool:
-        pair_str = f"{t1} ↔ {t2}" if t1 < t2 else f"{t2} ↔ {t1}"
-        for msg in messages:
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content", "")
-            if not isinstance(content, str):
-                continue
-            if pair_str in content:
-                return True
-        return False
+
+def _parse_col_pair(entity: str) -> Optional[tuple]:
+    """从关系实体名提取列对 (table1, col1, table2, col2)。
+
+    entity 如: results.driverId__to__driverStandings.driverId.overlap
+    """
+    if "__to__" not in entity:
+        return None
+    left, right = entity.split("__to__", 1)
+    # left: table1.col1
+    parts_l = left.rsplit(".", 1)
+    if len(parts_l) != 2:
+        return None
+    # right: table2.col2.type → 去掉最后的 .type
+    parts_r = right.rsplit(".", 1)[0].rsplit(".", 1)
+    if len(parts_r) != 2:
+        return None
+    return (parts_l[0], parts_l[1], parts_r[0], parts_r[1])

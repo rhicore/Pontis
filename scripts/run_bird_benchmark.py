@@ -99,7 +99,8 @@ QUERY_PROMPT_TEMPLATE = """\
 提示：{evidence}
 
 要求：
-- 先探索数据库结构：glob 表和列，glob .fk/.rel/.overlap 关系实体了解表间 JOIN 路径，read meta 确认列语义
+- 第一步先用 glob("*") 查看项目有哪些文件，找到数据库文件（.sqlite/.db/.duckdb 等），不要假设文件名
+- 然后依次探索：glob 数据库内的 .table/.col/.fk/.rel/.overlap 实体，read meta 确认列语义
 - 充分理解 schema 和关系后再写 SQL，不要盲猜列名或 JOIN 条件
 - 只输出一条 SELECT 语句，用 ```sql ``` 代码块包裹
 - 不要解释，只输出 SQL
@@ -305,42 +306,47 @@ def run_database(db_id: str, queries: list[dict], args) -> list[dict]:
         q_logger.addHandler(fh)
         q_logger.setLevel(logging.DEBUG)
 
-        agent = create_benchmark_agent(str(db_dir), logger_name=logger_name)
+        try:
+            agent = create_benchmark_agent(str(db_dir), logger_name=logger_name)
 
-        prompt = build_query_prompt(q['question'], q.get('evidence', ''))
-        t0 = time.time()
-        response = agent.chat(prompt)
-        elapsed = time.time() - t0
+            prompt = build_query_prompt(q['question'], q.get('evidence', ''))
+            t0 = time.time()
+            response = agent.chat(prompt)
+            elapsed = time.time() - t0
 
-        predicted_sql = extract_sql(response)
+            predicted_sql = extract_sql(response)
 
-        golden_result = execute_sql(db_path, q['SQL'])
-        predicted_result = execute_sql(db_path, predicted_sql) if predicted_sql else "PARSE_ERROR"
+            golden_result = execute_sql(db_path, q['SQL'])
+            predicted_result = execute_sql(db_path, predicted_sql) if predicted_sql else "PARSE_ERROR"
 
-        correct = is_correct(predicted_result, golden_result)
+            correct = is_correct(predicted_result, golden_result)
 
-        result_str = (
-            "CORRECT" if correct
-            else "PARSE_ERROR" if predicted_sql is None
-            else "EXEC_ERROR" if isinstance(predicted_result, str)
-            else "WRONG"
-        )
-        pred_rows = len(predicted_result) if isinstance(predicted_result, set) else 0
-        gold_rows = len(golden_result) if isinstance(golden_result, set) else 0
+            result_str = (
+                "CORRECT" if correct
+                else "PARSE_ERROR" if predicted_sql is None
+                else "EXEC_ERROR" if isinstance(predicted_result, str)
+                else "WRONG"
+            )
+            pred_rows = len(predicted_result) if isinstance(predicted_result, set) else 0
+            gold_rows = len(golden_result) if isinstance(golden_result, set) else 0
 
-        # 清理独立 logger
-        q_logger.removeHandler(fh)
-        fh.close()
-        # 清除 logger 引用，防止内存泄漏
-        logging.getLogger(logger_name).handlers.clear()
-        append_query_result(q_log, q, response, predicted_sql, result_str,
-                            pred_rows, gold_rows, elapsed)
+            append_query_result(q_log, q, response, predicted_sql, result_str,
+                                pred_rows, gold_rows, elapsed)
 
-        status = "OK" if correct else "FAIL"
-        print(f"  Q{qid} [{q.get('difficulty', '?')}] {status} {result_str} ({elapsed:.1f}s)")
+            status = "OK" if correct else "FAIL"
+            print(f"  Q{qid} [{q.get('difficulty', '?')}] {status} {result_str} ({elapsed:.1f}s)")
 
-        return {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
-                'correct': correct, 'result': result_str, 'elapsed': elapsed}
+            return {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
+                    'correct': correct, 'result': result_str, 'elapsed': elapsed}
+        except Exception as e:
+            print(f"  Q{qid} [{q.get('difficulty', '?')}] ERROR: {e}")
+            append_query_result(q_log, q, "", None, "ERROR", 0, 0, 0)
+            return {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
+                    'correct': False, 'result': "ERROR", 'elapsed': 0}
+        finally:
+            q_logger.removeHandler(fh)
+            fh.close()
+            logging.getLogger(logger_name).handlers.clear()
 
     db_results = []
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -374,6 +380,7 @@ def main():
     parser.add_argument("--extract-only", action="store_true", help="只提取不测试")
     parser.add_argument("--workers", type=int, default=4, help="每个库内并行 query worker 数量（默认 4）")
     parser.add_argument("--db-workers", type=int, default=3, help="并行数据库数量（默认 3）")
+    parser.add_argument("--qids", help="只测试指定 question_id，逗号分隔（如 847,849,851）")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s | %(message)s", datefmt="%H:%M:%S")
@@ -386,6 +393,9 @@ def main():
     dev_data = json.loads(DEV_JSON.read_text(encoding="utf-8"))
     if args.db:
         dev_data = [q for q in dev_data if q['db_id'] == args.db]
+    if args.qids:
+        qid_set = {int(x.strip()) for x in args.qids.split(",")}
+        dev_data = [q for q in dev_data if q['question_id'] in qid_set]
 
     by_db = defaultdict(list)
     for q in dev_data:

@@ -11,6 +11,7 @@ from agent.prompt._base import _STATIC_PROMPT
 from agent.prompt._entities import get_entities_prompt
 from agent.prompt._effort import get_effort_prompt, VALID_EFFORTS
 from agent.prompt._sql import get_sql_rules
+from agent.prompt._guardrail import get_guardrail_guidance
 from agent.prompt._readonly import get_readonly_additions
 from agent.prompt._writer import get_writer_additions
 from agent.prompt._sub_agent import get_sub_agent_additions
@@ -43,6 +44,9 @@ PROMPT_LAYERS = [
 
     ("sql",      lambda s: s.mode in _MODES_WITH_SQL,
                  lambda s: get_sql_rules()),
+
+    ("guardrail", lambda s: s.mode in _MODES_WITH_SQL,
+                  lambda s: get_guardrail_guidance()),
 
     # ── 模式层 ──
     ("readonly", lambda s: s.mode == "readonly",

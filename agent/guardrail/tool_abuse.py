@@ -1,25 +1,48 @@
-"""连续调用同一工具时提醒 — 防止模型反复 query 试错。"""
+"""工具调用限制 — 限制 query 工具的总调用次数。"""
 from agent.guardrail_api import Guardrail, GuardrailContext, CallVerdict
 
 
 class ToolAbuse(Guardrail):
-    """连续调用同一工具时提醒（不阻止执行，仅追加提醒）。"""
+    """限制指定工具的总调用次数，超过后 block 并强制模型输出结论。"""
 
-    def __init__(self, tool_name: str, consecutive_limit: int = 3,
-                 message: str = None):
+    def __init__(self, tool_name: str, total_limit: int = 5,
+                 consecutive_limit: int = 3):
         self.tool_name = tool_name
-        self.limit = consecutive_limit
-        self.message = message or (
-            f"你已连续{consecutive_limit}次调用 {tool_name}，请回顾已获取的信息，"
-            "换一个思路或直接基于已有信息输出结论。"
-        )
+        self.total_limit = total_limit
+        self.consecutive_limit = consecutive_limit
 
     def check(self, ctx: GuardrailContext) -> dict:
-        names = [n for n, _, _ in ctx.tool_history] + [n for n, _ in ctx.pending_calls]
-        if len(names) < self.limit:
-            return {}
-        if not all(n == self.tool_name for n in names[-self.limit:]):
-            return {}
-        return {i: CallVerdict("warn", self.message)
-                for i, (name, _) in enumerate(ctx.pending_calls)
-                if name == self.tool_name}
+        history_names = [n for n, _, _ in ctx.tool_history]
+        total_calls = history_names.count(self.tool_name)
+        result = {}
+
+        for i, (name, _) in enumerate(ctx.pending_calls):
+            if name != self.tool_name:
+                continue
+
+            # 总数限制：超过后直接 block
+            if total_calls >= self.total_limit:
+                result[i] = CallVerdict(
+                    "block",
+                    f"query 调用已达上限（{self.total_limit} 次）。"
+                    "你接下来将只能通过其他工具来获取信息，query工具将被禁用。"
+                )
+                continue
+
+            remaining = self.total_limit - total_calls - 1  # 扣除本次
+            msg_parts = [f"【query 使用统计】本次调用后已用 {total_calls + 1}/{self.total_limit} 次，剩余 {remaining} 次。"]
+
+            # 连续调用提醒
+            names = history_names + [n for n, _ in ctx.pending_calls[:i + 1]]
+            if len(names) >= self.consecutive_limit and all(
+                n == self.tool_name for n in names[-self.consecutive_limit:]
+            ):
+                msg_parts.append(
+                    f"你已连续 {self.consecutive_limit} 次调用 query，"
+                    "请考虑自身是否过于滥用query工具，请将探索逻辑更多转移到其他工具上"
+                )
+
+            result[i] = CallVerdict("warn", " ".join(msg_parts))
+            total_calls += 1
+
+        return result
