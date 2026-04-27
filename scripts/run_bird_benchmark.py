@@ -41,6 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BIRD_DIR = PROJECT_ROOT / "example_data" / "bird"
 DEV_JSON = BIRD_DIR / "dev.json"
 DB_BASE = BIRD_DIR / "dev_databases"
+PROGRESS_LOG = BIRD_DIR / "progress.log"
 
 DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
 
@@ -248,10 +249,107 @@ def write_total_summary(all_results: list[dict]):
 
 
 # ═══════════════════════════════════════════════════════════
+#  全局清理 + 进度追踪
+# ═══════════════════════════════════════════════════════════
+
+class ProgressTracker:
+    """线程安全的进度记录器，写入 bird/progress.log。"""
+
+    def __init__(self, db_map: dict[str, list]):
+        self._lock = threading.Lock()
+        self._states: dict[str, dict] = {
+            db_id: {
+                "total": len(qs),
+                "status": "pending",
+                "done": 0,
+                "correct": 0,
+                "started_at": None,
+                "finished_at": None,
+            }
+            for db_id, qs in db_map.items()
+        }
+        self._write()
+
+    def start_extract(self, db_id: str):
+        with self._lock:
+            self._states[db_id]["status"] = "extracting"
+            self._states[db_id]["started_at"] = time.time()
+            self._write()
+
+    def start_test(self, db_id: str):
+        with self._lock:
+            self._states[db_id]["status"] = "testing"
+            self._write()
+
+    def update(self, db_id: str, done: int, correct: int):
+        with self._lock:
+            self._states[db_id]["done"] = done
+            self._states[db_id]["correct"] = correct
+            self._write()
+
+    def finish(self, db_id: str, correct: int, total: int):
+        with self._lock:
+            self._states[db_id]["status"] = "done"
+            self._states[db_id]["done"] = total
+            self._states[db_id]["correct"] = correct
+            self._states[db_id]["finished_at"] = time.time()
+            self._write()
+
+    def _write(self):
+        lines = [f"=== BIRD Benchmark Progress — {time.strftime('%Y-%m-%d %H:%M:%S')} ===", ""]
+        total_done = sum(s["done"] for s in self._states.values())
+        total_queries = sum(s["total"] for s in self._states.values())
+        total_correct = sum(s["correct"] for s in self._states.values())
+        lines.append(f"Overall: {total_done}/{total_queries} queries, {total_correct} correct ({total_correct/total_queries*100:.1f}% if all done)")
+        lines.append("")
+        for db_id in sorted(self._states.keys()):
+            s = self._states[db_id]
+            pct = s["done"] / s["total"] * 100 if s["total"] else 0
+            elapsed = ""
+            if s["started_at"] and s["status"] != "done":
+                elapsed = f" ({time.time() - s['started_at']:.0f}s elapsed)"
+            elif s["started_at"] and s["finished_at"]:
+                elapsed = f" ({s['finished_at'] - s['started_at']:.0f}s)"
+            lines.append(
+                f"  [{s['status']:>10}] {db_id:25s} "
+                f"{s['done']:>4}/{s['total']:<4} ({pct:5.1f}%) "
+                f"correct={s['correct']}{elapsed}"
+            )
+        lines.append("")
+        PROGRESS_LOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def cleanup_all(db_map: dict[str, list], force_extract: bool = False):
+    """在最开始统一清理所有旧日志和旧提取数据。"""
+    print("=== Cleanup ===")
+    for db_id in sorted(db_map.keys()):
+        db_dir = DB_BASE / db_id
+        pontis_dir = db_dir / ".pontis"
+        bench_dir = pontis_dir / "benchmark"
+
+        # 清理 benchmark 旧日志
+        if bench_dir.exists():
+            count = 0
+            for old_log in bench_dir.glob("*.log"):
+                old_log.unlink(missing_ok=True)
+                count += 1
+            if count:
+                print(f"  [{db_id}] Cleared {count} benchmark logs")
+
+        # 清理旧的提取数据（强制重新提取）
+        if force_extract and pontis_dir.exists():
+            import shutil
+            shutil.rmtree(pontis_dir, ignore_errors=True)
+            print(f"  [{db_id}] Removed .pontis for re-extract")
+
+    print("Cleanup done\n")
+
+
+# ═══════════════════════════════════════════════════════════
 #  单库完整流程
 # ═══════════════════════════════════════════════════════════
 
-def run_database(db_id: str, queries: list[dict], args) -> list[dict]:
+def run_database(db_id: str, queries: list[dict], args, tracker: ProgressTracker) -> list[dict]:
     """单个数据库的完整流程：提取 + 测试。可在独立线程中运行。
 
     Returns:
@@ -266,6 +364,7 @@ def run_database(db_id: str, queries: list[dict], args) -> list[dict]:
 
     # Phase 1: 提取
     if not args.skip_extract:
+        tracker.start_extract(db_id)
         from extractor.bird_extract import extract_one
         t0 = time.time()
         r = extract_one(str(db_dir), force=args.force_extract)
@@ -288,9 +387,8 @@ def run_database(db_id: str, queries: list[dict], args) -> list[dict]:
     # Phase 3: 并行测试
     bench_dir = db_dir / ".pontis" / "benchmark"
     bench_dir.mkdir(parents=True, exist_ok=True)
-    # 清理旧日志（NFS 可能残留 .nfs 锁文件，ignore_errors 跳过）
-    for old_log in bench_dir.glob("*.log"):
-        old_log.unlink(missing_ok=True)
+
+    tracker.start_test(db_id)
 
     def run_one(q: dict) -> dict:
         """单条 query 测试（每个线程独立 agent + 独立 logger）。"""
@@ -349,10 +447,18 @@ def run_database(db_id: str, queries: list[dict], args) -> list[dict]:
             logging.getLogger(logger_name).handlers.clear()
 
     db_results = []
+    correct_so_far = 0
+    done_so_far = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(run_one, q): q['question_id'] for q in queries}
         for future in as_completed(futures):
-            db_results.append(future.result())
+            result = future.result()
+            db_results.append(result)
+            done_so_far += 1
+            if result['correct']:
+                correct_so_far += 1
+            if done_so_far % 5 == 0 or done_so_far == len(queries):
+                tracker.update(db_id, done_so_far, correct_so_far)
 
     # 按 question_id 排序
     db_results.sort(key=lambda r: r['question_id'])
@@ -364,6 +470,7 @@ def run_database(db_id: str, queries: list[dict], args) -> list[dict]:
     pct = correct_count / len(queries) * 100 if queries else 0
     print(f"[{db_id}] => {correct_count}/{len(queries)} ({pct:.1f}%)")
 
+    tracker.finish(db_id, correct_count, len(queries))
     return db_results
 
 
@@ -407,12 +514,18 @@ def main():
     print(f"DB workers: {args.db_workers}, Query workers/db: {args.workers}")
     print(f"Max concurrent threads: ~{args.db_workers * args.workers}\n")
 
+    # 全局清理：在最开始就删除所有旧日志和旧提取数据
+    cleanup_all(by_db, force_extract=args.force_extract)
+
+    # 创建进度追踪器
+    tracker = ProgressTracker(by_db)
+
     all_results = []
 
     # 数据库级别并行
     with ThreadPoolExecutor(max_workers=args.db_workers) as db_pool:
         futures = {
-            db_pool.submit(run_database, db_id, queries, args): db_id
+            db_pool.submit(run_database, db_id, queries, args, tracker): db_id
             for db_id, queries in sorted(by_db.items())
         }
         for future in as_completed(futures):

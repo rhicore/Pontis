@@ -8,19 +8,17 @@ from utils.llm import apply_yaml
 
 def load_agent_config(project_path: str = None) -> dict:
     """加载 agent LLM 配置，返回包含 provider/model/api_key 等的 dict。"""
-    from agent.config import (AGENT_PROVIDER, AGENT_MODEL, AGENT_API_KEY,
-                                AGENT_MAX_TOKENS, AGENT_TEMPERATURE,
-                                AGENT_THINKING, AGENT_THINKING_EFFORT)
+    import global_config as _defaults
 
     cfg = {
-        "provider": AGENT_PROVIDER,
-        "model": AGENT_MODEL,
-        "api_key": AGENT_API_KEY,
-        "max_tokens": AGENT_MAX_TOKENS,
-        "temperature": AGENT_TEMPERATURE,
+        "provider": _defaults.AGENT_PROVIDER,
+        "model": _defaults.AGENT_MODEL,
+        "api_key": _defaults.AGENT_API_KEY,
+        "max_tokens": _defaults.AGENT_MAX_TOKENS,
+        "temperature": _defaults.AGENT_TEMPERATURE,
         "effort": os.environ.get("PONTIS_EFFORT", "mid"),
-        "thinking": AGENT_THINKING,
-        "thinking_effort": AGENT_THINKING_EFFORT,
+        "thinking": _defaults.AGENT_THINKING,
+        "thinking_effort": _defaults.AGENT_THINKING_EFFORT,
     }
 
     AGENT_YAML_MAPPING = {

@@ -87,8 +87,8 @@ ref 就是文件相对路径：`my_data.db`
 ### 逻辑关系 .rel
 
 ```
-<数据库>::<表A>.<列A>__rel__<表B>.<列B>.rel
-例: my_data.db::schools.County__rel__satscores.cname.rel
+<数据库>::<表A>.<列A>__to__<表B>.<列B>.rel
+例: my_data.db::schools.County__to__satscores.cname.rel
 ```
 
 由 AI 推断的语义关系，定位信息已编码在 entity name 中，meta 只有 brief 和 detail。

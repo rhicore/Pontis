@@ -264,8 +264,9 @@ def _create_overlap_entity(path: str, overlap: Dict, store: Store) -> bool:
         safe_to_col = to_column.replace("/", "_").replace("\\", "_")
 
         overlap_entity_name = f"{from_table}.{safe_from_col}__to__{to_table}.{safe_to_col}.overlap"
+        reverse_entity_name = f"{to_table}.{safe_to_col}__to__{from_table}.{safe_from_col}.overlap"
 
-        if store.node_exists(f"{path}::{overlap_entity_name}"):
+        if store.node_exists(f"{path}::{overlap_entity_name}") or store.node_exists(f"{path}::{reverse_entity_name}"):
             return False
 
         overlap_meta = {

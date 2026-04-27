@@ -15,10 +15,10 @@ DETAIL = """\
 
 ## .rel 实体（关系）
 
-ref 格式: [db]::[table1].[col1]__rel__[table2].[col2].rel
+ref 格式: [db]::[table1].[col1]__to__[table2].[col2].rel
 edges: 每条边连接"列"和"rel 实体"（不是列到列）：
-  {"a": "db::table1.col1.TYPE.col", "b": "db::table1.col1__rel__table2.col2.rel"}
-  {"a": "db::table2.col2.TYPE.col", "b": "db::table1.col1__rel__table2.col2.rel"}
+  {"a": "db::table1.col1.TYPE.col", "b": "db::table1.col1__to__table2.col2.rel"}
+  {"a": "db::table2.col2.TYPE.col", "b": "db::table1.col1__to__table2.col2.rel"}
 
 ## .disambig 实体（语义消歧）
 
