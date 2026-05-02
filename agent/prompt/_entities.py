@@ -92,6 +92,7 @@ ref 就是文件相对路径：`my_data.db`
 ```
 
 由 AI 推断的语义关系，定位信息已编码在 entity name 中，meta 只有 brief 和 detail。
+**注意**：.rel 是 AI 推断的辅助线索，可靠性低于 .fk（物理外键）。使用 .rel 作为 JOIN 条件时需要额外验证。
 
 ### 语义消歧 .disambig
 

@@ -126,9 +126,7 @@ def _validate_one(ref: str, store: Store) -> bool:
                 if fixed == violation_count and fixed > 0:
                     format_hint = (
                         f"发现 {violation_count} 条 FK 违规，全部可通过在 {ft}.{fc} 前补 '0' 修复。"
-                        f"推测 {ft}.{fc} 部分值缺少前导零，与 {tt}.{tc} 格式不一致。"
-                        f"JOIN 时建议使用 CAST({ft}.{fc} AS INTEGER) = CAST({tt}.{tc} AS INTEGER) "
-                        f"或补零对齐。"
+                        f"推测 {ft}.{fc} 部分值缺少前导零（{len_f}位），而 {tt}.{tc} 为完整格式（{len_t}位）。"
                     )
                 elif fixed > 0:
                     format_hint = (
@@ -150,7 +148,6 @@ def _validate_one(ref: str, store: Store) -> bool:
                         format_hint = (
                             f"发现 {violation_count} 条 FK 违规，全部可通过 CAST AS INTEGER 修复。"
                             f"推测存在数值类型/字符串格式不一致。"
-                            f"JOIN 时建议使用 CAST AS INTEGER。"
                         )
                 except Exception:
                     pass

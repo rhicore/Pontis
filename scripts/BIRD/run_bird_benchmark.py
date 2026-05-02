@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 #  路径
 # ═══════════════════════════════════════════════════════════
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 BIRD_DIR = PROJECT_ROOT / "example_data" / "bird"
 DEV_JSON = BIRD_DIR / "dev.json"
 DB_BASE = BIRD_DIR / "dev_databases"

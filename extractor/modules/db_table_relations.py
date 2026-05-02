@@ -211,17 +211,19 @@ def _create_relation_entity(path: str, from_table: str, relation: Dict,
 
         store.create_node(f"{path}::{fk_entity_name}", meta=fk_meta)
 
-        # 添加边: source table → fk, target table → fk
-        store.add_edges([
-            {
-                "a": f"{path}::{from_table}.table",
-                "b": f"{path}::{fk_entity_name}",
-            },
-            {
-                "a": f"{path}::{safe_to_table}.table",
-                "b": f"{path}::{fk_entity_name}",
-            },
-        ])
+        # 添加边: 2 tables + 2 columns → fk
+        edges = [
+            {"a": f"{path}::{from_table}.table", "b": f"{path}::{fk_entity_name}"},
+            {"a": f"{path}::{safe_to_table}.table", "b": f"{path}::{fk_entity_name}"},
+        ]
+        # 查找列实体并连接
+        from_col_refs = list(store.find_nodes(f"{path}::{from_table}.{safe_from_col}.*.col"))
+        to_col_refs = list(store.find_nodes(f"{path}::{safe_to_table}.{safe_to_col}.*.col"))
+        if from_col_refs:
+            edges.append({"a": from_col_refs[0], "b": f"{path}::{fk_entity_name}"})
+        if to_col_refs:
+            edges.append({"a": to_col_refs[0], "b": f"{path}::{fk_entity_name}"})
+        store.add_edges(edges)
 
         return True
 

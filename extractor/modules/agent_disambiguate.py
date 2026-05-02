@@ -1,7 +1,10 @@
-"""Agent Disambiguate — 语义消歧为主，总结和关系发现为辅。
+"""Agent Disambiguate — 发现语义歧义，创建 .disambig 实体。
 
-主目标：发现同名/近名实体的语义差异，创建 .disambig 实体
-次目标：发现关系创建 .rel、为相关实体写 summary
+唯一职责：扫描同名/近名实体，判断语义差异，创建消歧实体并更新相关列的 detail。
+不负责发现关系（.rel）或写总结（由 agent_analyze 处理）。
+
+独立执行:
+    python -m extractor.agent_disambiguate ./my_data
 """
 import logging
 
@@ -14,13 +17,7 @@ PROMPT = """\
 
 ## 你的目标
 
-**主要目标**：发现数据库中同名或近名实体的语义差异，创建 .disambig 消歧实体，\
-并为涉及的实体写消歧 summary。\
-这是你最核心的任务，请投入最多的精力确保消歧信息的准确性和实用性。
-
-**同时关注以下任务**，在分析消歧的过程中一并完成：
-- 发现列之间的关系，创建 .rel 实体
-- 为你分析过的实体写 brief/detail summary
+发现数据库中同名或近名实体的语义差异，创建 .disambig 消歧实体。
 
 ## 什么是语义歧义
 
@@ -40,55 +37,93 @@ PROMPT = """\
 a. glob 查看所有表
 b. meta 查看每张表的基本信息
 c. 查看所有列实体，收集列名到表名的映射
-d. 查看已有的 .fk、.overlap、.rel 实体
+d. 查看已有的 .fk、.overlap、.rel、.disambig 实体
 
 ### 3. 扫描列级歧义
 收集所有列名，找出出现在多个表中的同名列：
 - 用 glob `**/*.col` 获取所有列
 - 按列名分组，找出出现在 >= 2 个表中的列名
-- 对每个同名列，查看它在不同表中的实际数据（用 lookup/read）
-- 判断语义是否真的不同（有时同名列含义相同，不需要消歧）
+- 对每个同名列，meta 查看它在不同表中的统计数据
+- read 或 lookup 查看实际数据，判断语义是否真的不同
+- **重要**：如果同名列在不同表中含义完全相同（都是外键指向同一目标），不需要消歧
 
 ### 4. 扫描表级歧义
-查看所有表，找出名称相近的表：
+查看所有表，找出名称相近或用途重叠的表：
 - 如 `results` vs `constructorResults`（都含 "results" 但含义不同）
-- 如 `schools` vs `frpm`（都涉及学校但粒度不同）
+- 如 `schools` vs `frpm`（都涉及学校但数据粒度不同）
 
 ### 5. 创建 .disambig 实体
-对确认有歧义的实体，用 create_entity 创建 .disambig：
 
-**列级消歧**：
-- ref: `[数据库]::[column_name].disambig`
-- meta:
-  - level: column
-  - brief: ≤50字描述歧义
-  - detail: 完整列出每个表中该列的具体语义，用"区别于"句式
-- edges: 连接到每个涉及的列实体
-  {"a": "[db]::[table].[col].TYPE.col", "b": "[db]::[column_name].disambig"}
+ref: `[数据库]::[你概括的共同模式].disambig`
 
-**表级消歧**：
-- ref: `[数据库]::[term].disambig`
-- meta:
-  - level: table
-  - brief: ≤50字描述歧义
-  - detail: 完整列出每个表的具体用途差异
-- edges: 连接到每个涉及的表实体
-  {"a": "[db]::[table].table", "b": "[db]::[term].disambig"}
+命名由你自己决定，用英文简短概括这些实体之间的**共同模式或歧义主题**。不只是列名本身，而是能体现歧义本质的概括。
+可以涉及 2 个或更多实体（列或表），不限于同名列，只要它们之间存在容易混淆的语义歧义就需要消歧。
+
+命名示例：
+- `points` 列在 results 和 driverStandings 中含义不同 → `points.disambig`
+- `position` 和 `positionText` 容易混淆 → `position.disambig`
+- SOC、SOCType、EILCode 都涉及学校类型分类 → `school_type.disambig`
+- results 和 constructorResults 名称相近 → `results_table.disambig`
+- schools.School、frpm.School Name、satscores.sname 指向同一概念 → `school_name.disambig`
+- rtype='S'/'D' 和 cds 的前导零问题涉及 satscores 的编码体系 → `cds_encoding.disambig`
+
+meta:
+- brief: ≤50字描述歧义核心
+- detail: 客观列出每个涉及的实体的具体语义差异
+
+edges: 连接到所有涉及的实体（可以是列实体 `.col`、表实体 `.table` 等，不限制类型和数量）
 
 创建前先 glob 检查是否已存在同名 .disambig 实体。
 
-### 6. 更新相关实体
-为歧义列的 .col 实体更新 detail，追加消歧信息，帮助使用者区分语义。
+### 6. detail 写作原则：只描述事实，不给操作建议
+
+消歧实体的 detail **只负责客观描述差异**，不该告诉 agent 具体该怎么做。
+
+**必须包含**：
+- 每个实体中该术语的具体语义（是什么、代表什么）
+- 数据层面的客观差异（值域、格式、粒度、覆盖范围等）
+
+**禁止包含**：
+- 操作建议（如"建议使用 CAST"、"应该加 rtype='S' 过滤"、"JOIN 时注意…"）
+- 使用偏好（如"优先用 X 列"、"不要用 Y 列"）
+- 场景判定（如"当问题要求 X 时，使用 Y 列"）
+
+具体该用哪个列、该不该加过滤条件，由下游 agent 根据问题自行判断。你的建议如果和 golden SQL 不一致，反而会误导 agent。
+
+**正确示例**：
+```
+points 在不同表中的含义：
+1) results.points：单场比赛得分，每条记录对应一场比赛的积分
+2) driverStandings.points：赛季累计积分，每条记录是该车手截至某站的赛季总分
+两者数值量级和含义完全不同。
+```
+
+**错误示例**（不要这样写）：
+```
+【使用指引】
+- 当问赛季总积分时用 driverStandings.points ← 不要写这种建议
+- 当问单场得分时用 results.points ← 不要写这种建议
+- ⚠️ 常见错误：… ← 不要写操作建议
+```
+
+### 7. 更新相关列的 detail
+
+为涉及歧义的列实体更新 detail，追加事实性消歧信息。格式：
+> 区别于 [另一表].[同名列]：[该列的含义]，而本列是 [本列的含义]
+
+只补充事实差异，不加操作建议。
 
 ## 注意
+
 - 不是所有同名列都需要消歧——如果含义完全相同，不需要创建 .disambig
-- 判断歧义必须基于实际数据（看过列名、抽样值、业务含义），不要凭空猜测
+- 判断歧义必须基于实际数据（看过统计信息和抽样值），不要凭空猜测
 - 用中文写 brief 和 detail
+- **只描述客观差异，不要给任何操作建议**
 """
 
 
 def generate(store: Store, *, debug: bool = False) -> None:
-    """语义消歧为主，总结和关系发现为辅。"""
+    """发现语义歧义，创建 .disambig 实体。"""
     from agent.agent import create_agent, AgentSpec
     from agent.utils import load_agent_config
 

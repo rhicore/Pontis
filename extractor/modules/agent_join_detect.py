@@ -1,7 +1,15 @@
-"""Agent Join/Rel Detection — 关系发现为主，总结和消歧为辅。
+"""Agent Join Detect — 发现高置信度的列间关联，创建 .rel 实体。
 
-主目标：发现列之间的关系，创建 .rel 实体
-次目标：为相关实体写 summary、标注发现的歧义
+唯一职责：基于数据库全局结构，发现真正高概率的列关联关系。
+不负责写总结（由 agent_analyze 处理）或消歧（由 agent_disambiguate 处理）。
+
+核心原则：
+- 宁缺毋滥：只创建高置信度的关系，宁可遗漏也不要误报
+- 全局一致性：每个列在同一角色下只应关联一个目标列
+- 明确标注不确定性：所有 .rel 都是 AI 推断，不是确定事实
+
+独立执行:
+    python -m extractor.agent_join_detect ./my_data
 """
 import logging
 
@@ -10,81 +18,132 @@ from storage import Store
 logger = logging.getLogger(__name__)
 
 PROMPT = """\
-你的任务是深入分析项目中数据库列之间的关系，找出有意义的关联并创建 .rel 实体。
+你的任务是分析数据库列之间的关系，只创建**高置信度**的 .rel 实体。
 
-## 你的目标
+## 核心原则：宁缺毋滥
 
-**主要目标**：发现数据库列之间的有意义关联，创建 .rel 实体。\
-这是你最核心的任务，请投入最多的精力确保关系的准确性和完整性。\
-同时覆盖：基于统计线索的关系（overlap/fk）和自主发现的关系。
+你创建的每一个 .rel 都会被下游 agent 作为 JOIN 线索参考。错误的 .rel 比缺失的 .rel \
+危害更大——agent 会因为错误的关联线索而写出错误的 SQL。
 
-**同时关注以下任务**，在分析关系的过程中一并完成：
-- 为你分析过的实体写 brief/detail summary，特别是 .rel 实体和涉及关系的列
-- 当你发现不同表中存在名称相似但含义不同的列，在它们的 detail 中明确标注区别
+因此：
+- **只创建你非常确定的关系**，不确定的不创建
+- **考虑数据库全局结构**，不是每个有值重叠的列对都需要创建 .rel
+- 已经有 .fk 覆盖的关系不需要再创建 .rel（除非 .rel 提供了 .fk 没有的额外信息）
 
-## 什么是"有意义的关系"
+## 你的唯一目标
 
-两个列之间存在关系，可能是：
-- **外键关系**：一列引用另一列（如 orders.user_id → users.id）
-- **同名同义**：不同表中含义相同的列（如两个表都有 dept_name）
-- **语义关联**：通过数据内容可以推断的关联（如 zip_code 和 city）
+发现数据库列之间的高置信度关联，创建 .rel 实体。
+但如果你在分析过程中发现已有实体的 brief/detail 有明显错误，可以修正。
 
-## 两种发现途径
+## 什么是值得创建的 .rel
 
-### 途径一：基于统计线索（overlap / fk）
-项目中可能有 .overlap 和 .fk 实体，这些是统计层面的线索。
-**注意**：overlap 是静态近似计算，可能遗漏真正可以 join 的列对。不能只依赖这些线索。
+**应该创建**：
+- 两列之间有明确的业务关联（如 orders.customer_id ↔ customers.id）
+- 两列的值高度重叠且语义相同（Jaccard > 0.3 或 coverage > 0.5）
+- 业务逻辑上这两张表必然需要 JOIN 的场景
 
-### 途径二：自主判断（同样重要）
-除了统计线索，你必须主动分析表结构和列内容来发现关系：
-- 看列名：语义相近的列（如 user_id / uid / customer_id）可能是关联
-- 看数据：用 lookup 或 read 查看列的实际值，判断两列是否有值重叠
-- 看表结构：理解表之间的业务逻辑关系（如订单表必然关联用户表）
+**不应该创建**：
+- 两列只是"有点像"或"可能有关系"——不确定就不创建
+- 两列语义相近但用途不同（如 `Free Meal Count` vs `FRPM Count`，前者是子集）
+- 已经有 .fk 覆盖的同一关系（方向相反的 .fk + .rel 算同一关系）
+- 值域重叠只是巧合（如两个表都有 "Los Angeles" 但不构成关联）
 
-**两条途径都要走**。即使没有 overlap 线索，只要你有充分理由认为两列有关联，就应该创建 .rel。
+## 全局一致性约束
+
+在创建 .rel 前，你必须从数据库全局视角思考：
+
+### 1. 唯一 JOIN 伙伴原则
+如果列 A 是表 T1 的主键/关联键，它通常只应关联一个目标列。\
+如果你已经发现 A ↔ B 是高置信度关系，那 A ↔ C 就需要更强的证据才能创建。
+
+举例：`schools.CDSCode` 已经通过 .fk 关联 `frpm.CDSCode` 和 `satscores.cds`，\
+那么 `schools.CDSCode` 不应再关联其他列。
+
+### 2. 排他性检查
+如果你打算创建 A ↔ B 的 .rel，先检查：
+- A 是否已有 .fk 指向其他列？如果有，B 是否只是同一关联路径上的不同表达？
+- B 是否已有 .fk 或 .rel 指向其他列？A 是否与现有关系矛盾？
+- 是否存在传递路径 A → C → B 使得 A ↔ B 的直接关联是冗余的？
+
+### 3. 传递冗余
+如果已有 A ↔ C 和 C ↔ B，通常不需要再创建 A ↔ B（除非 A ↔ B 有独立的业务含义）。
 
 ## 工作流程
 
-### 1. 发现项目中的数据库
-用 glob '*.db', '*.sqlite', '*.sqlite3', '*.duckdb' 找到所有数据库。
+### 1. 建立全局视图
+- glob 找到数据库和所有表
+- meta 读取每张表的信息
+- **读取所有 .fk 实体**，建立确定的外键关系图
+- 读取所有 .overlap 实体，作为候选线索
 
-### 2. 对每个数据库建立全局认知
-a. glob 查看所有表
-b. meta 查看每张表的基本信息（行数、列数）
-c. 查看已有的 .overlap、.fk、.rel 实体
-d. 理解每张表的业务含义（通过表名、列名、数据内容）
+### 2. 逐一评估 overlap 线索
+对每个 .overlap 候选：
+- meta 查看统计（Jaccard、coverage、cardinality）
+- 检查是否已有 .fk 覆盖 → 已覆盖则跳过
+- 检查两端列的实际数据（read 或 lookup）
+- 评估全局一致性：这两列是否应该关联？是否有矛盾？
+- 只有高置信度才创建 .rel
 
-### 3. 检查统计线索
-对每个有 .overlap 或 .fk 的列对：
-- 用 meta 查看统计数据
-- 用 lookup 或 read 查看**两端列的实际数据**验证语义
-- 确认后创建 .rel
+### 3. 自主发现（谨慎进行）
+除了 overlap 线索，你也可以主动发现关系，但标准更高：
+- 必须有充分的数据证据（读过列名、统计数据、抽样值）
+- 必须通过全局一致性检查
+- 不要"发现"太多关系——大多数关系已经通过 .fk 和 overlap 覆盖了
 
-### 4. 自主发现额外关系
-主动扫描尚未被 overlap 覆盖的列对：
-- 重点关注：名称含 id/code/no 等关键词的列（潜在外键）
-- 对不同表中语义相近的列名，用 lookup 抽样验证值是否有重叠
-- 对业务上必然关联的表（如订单-用户、课程-教师），检查对应的关联列
+## 创建 .rel 实体的规范
 
-### 5. 创建 .rel 实体
-对于确认有意义的关联，用 create_entity 创建 .rel 实体：
-- ref 格式: `[数据库]::[表1].[列1]__to__[表2].[列2].rel`
-- meta 中包含:
-  - brief（≤50字）和 detail（完整描述关系）
-- edges 必须连接列到 rel（不是列到列），需要两条边
-- 创建前先 glob 检查是否已存在
+### 命名
+- ref: `[数据库]::[表1].[列1]__to__[表2].[列2].rel`
+- 创建前先 glob 检查是否已存在（含反向）
 
-### 6. 注意
-- 不要只依赖统计重叠，必须验证语义（看实际数据）
-- 自主发现的判断必须有数据支撑（至少看过列名和抽样值），不要凭空猜测
-- 两列即使 overlap 很高，如果语义不同（如两个表都有 "name" 列但指不同实体），不要创建
+### meta 内容
+brief 和 detail 必须遵循以下规范：
+
+**brief 格式**：
+"[高/中]置信度：简要描述关系"
+示例：
+- "高置信度：satscores.cds 通过 CDSCode 关联 schools，需注意前导零差异"
+- "中置信度：schools.District 与 frpm.District Name 语义相同但格式可能有差异"
+
+**detail 内容必须包含**：
+1. **推断依据**：基于什么证据判断（Jaccard 值、抽样验证、业务逻辑）
+2. **使用注意事项**：JOIN 时需要注意什么（格式差异、前导零、空值等）
+3. **不确定性声明**：明确说明这是 AI 推断的关系
+4. **置信度理由**：为什么给这个置信度
+
+**detail 示例**：
+"AI 推断关系（非物理外键）。基于 overlap 检测（Jaccard=0.39）和抽样验证确认两端值格式一致（14位 CDSCode）。\
+schools 以 CDSCode 为主键，frpm 通过 CDSCode 外键关联 schools（已有 .fk 实体），本 .rel 是 .fk 的反向视角。\
+JOIN 时无需特殊处理。置信度：高（有物理外键佐证）。"
+
+### edges
+必须连接列到 rel（不是列到列），需要两条边：
+- {"a": "[db]::[table1].[col1].[TYPE].col", "b": "[db]::[rel_entity]"}
+- {"a": "[db]::[table2].[col2].[TYPE].col", "b": "[db]::[rel_entity]"}
+
+## 语气规范
+
+**必须做到**：
+- 用"推断"、"可能"、"建议"等谨慎措辞
+- 明确标注"AI 推断关系（非物理外键）"
+- 区分置信度（高/中），低置信度直接不创建
+
+**禁止做到**：
+- 不要用"完全匹配"、"可直接 JOIN"、"同一概念"等断言式表述
+- 不要暗示 .rel 和 .fk 有同等可靠性
+- 不要省略不确定性声明
+
+## 注意
+
 - 用中文写 brief 和 detail
+- 不要为已有实体写 summary（除非发现明显错误需修正）
 - 已有的 .rel 不要重复创建
+- 如果数据库只有 .fk 关系且不需要额外 .rel，可以不做任何操作
 """
 
 
 def generate(store: Store, *, debug: bool = False) -> None:
-    """关系发现为主，总结和消歧为辅。"""
+    """发现高置信度列关联，创建 .rel 实体。"""
     from agent.agent import create_agent, AgentSpec
     from agent.utils import load_agent_config
 
@@ -93,7 +152,7 @@ def generate(store: Store, *, debug: bool = False) -> None:
         logger.warning("Agent not configured (no API key), skipping agent join detect")
         return
 
-    logger.info("=== Agent Rel Detection ===")
+    logger.info("=== Agent Join Detect (high-confidence only) ===")
 
     agent = create_agent(store.project_path, AgentSpec(
         mode="writer",
@@ -101,4 +160,4 @@ def generate(store: Store, *, debug: bool = False) -> None:
     ))
 
     agent.chat(PROMPT)
-    logger.info("=== Agent Rel Detection done ===")
+    logger.info("=== Agent Join Detect done ===")

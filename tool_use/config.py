@@ -141,7 +141,7 @@ META_TYPE_CONFIG = {
     ),
     # 实体级
     ".table": MetaTypeConfig(
-        default_keys=["row_count", "column_count", "primary_key", "brief", "detail"],
+        default_keys=["row_count", "column_count", "primary_key", "fk", "rel", "disambig", "brief", "detail"],
     ),
     ".view": MetaTypeConfig(
         default_keys=["row_count", "column_count", "brief", "detail"],
@@ -151,7 +151,7 @@ META_TYPE_CONFIG = {
                        "sample",
                        "min_value", "max_value", "mean_value",
                        "min_length", "max_length", "avg_length",
-                       "brief", "detail"],
+                       "fk", "disambig", "brief", "detail"],
         folded_keys={"topk"},
     ),
     ".fk": MetaTypeConfig(

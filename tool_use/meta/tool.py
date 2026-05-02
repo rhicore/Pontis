@@ -10,7 +10,40 @@ Virtual properties are always computed and included.
 """
 from typing import List, Optional, Union
 
+from tool_use.config import INFO_TYPE_CONFIG
 from tool_use.utils.formatters import get_meta_type_config, format_meta_output
+
+# Keys that contain adjacency ref lists (injected by Store.get_meta)
+_ADJACENCY_KEYS = {"fk", "rel", "disambig", "col", "overlap", "table", "view"}
+
+
+def _resolve_adjacency(meta: dict, store) -> dict:
+    """将邻接 ref 列表解析为 'entity_name | info' 格式的多行字符串。"""
+    resolved = dict(meta)
+    for key in _ADJACENCY_KEYS:
+        refs = meta.get(key)
+        if not isinstance(refs, list) or not refs:
+            continue
+
+        lines = []
+        for ref in refs:
+            entity_name = ref.split("::", 1)[1] if "::" in ref else ref
+            suffix = "." + entity_name.rsplit(".", 1)[-1] if "." in entity_name else ""
+
+            # 用与 glob/search 相同的 info 逻辑
+            adj_meta = store.get_meta(ref) or {}
+            type_config = INFO_TYPE_CONFIG.get(suffix)
+            if type_config:
+                info = type_config.info_fn(adj_meta)
+            else:
+                info = adj_meta.get("brief", "-")
+
+            lines.append(f"  {entity_name} | {info}")
+
+        if lines:
+            resolved[key] = "\n".join(lines)
+
+    return resolved
 
 
 def meta_command(
@@ -43,6 +76,9 @@ def meta_command(
 
     if not meta:
         return f"Empty metadata for '{path}'"
+
+    # 将邻接 ref 列表解析为 entity_name | info 格式
+    meta = _resolve_adjacency(meta, store)
 
     # Normalize property to list
     props = None
@@ -82,6 +118,9 @@ def meta_command(
         file_ext = ext.lower()
 
     config = get_meta_type_config(file_ext)
+
+    # 邻接 key 不截断
+    config.untruncated_keys = config.untruncated_keys | _ADJACENCY_KEYS
 
     # Format output
     result = format_meta_output(meta, config, show_all=all, specific_key=None)
