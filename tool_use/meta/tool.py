@@ -4,7 +4,6 @@ Meta tool - View metadata for file/directory/entity nodes.
 Store.get_meta(ref) handles ref resolution internally:
   "event.db"              → file node (via inode)
   "event.db::users.table" → entity node
-  "ent_a3f2c801"          → ID direct reference
 
 Virtual properties are always computed and included.
 """
@@ -58,7 +57,7 @@ def meta_command(
 
     Args:
         store: Store instance
-        path: ref string (file path, path::entity, or ent_xxx)
+        path: ref string (file path or path::entity)
         all: Whether to show all metadata
         property: Specific property or list of properties to view
         current_cwd: Current working directory (unused)

@@ -1,12 +1,23 @@
 """
 Create entity tool - Create new entity nodes in the knowledge graph.
 
-Currently only allows creating .rel and .disambig entities under .db files.
+Supports:
+  - .rel / .disambig under .db files (data entities → project store)
+  - .convention / .pattern / .term / .lesson / .example (knowledge entities → global store)
 """
 
 import re
 
-_ALLOWED_ENTITY_RE = re.compile(r".*\.(db|sqlite|sqlite3|duckdb)::.*\.(rel|disambig)$")
+_ALLOWED_ENTITY_RE = re.compile(
+    r".*\.(db|sqlite|sqlite3|duckdb)::.*\.(rel|disambig)$"
+    r"|.*\.(convention|pattern|term|lesson|example)$"
+)
+
+_KNOWLEDGE_SUFFIXES = {".convention", ".pattern", ".term", ".lesson", ".example"}
+
+
+def _is_knowledge_entity(ref: str) -> bool:
+    return any(ref.endswith(s) for s in _KNOWLEDGE_SUFFIXES)
 
 
 def create_entity_command(
@@ -20,7 +31,7 @@ def create_entity_command(
 
     Args:
         store: Store instance
-        ref: Entity ref string, e.g. "event.db::users__orders.rel"
+        ref: Entity ref string
         meta: Initial metadata dict
         edges: Optional list of edge dicts
 
@@ -30,18 +41,24 @@ def create_entity_command(
     if not store.pontis_exists:
         return f"Error: .pontis directory not found in {store.project_path}"
 
-    if "::" not in ref:
-        return f"Error: ref must contain '::' for entity creation. Got: '{ref}'"
-
     if not _ALLOWED_ENTITY_RE.match(ref):
-        return f"错误: 只允许创建 .rel 或 .disambig 实体，ref 格式应为 *.db::**.(rel|disambig)"
+        return (
+            "错误: 只允许创建以下类型的实体：\n"
+            "  - .rel / .disambig（数据关系实体，需在 .db 下）\n"
+            "  - .convention / .pattern / .term / .lesson / .example（知识实体）"
+        )
 
     if store.node_exists(ref):
         return f"Entity already exists: {ref}"
 
     meta = meta or {}
 
-    store.create_node(ref, meta=meta, edges=edges)
+    # 知识实体 → 全局 store，命名空间 ["knowledge", "global"]
+    namespaces = None
+    if _is_knowledge_entity(ref):
+        namespaces = ["knowledge", "global"]
+
+    store.create_node(ref, meta=meta, edges=edges, namespaces=namespaces)
 
     return f"Created entity: {ref}"
 

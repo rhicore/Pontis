@@ -33,8 +33,11 @@ def query_command(store, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -> st
     if _WRITE_PATTERN.search(stripped):
         return "错误：SQL 中包含写操作关键词，只允许 SELECT 查询。"
 
-    # 定位数据库文件
-    db_path = os.path.join(store.project_path, file)
+    # 定位数据库文件（支持绝对路径）
+    if os.path.isabs(file):
+        db_path = file
+    else:
+        db_path = os.path.join(store.project_path, file)
     if not os.path.isfile(db_path):
         return f"错误：数据库文件不存在: {file}"
 

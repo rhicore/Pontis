@@ -24,7 +24,6 @@ TOOL_PAGINATION = {
     "glob":   PaginationConfig(default_limit=20, max_limit=500),
     "search": PaginationConfig(default_limit=100, max_limit=500),
     "grep":   PaginationConfig(default_limit=250, max_limit=1000),
-    "lookup": PaginationConfig(default_limit=50,  max_limit=200),
 }
 
 
@@ -40,6 +39,7 @@ class MetaTypeConfig:
     """meta 命令的类型显示配置"""
     default_keys: List[str]
     max_value_len: Optional[int] = 100
+    max_detail_lines: Optional[int] = 15
     folded_keys: Set[str] = field(default_factory=set)        # 折叠为一行摘要，需 property= 展开
     untruncated_keys: Set[str] = field(default_factory=lambda: {"detail", "brief"})  # 不截断，完整展示
 
@@ -88,6 +88,10 @@ INFO_TYPE_CONFIG = {
     ".overlap": InfoTypeConfig(info_fn=lambda m: _v(m, 'brief')),
     ".disambig": InfoTypeConfig(info_fn=lambda m: _v(m, 'brief')),
     ".pattern": InfoTypeConfig(info_fn=lambda m: _v(m, "pattern"), max_str_len=80),
+    ".convention": InfoTypeConfig(info_fn=lambda m: _v(m, "brief")),
+    ".term": InfoTypeConfig(info_fn=lambda m: _v(m, "brief")),
+    ".lesson": InfoTypeConfig(info_fn=lambda m: _v(m, "brief")),
+    ".example": InfoTypeConfig(info_fn=lambda m: _v(m, "brief")),
     ".chunk": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'char_count')} chars"),
     ".json": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'structure_type')}, {_v(m, 'line_count')} lines"),
     ".yaml": InfoTypeConfig(info_fn=lambda m: f"{_v(m, 'structure_type')}, {_v(m, 'line_count')} lines"),
@@ -166,6 +170,18 @@ META_TYPE_CONFIG = {
     ),
     ".pattern": MetaTypeConfig(
         default_keys=["name", "pattern"],
+    ),
+    ".convention": MetaTypeConfig(
+        default_keys=["brief", "detail"],
+    ),
+    ".term": MetaTypeConfig(
+        default_keys=["brief", "detail"],
+    ),
+    ".lesson": MetaTypeConfig(
+        default_keys=["brief", "detail"],
+    ),
+    ".example": MetaTypeConfig(
+        default_keys=["brief", "detail"],
     ),
     ".chunk": MetaTypeConfig(
         default_keys=["char_count"],

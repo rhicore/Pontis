@@ -4,7 +4,7 @@ DESCRIPTION = "查看文件或逻辑实体的元数据。"
 
 DETAIL = """\
 参数：
-- path (必填): ref 字符串（文件路径、path::entity、或 ent_id）
+- path (必填): ref 字符串（文件路径 或 path::entity）
 - property: 指定要查看的属性，支持字符串或列表
   - 字符串: property="sample"
   - 列表: property=["cardinality", "sample", "topk"]

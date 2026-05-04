@@ -68,6 +68,38 @@ def get_file_type_from_name(name: str, node_type: str = "") -> str:
 # ========== Meta 格式化 ==========
 
 
+def _format_detail(key: str, text: str, max_lines: Optional[int] = None) -> str:
+    """格式化 detail/brief：多行缩进，单行紧凑，可选截断。"""
+    raw_lines = text.split("\n")
+    total_lines = len(raw_lines)
+
+    # 截断
+    if max_lines and total_lines > max_lines:
+        show_lines = raw_lines[:max_lines]
+        truncated = True
+    else:
+        show_lines = raw_lines
+        truncated = False
+
+    # 单行：紧凑显示
+    if total_lines == 1 and not truncated:
+        return f"{key}: {text}"
+
+    # 多行：首行带 key，后续行缩进对齐
+    indent = " " * (len(key) + 2)
+    result = []
+    for i, line in enumerate(show_lines):
+        if i == 0:
+            result.append(f"{key}: {line}")
+        else:
+            result.append(f"{indent}{line}")
+
+    if truncated:
+        result.append(f"{indent}... ({total_lines - max_lines} more lines, use property=[\"{key}\"] to view full)")
+
+    return "\n".join(result)
+
+
 def format_meta_output(
     meta_dict: Dict[str, Any],
     config: MetaTypeConfig,
@@ -79,6 +111,8 @@ def format_meta_output(
         value = meta_dict.get(specific_key)
         if value is None:
             return f"{specific_key}: N/A"
+        if specific_key in ("detail", "brief"):
+            return _format_detail(specific_key, str(value))
         return f"{specific_key}: {_format_meta_value(value, None)}"
 
     if show_all:
@@ -94,6 +128,10 @@ def format_meta_output(
         value = meta_dict[key]
         if key in config.folded_keys and not show_all:
             lines.append(f"{key}: {_fold_summary(key, value)}")
+        elif key in ("detail", "brief"):
+            # 全量显示时截断，单独 property 时不截断
+            max_lines = config.max_detail_lines if hasattr(config, 'max_detail_lines') and config.max_detail_lines else None
+            lines.append(_format_detail(key, str(value), max_lines=max_lines))
         elif key in config.untruncated_keys:
             lines.append(f"{key}: {value}")
         else:

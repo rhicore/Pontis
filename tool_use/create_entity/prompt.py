@@ -1,46 +1,36 @@
 """Create entity tool prompt — 创建实体节点。"""
 
-DESCRIPTION = "在知识图谱中创建新的实体节点（.rel 或 .disambig）。"
+DESCRIPTION = "在知识图谱中创建新的实体节点。"
 
 DETAIL = """\
 参数：
-- ref (必填): 实体引用，允许创建 .rel 和 .disambig 实体，格式为 *.db::**.rel 或 *.db::**.disambig
-- meta: 初始元数据（可选），如 {"brief": "...", "detail": "..."}
+- ref (必填): 实体名称（即完整标识），如 'no_null_check.convention'
+- meta: 初始元数据（可选），建议包含 brief 和 detail
 - edges: 关系边列表（可选），每条边为 {"a": "...", "b": "..."}
 
-创建行为：
-- 自动生成 ent_id 并写入 .pontis/nodes/{ent_id}/_meta.yml
-- 自动添加归属边（文件 ↔ 实体）
-- 用户提供的 edges 会一并添加
+## 数据关系实体（需在 .db 下）
 
-## .rel 实体（关系）
-
+### .rel 实体（关系）
 ref 格式: [db]::[table1].[col1]__to__[table2].[col2].rel
-edges: 每条边连接"列"和"rel 实体"（不是列到列）：
-  {"a": "db::table1.col1.TYPE.col", "b": "db::table1.col1__to__table2.col2.rel"}
-  {"a": "db::table2.col2.TYPE.col", "b": "db::table1.col1__to__table2.col2.rel"}
+edges: 连接到涉及的列实体
 
-## .disambig 实体（语义消歧）
+### .disambig 实体（语义消歧）
+ref 格式: [db]::[column_name].disambig 或 [db]::[term].disambig
+meta: brief 描述歧义，detail 列出语义差异
+edges: 连接到涉及的列或表实体
 
-当数据库中存在名称相同或相近但语义不同的实体时，创建消歧实体。
+## 知识实体（全局或项目级）
 
-### 列级消歧
-ref: [db]::[column_name].disambig
-meta:
-  level: column
-  brief: ≤50字描述歧义
-  detail: 列出每个表中该列的具体语义差异
-edges: 连接到每个涉及歧义的列实体
-  {"a": "[db]::[table].[col].TYPE.col", "b": "[db]::[column_name].disambig"}
+后缀决定类型，entity_name 即完整标识：
+- .convention: 命名约定，如 'no_concat.convention'
+- .pattern: 查询模式，如 'count_with_group_by.pattern'
+- .term: 术语解释，如 'fiscal_year.term'
+- .lesson: 经验教训，如 'avoid_null_in_join.lesson'
+- .example: 示例，如 'case_when_example.example'
 
-### 表级消歧
-ref: [db]::[term].disambig
-meta:
-  level: table
-  brief: ≤50字描述歧义
-  detail: 列出每个表的具体语义差异
-edges: 连接到每个涉及的表实体
-  {"a": "[db]::[table].table", "b": "[db]::[term].disambig"}
+知识实体的内容存放在 meta.detail 字段中：
+- brief: ≤50字摘要
+- detail: 完整内容（多行自由文本）
 
 注意：
 - 如果实体已存在会报错，如需更新请使用 update_meta
