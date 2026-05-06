@@ -31,27 +31,27 @@ def generate(store: Store) -> None:
         return
 
     for ext in DB_EXTENSIONS:
-        for path in store.find_nodes(ext):
+        for db_ref in store.find_nodes(ext):
             try:
-                _generate_for_db(path, store, llm)
+                _generate_for_db(db_ref, store, llm)
             except Exception as e:
-                logger.warning(f"Failed for {path}: {e}")
+                logger.warning(f"Failed for {db_ref}: {e}")
 
 
-def _generate_for_db(path: str, store: Store, llm) -> bool:
-    meta = store.get_meta(path)
+def _generate_for_db(db_ref: str, store: Store, llm) -> bool:
+    meta = store.get_meta(db_ref)
     if not meta:
         return False
 
     if "detail" in meta and "brief" in meta:
         return False
 
-    db_name = os.path.splitext(os.path.basename(path))[0]
-    tables = _get_table_info(path, store)
-    views = _get_view_info(path, store)
+    db_name = os.path.splitext(os.path.basename(db_ref))[0]
+    tables = _get_table_info(db_ref, store)
+    views = _get_view_info(db_ref, store)
 
     if not tables and not views:
-        logger.debug(f"  No tables/views found for {path}")
+        logger.debug(f"  No tables/views found for {db_ref}")
         return False
 
     prompt = _build_prompt(db_name, tables, views, meta)
@@ -65,8 +65,8 @@ def _generate_for_db(path: str, store: Store, llm) -> bool:
             updates["brief"] = brief
 
         if updates:
-            store.set_meta(path, updates)
-            logger.info(f"  AI summary: {path}")
+            store.set_meta(db_ref, updates)
+            logger.info(f"  AI summary: {db_ref}")
             return True
     except Exception as e:
         logger.debug(f"LLM failed: {e}")
@@ -74,29 +74,25 @@ def _generate_for_db(path: str, store: Store, llm) -> bool:
     return False
 
 
-def _get_table_info(db_path: str, store: Store) -> List[dict]:
+def _get_table_info(db_ref: str, store: Store) -> List[dict]:
     """读取数据库下所有表的元数据"""
     tables = []
-    for table_ref in store.find_nodes(f"{db_path}::*.table"):
+    for table_ref in store.find_nodes(f"{db_ref}::*:table"):
         table_meta = store.get_meta(table_ref)
         if table_meta:
-            _, table_name = table_ref.split("::", 1)
-            table_name_clean = table_name.replace(".table", "")
             # 读取列信息
             columns = []
-            for col_ref in store.find_nodes(f"{db_path}::{table_name_clean}.*.*.col"):
+            for col_ref in store.find_nodes(f"{db_ref}::{table_ref}::*:col"):
                 col_meta = store.get_meta(col_ref)
                 if col_meta:
-                    _, col_name = col_ref.split("::", 1)
-                    col_parts = col_name.replace(".col", "").split(".")
                     columns.append({
-                        "name": col_parts[1] if len(col_parts) >= 2 else col_name,
-                        "type": col_parts[2] if len(col_parts) >= 3 else "?",
+                        "name": col_ref,
+                        "type": col_meta.get("col_type", "?"),
                         "detail": col_meta.get("detail", ""),
                     })
 
             tables.append({
-                "name": table_name_clean,
+                "name": table_ref,
                 "row_count": table_meta.get("row_count"),
                 "column_count": table_meta.get("column_count"),
                 "primary_key": table_meta.get("primary_key"),
@@ -106,15 +102,14 @@ def _get_table_info(db_path: str, store: Store) -> List[dict]:
     return tables
 
 
-def _get_view_info(db_path: str, store: Store) -> List[dict]:
+def _get_view_info(db_ref: str, store: Store) -> List[dict]:
     """读取数据库下所有视图的元数据"""
     views = []
-    for view_ref in store.find_nodes(f"{db_path}::*.view"):
+    for view_ref in store.find_nodes(f"{db_ref}::*:view"):
         view_meta = store.get_meta(view_ref)
         if view_meta:
-            _, view_name = view_ref.split("::", 1)
             views.append({
-                "name": view_name.replace(".view", ""),
+                "name": view_ref,
                 "row_count": view_meta.get("row_count"),
                 "column_count": view_meta.get("column_count"),
                 "detail": view_meta.get("detail", ""),

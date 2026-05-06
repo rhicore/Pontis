@@ -24,9 +24,6 @@ def get_registry() -> Dict[str, object]:
     from extractor.modules.db_basic import generate as db_basic
     from extractor.modules.csv_basic import generate as csv_basic
     from extractor.modules.serialized_basic import generate as serialized_basic
-    from extractor.modules.text_basic import generate as text_basic
-    from extractor.modules.db_info import generate as db_info
-    from extractor.modules.db_table_info import generate as db_table_info
     from extractor.modules.db_column_stats import generate as db_column_stats
     from extractor.modules.db_column_sample import generate as db_column_sample
     from extractor.modules.db_column_topk import generate as db_column_topk
@@ -45,9 +42,6 @@ def get_registry() -> Dict[str, object]:
         "db_basic": db_basic,
         "csv_basic": csv_basic,
         "serialized_basic": serialized_basic,
-        "text_basic": text_basic,
-        "db_info": db_info,
-        "db_table_info": db_table_info,
         "db_column_stats": db_column_stats,
         "db_column_sample": db_column_sample,
         "db_column_topk": db_column_topk,
@@ -62,30 +56,6 @@ def get_registry() -> Dict[str, object]:
         "db_column_overlap": db_column_overlap,
         "ai_db_column_summary": ai_db_column_summary,
     }
-
-    # 尝试注册 sketch 模块
-    try:
-        from extractor.modules.db_column_sketch_stats import generate as sketch
-        _REGISTRY["db_column_sketch_stats"] = sketch
-    except ImportError:
-        pass
-
-    try:
-        from extractor.modules.db_column_sketch_overlap import generate as sketch_overlap
-        _REGISTRY["db_column_sketch_overlap"] = sketch_overlap
-    except ImportError:
-        pass
-
-    # LSH 索引模块
-    try:
-        from extractor.modules.db_column_lsh_index import generate as db_lsh
-        from extractor.modules.csv_column_lsh_index import generate as csv_lsh
-        from extractor.modules.json_value_lsh_index import generate as json_lsh
-        _REGISTRY["db_column_lsh_index"] = db_lsh
-        _REGISTRY["csv_column_lsh_index"] = csv_lsh
-        _REGISTRY["json_value_lsh_index"] = json_lsh
-    except ImportError:
-        pass
 
     # Agent 模块（需要 agent API key）
     try:
@@ -165,5 +135,6 @@ def init_store(target: str, config_path: str = None, verbose: bool = False) -> t
         raise ValueError(f"Target path does not exist: {target_path}")
 
     config = load_config(config_path)
-    store = Store(str(target_path))
+    from storage import stores
+    store = stores.create_store("fs", str(target_path))
     return store, config

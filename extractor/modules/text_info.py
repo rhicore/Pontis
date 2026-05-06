@@ -173,8 +173,6 @@ def _generate_for_text(path: str, store: Store) -> bool:
         return False
 
     try:
-        stat = os.stat(file_path)
-
         # 检测编码
         encoding = _detect_encoding(file_path)
 
@@ -199,7 +197,6 @@ def _generate_for_text(path: str, store: Store) -> bool:
 
         # 更新meta
         store.set_meta(path, {
-            "file_size": stat.st_size,
             "encoding": encoding,
             "char_count": char_count,
             "line_count": line_count,

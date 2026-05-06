@@ -1,19 +1,20 @@
 """Pontis Agent - Interactive data analysis agent with tool calling."""
 import json
 import logging
+import os
 import sys
 from collections import defaultdict
-from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Tuple, Union
 
 from openai import OpenAI
 
 from storage import Store
+from storage.workspace import Workspace
 from agent.utils import load_agent_config
+from agent.config import default_spec
 from agent.tools import build_registry
 from agent.prompt import build_prompt
 from agent.guardrail_api import Guardrail, CallVerdict, GuardrailContext
-from agent.guardrail import build_guardrails
 from utils.llm import build_thinking_kwargs
 
 logger = logging.getLogger(__name__)
@@ -23,53 +24,36 @@ _MAX_TOOL_RESULT = 8000
 
 
 # ═══════════════════════════════════════════════════════════
-#  Agent 创建配置 — 单一参数包
+#  向后兼容重导出 — 外部仍可 from agent.agent import XXX
 # ═══════════════════════════════════════════════════════════
 
-@dataclass
-class AgentSpec:
-    """Agent 创建的完整参数包。"""
-    project_path: str = ""
-    mode: str = "readonly"
-    effort: str = "mid"
-    debug: bool = False
-    max_rounds: Optional[int] = None
-    disabled_tools: List[str] = field(default_factory=list)
-    guardrails: List[Guardrail] = field(default_factory=list)
-
-
-def create_agent(project_path: str, spec: AgentSpec = None,
-                 logger_name: Optional[str] = None) -> "PontisAgent":
-    """工厂：根据 spec 自动组装 prompt + tools + guardrails。"""
-    if spec is None:
-        spec = AgentSpec()
-    spec.project_path = project_path
-
-    prompt = build_prompt(spec)
-    tools = build_registry(spec)
-    if not spec.guardrails:
-        spec.guardrails = build_guardrails(spec)
-
-    return PontisAgent(project_path, tools=tools, system_prompt=prompt,
-                       guardrails=spec.guardrails, logger_name=logger_name)
+def __getattr__(name):
+    if name in ("ModeConfig", "_MODE_PRESETS", "AgentSpec",
+                "resolve_mode", "create_agent"):
+        import agent.config as _cfg
+        return getattr(_cfg, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ═══════════════════════════════════════════════════════════
 #  PontisAgent
 # ═══════════════════════════════════════════════════════════
 
-class PontisAgent:
+class PontusAgent:
     """Interactive agent that uses Pontis tools to analyze project data."""
 
     def __init__(self, project_path: str,
                  tools=None,
                  system_prompt: Optional[str] = None,
                  guardrails: Optional[List[Guardrail]] = None,
-                 logger_name: Optional[str] = None):
+                 logger_name: Optional[str] = None,
+                 trace_callback=None):
         self.project_path = project_path
-        self.store = Store(project_path)
+        self.workspace = Workspace(project_path=project_path)
+        self.store = self.workspace.get_store()
         self.config = load_agent_config(project_path)
         self.logger = logging.getLogger(logger_name or __name__)
+        self._trace_callback = trace_callback
 
         if not self.config["api_key"]:
             print("Error: No API key configured.")
@@ -82,8 +66,8 @@ class PontisAgent:
             timeout=120.0,
         )
 
-        self.tools = tools or build_registry(AgentSpec())
-        self.system_prompt = system_prompt or build_prompt(AgentSpec(project_path=project_path))
+        self.tools = tools or build_registry(default_spec(project_path))
+        self.system_prompt = system_prompt or build_prompt(default_spec(project_path))
         self.guardrails = guardrails or []
         self._tool_history: List[Tuple[str, dict, str]] = []
         self.messages = [{"role": "system", "content": self.system_prompt}]
@@ -123,7 +107,7 @@ class PontisAgent:
 
     def _execute_tool(self, name: str, arguments: dict, tool_call_id: str) -> str:
         """执行单个工具调用：执行 → 截断 → 记录。"""
-        result = self.tools.execute(name, arguments, self.store)
+        result = self.tools.execute(name, arguments, self.store, workspace=self.workspace)
 
         if len(result) > _MAX_TOOL_RESULT:
             result = result[:_MAX_TOOL_RESULT] + "\n... (truncated)"
@@ -138,21 +122,10 @@ class PontisAgent:
         return result
 
     # ──────────────── Guardrail 层 ────────────────
-    #
-    # guardrail 层包裹除 LLM 调用外的所有逻辑：
-    #   1. 收集所有 guardrail 对每个调用的裁决（多对多矩阵）
-    #   2. 每个 tool call 独立聚合：block 优先，消息合并
-    #   3. 执行允许的调用
-    #   4. post_check 修改结果
-    #   5. 文本响应也可被拦截
-    #
 
     def _collect_verdicts(self, ctx: GuardrailContext
                           ) -> Dict[Union[int, str], List[Tuple[str, CallVerdict]]]:
-        """运行所有 guardrail，收集 per-call 裁决矩阵。
-
-        Returns: {call_index|"text": [(guardrail_name, CallVerdict), ...]}
-        """
+        """运行所有 guardrail，收集 per-call 裁决矩阵。"""
         verdicts: Dict[Union[int, str], List[Tuple[str, CallVerdict]]] = defaultdict(list)
         for g in self.guardrails:
             for key, v in g.check(ctx).items():
@@ -161,17 +134,10 @@ class PontisAgent:
 
     @staticmethod
     def _aggregate(vs: List[Tuple[str, CallVerdict]]) -> Tuple[str, str, Optional[dict]]:
-        """聚合单个调用的所有裁决。
-
-        Returns: (action, aggregated_message, modified_args)
-          - action: "block" | "warn" | "allow"
-          - message: 聚合后的 block/warn 消息
-          - modified_args: merge 所有 non-None modified_args（后注册覆盖同名 key）
-        """
+        """聚合单个调用的所有裁决。"""
         blocks = [(s, v) for s, v in vs if v.action == "block"]
         warnings = [(s, v) for s, v in vs if v.action == "warn"]
 
-        # merge modified_args: 按注册顺序，后注册的覆盖同名 key
         merged_args: Optional[dict] = None
         for _, v in vs:
             if v.modified_args is not None:
@@ -182,7 +148,7 @@ class PontisAgent:
 
         if blocks:
             msg = "\n".join(f"[{s}] {v.message}" for s, v in blocks)
-            return "block", msg, None  # block 时 modified_args 无意义
+            return "block", msg, None
 
         if warnings:
             msg = "\n".join(f"[{s}] {v.message}" for s, v in warnings)
@@ -192,11 +158,7 @@ class PontisAgent:
 
     def _guardrail_process(self, ctx: GuardrailContext, msg,
                            tool_calls) -> Iterator[dict]:
-        """guardrail 层：裁决 → 聚合 → 执行 → 后检查。
-
-        处理除 LLM 调用外的所有框架逻辑。
-        yield 事件，调用者根据事件类型决定是否继续循环。
-        """
+        """guardrail 层：裁决 → 聚合 → 执行 → 后检查。"""
         verdicts = self._collect_verdicts(ctx)
 
         # ── 文本响应 ──
@@ -215,8 +177,6 @@ class PontisAgent:
             return
 
         # ── 工具调用：per-call 聚合 + 执行 ──
-        # ⚠️ OpenAI API 要求：assistant tool_calls 后必须紧跟对应 tool 消息，
-        # 所有 tool 消息完成后才能出现其他 role。因此 warn 的 user 消息需要延迟追加。
         deferred_warnings = []
 
         for i, tc in enumerate(tool_calls):
@@ -225,7 +185,6 @@ class PontisAgent:
             action, message, modified_args = self._aggregate(call_vs)
 
             if action == "block":
-                # 拦截：聚合所有 block guardrail 的消息
                 sources = "+".join(s for s, v in call_vs if v.action == "block")
                 self.logger.info(f"Guardrail block [{sources}] call#{i}({name}): {message}")
                 yield {"type": "blocked", "guardrail": sources,
@@ -236,13 +195,11 @@ class PontisAgent:
                 })
                 continue
 
-            # 执行（可能用修改后的参数）
             args = modified_args or self._parse_args(tc.function.arguments)
             yield {"type": "tool_call", "name": name,
                    "arguments": args, "id": tc.id}
             result = self._execute_tool(name, args, tc.id)
 
-            # Post-check: pipeline，每个 guardrail 依次处理前一个的输出
             for g in self.guardrails:
                 modified = g.post_check(ctx, i, name, args, result)
                 if modified is not None:
@@ -252,7 +209,6 @@ class PontisAgent:
             yield {"type": "tool_result", "name": name,
                    "result": result, "id": tc.id}
 
-            # 警告收集（延迟追加，避免打断 tool 消息序列）
             if action == "warn":
                 sources = "+".join(s for s, v in call_vs if v.action == "warn")
                 self.logger.info(f"Guardrail warn [{sources}] call#{i}({name}): {message}")
@@ -260,19 +216,13 @@ class PontisAgent:
                        "call_index": i, "content": message}
                 deferred_warnings.append(message)
 
-        # 所有 tool 处理完成后，统一追加警告消息
         for wmsg in deferred_warnings:
             self.messages.append({"role": "user", "content": wmsg})
 
     # ──────────────── 核心循环 ────────────────
 
     def _run_loop(self, user_input: str) -> Iterator[dict]:
-        """核心 agent 循环。
-
-        每轮只做两件事：调用 LLM → 交给 guardrail 层处理。
-        guardrail 层包裹所有除 LLM 调用外的逻辑：
-          裁决矩阵 → per-call 聚合 → 执行 → 后检查 → 警告。
-        """
+        """核心 agent 循环。"""
         self.messages.append({"role": "user", "content": user_input})
         rounds = 0
 
@@ -290,10 +240,13 @@ class PontisAgent:
                 store=self.store,
                 rounds=rounds,
                 pending_calls=pending,
+                workspace=self.workspace,
             )
 
             done = False
             for event in self._guardrail_process(ctx, msg, msg.tool_calls):
+                if self._trace_callback:
+                    self._trace_callback(event)
                 yield event
                 if event["type"] == "done":
                     done = True

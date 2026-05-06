@@ -1,7 +1,7 @@
 """CSV Column Sample Generator - CSV列采样生成器
 
 职责：
-- 匹配所有 *.csv/*.tsv 下的 *.col 节点
+- 匹配所有 *.csv/*.tsv 下的列节点
 - 将sample数据直接放入列节点的_meta.yml根级别
 
 独立执行：
@@ -20,40 +20,35 @@ def generate(store: Store, sample_size: int = 10) -> None:
     """为所有CSV/TSV列生成样本"""
     logger.info("=== Generating CSV column samples ===")
 
-    for ref in store.find_nodes("*.csv::*.*.*.col"):
-        try:
-            _generate_for_column(ref, store, ',', sample_size)
-        except Exception as e:
-            logger.warning(f"Failed to generate sample for {ref}: {e}")
+    for csv_ref in store.find_nodes("*.csv"):
+        for col_ref in store.find_nodes(f"{csv_ref}::*:col"):
+            try:
+                _generate_for_column(col_ref, csv_ref, store, ',', sample_size)
+            except Exception as e:
+                logger.warning(f"Failed to generate sample for {col_ref}: {e}")
 
-    for ref in store.find_nodes("*.tsv::*.*.*.col"):
-        try:
-            _generate_for_column(ref, store, '\t', sample_size)
-        except Exception as e:
-            logger.warning(f"Failed to generate sample for {ref}: {e}")
+    for tsv_ref in store.find_nodes("*.tsv"):
+        for col_ref in store.find_nodes(f"{tsv_ref}::*:col"):
+            try:
+                _generate_for_column(col_ref, tsv_ref, store, '\t', sample_size)
+            except Exception as e:
+                logger.warning(f"Failed to generate sample for {col_ref}: {e}")
 
 
-def _generate_for_column(ref: str, store: Store,
+def _generate_for_column(col_ref: str, csv_ref: str, store: Store,
                          delimiter: str, sample_size: int) -> bool:
     """为单个列生成sample数据并存入meta根级别"""
-    path, entity_name = ref.split("::", 1)
-    meta = store.get_meta(ref)
+    meta = store.get_meta(col_ref)
     if not meta:
         return False
 
-    # 检查是否已处理
     if "sample" in meta:
         return False
 
-    # 解析实体名
-    col_name = entity_name.split('.')[1]
-
-    file_meta = store.get_meta(path)
-    if not file_meta:
-        return False
-
-    rel_path = file_meta.get("path")
-    csv_path = os.path.join(store.project_path, rel_path) if rel_path else None
+    col_name = col_ref
+    csv_meta = store.get_meta(csv_ref) or {}
+    csv_rel_path = csv_meta.get("path", csv_ref)
+    csv_path = os.path.join(store.project_path, csv_rel_path)
     if not csv_path or not os.path.exists(csv_path):
         return False
 
@@ -61,8 +56,8 @@ def _generate_for_column(ref: str, store: Store,
     if samples is None:
         return False
 
-    store.set_meta(ref, {"sample": samples})
-    logger.info(f"  Sample added: {ref} ({len(samples)} items)")
+    store.set_meta(col_ref, {"sample": samples})
+    logger.info(f"  Sample added: {col_ref} ({len(samples)} items)")
     return True
 
 

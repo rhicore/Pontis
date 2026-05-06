@@ -1,42 +1,31 @@
-"""Delete tool executor — 删除节点，支持按实体层级级联删除。"""
-from tool_use.config import ENTITY_DEPENDENCY_RANK
+"""Delete tool executor — 删除节点，支持按标签层级级联删除。"""
+from tool_use.config import resolve_rank
 
 
-def _get_entity_suffix(ref: str) -> str:
-    """从 ref 中提取实体类型后缀。"""
-    if "::" in ref:
-        entity_part = ref.split("::", 1)[1]
-    else:
-        entity_part = ref
-    dot_idx = entity_part.rfind(".")
+def _get_entity_rank(ref: str, store) -> int:
+    """从 ref 的 _labels 获取实体依赖层级。"""
+    meta = store._get_stored_meta(ref) or {}
+    labels = meta.get("_labels", [])
+    rank = resolve_rank(labels)
+    if rank > 0:
+        return rank
+    # Fallback: try name suffix
+    dot_idx = ref.rfind(".")
     if dot_idx >= 0:
-        return entity_part[dot_idx:]
-    return ""
+        suffix = ref[dot_idx + 1:]
+        from tool_use.config import ENTITY_DEPENDENCY_RANK
+        return ENTITY_DEPENDENCY_RANK.get(suffix, -1)
+    return -1
 
 
-def _is_more_derived(ref_a: str, ref_b: str) -> bool:
+def _is_more_derived(ref_a: str, ref_b: str, store) -> bool:
     """判断 ref_a 是否比 ref_b 更是派生实体（rank 更高）。"""
-    rank_a = ENTITY_DEPENDENCY_RANK.get(_get_entity_suffix(ref_a), -1)
-    rank_b = ENTITY_DEPENDENCY_RANK.get(_get_entity_suffix(ref_b), -1)
-    return rank_a > rank_b
+    return _get_entity_rank(ref_a, store) > _get_entity_rank(ref_b, store)
 
 
 def delete_command(store, ref: str) -> str:
-    """删除知识图谱节点，级联删除依赖该节点的派生实体。
-
-    级联规则（应用层）：
-    1. 找到所有与该节点直接相连的邻居
-    2. 如果邻居是更派生的实体（rank 更高），加入级联队列
-    3. storage 层只负责删节点+边（无悬挂边不变量）
-
-    Args:
-        store: Store 实例
-        ref: 要删除的节点 ref
-
-    Returns:
-        删除结果描述
-    """
-    if not store.pontis_exists:
+    """删除知识图谱节点，级联删除依赖该节点的派生实体。"""
+    if hasattr(store, 'pontis_exists') and not store.pontis_exists:
         return f"错误: 未找到 .pontis 目录 ({store.project_path})"
 
     if not store.node_exists(ref):
@@ -51,17 +40,14 @@ def delete_command(store, ref: str) -> str:
         if not store.node_exists(current):
             continue
 
-        # 先获取邻居（删节点后边就没了）
         neighbors = store.find_connected(current, pattern="*")
 
-        # storage 层：删节点 + 清理边
         removed = store.delete_node(current)
         if removed:
             deleted.append(removed)
 
-        # 应用层级联：rank 更高的邻居是派生实体，应级联删除
         for neighbor_ref in neighbors:
-            if _is_more_derived(neighbor_ref, current):
+            if _is_more_derived(neighbor_ref, current, store):
                 if store.node_exists(neighbor_ref):
                     queue.append(neighbor_ref)
 

@@ -12,15 +12,14 @@ def build_project_context(project_path: str) -> str:
 
 
 def _get_project_overview(pontis_path: str) -> str:
-    """扫描 .pontis 目录，生成实体类型和边的统计概览。"""
+    """扫描 .pontis 目录，按 _labels 统计实体类型。"""
     if not os.path.exists(pontis_path):
         return "(无 .pontis 目录，请先运行 extractor)"
 
     lines = ["## 数据概览"]
 
     nodes_dir = os.path.join(pontis_path, "nodes")
-    entity_types = {}
-    file_count = 0
+    label_counts = {}
 
     if os.path.exists(nodes_dir):
         for entry in os.listdir(nodes_dir):
@@ -35,18 +34,20 @@ def _get_project_overview(pontis_path: str) -> str:
             except Exception:
                 continue
 
-            entity_name = raw.get("_entity_name", "")
-            if entity_name:
-                if "." in entity_name:
-                    suffix = entity_name.rsplit(".", 1)[-1]
-                    entity_types[suffix] = entity_types.get(suffix, 0) + 1
+            labels = raw.get("_labels", [])
+            # 用首个标签的首段作为分类 key
+            if labels:
+                key = labels[0].split("/")[0]
             else:
-                file_count += 1
+                ename = raw.get("_entity_name", "")
+                if "." in ename:
+                    key = ename.rsplit(".", 1)[-1]
+                else:
+                    key = "other"
+            label_counts[key] = label_counts.get(key, 0) + 1
 
-    if file_count:
-        lines.append(f"- 文件节点: {file_count}")
-    if entity_types:
-        parts = [f"{k}({v})" for k, v in sorted(entity_types.items())]
+    if label_counts:
+        parts = [f"{k}({v})" for k, v in sorted(label_counts.items())]
         lines.append(f"- 实体: {', '.join(parts)}")
 
     edges_path = os.path.join(pontis_path, "_edges.yml")

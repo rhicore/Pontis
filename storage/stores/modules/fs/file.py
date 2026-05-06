@@ -1,8 +1,7 @@
 """通用文件虚属性 — file_size, modified_at"""
 import os
 from datetime import datetime
-
-from typing import Optional
+from typing import Callable, Dict, Optional
 
 
 def file_size(project_path: str, file_rel_path: str, entity_path: str = "") -> Optional[int]:
@@ -22,8 +21,9 @@ def modified_at(project_path: str, file_rel_path: str, entity_path: str = "") ->
         return None
 
 
-# 可被其他模块复用的通用 prop 组
-COMMON_FILE_PROPS = {
+COMMON_FILE_PROPS: Dict[str, Callable] = {
     "file_size": file_size,
     "modified_at": modified_at,
 }
+
+FILE_PROPS: Dict[str, Callable] = dict(COMMON_FILE_PROPS)

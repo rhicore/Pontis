@@ -8,7 +8,7 @@ from agent.guardrail.sql_utils import get_db_prefix, has_read, extract_join_col_
 
 
 _ENTITY_PATTERN = re.compile(
-    r'(\w+)\.\w+__(?:to|rel)__(\w+)\.\w+\.(fk|rel|overlap)'
+    r'(\w+)\.(\w+)__(?:to|rel)__(\w+)\.(\w+)(?:\.(fk|rel|overlap))?'
 )
 
 
@@ -135,25 +135,27 @@ class BridgeTableCheck(Guardrail):
             self._edge_map = dict(edge_map)
             return self._edge_map
 
-        store._ensure_index()
-        for eid, ref in store._id_index.items():
-            if "::" not in ref:
+        for ename, labels in store.list_all():
+            # 检查 labels 是否包含 fk/rel/overlap
+            rel_type = None
+            if "fk" in labels:
+                rel_type = "fk"
+            elif "rel" in labels:
+                rel_type = "rel"
+            elif "overlap" in labels:
+                rel_type = "overlap"
+            if rel_type is None:
                 continue
-            entity = ref.split("::", 1)[1]
 
-            if ".fk" not in entity and ".rel" not in entity and ".overlap" not in entity:
-                continue
-
-            m = _ENTITY_PATTERN.match(entity)
+            m = _ENTITY_PATTERN.match(ename)
             if not m:
                 continue
 
             src_table = m.group(1)
-            dst_table = m.group(2)
-            rel_type = m.group(3)
+            dst_table = m.group(3)
 
             key = tuple(sorted([src_table.lower(), dst_table.lower()]))
-            edge_map[key].append((entity, rel_type))
+            edge_map[key].append((ename, rel_type))
 
         self._edge_map = dict(edge_map)
         return self._edge_map
@@ -163,22 +165,28 @@ def _parse_col_pair(entity: str) -> Optional[tuple]:
     """从关系实体名提取列对 (table1, col1, table2, col2)。
 
     支持格式:
-      - results.driverId__to__driverStandings.driverId.overlap
-      - schools.District__to__satscores.dname.rel
+      - results.driverId__to__driverStandings.driverId（新版无后缀）
+      - results.driverId__to__driverStandings.driverId.overlap（旧版带后缀）
+      - schools.District__to__satscores.dname（新版）
     """
-    if "__to__" in entity:
-        left, right = entity.split("__to__", 1)
-    elif "__rel__" in entity:
-        left, right = entity.split("__rel__", 1)
+    # 去除可能的类型后缀
+    base = entity
+    for suffix in (".fk", ".rel", ".overlap", ".disambig"):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
+
+    if "__to__" in base:
+        left, right = base.split("__to__", 1)
+    elif "__rel__" in base:
+        left, right = base.split("__rel__", 1)
     else:
         return None
 
-    # left: table1.col1
     parts_l = left.rsplit(".", 1)
     if len(parts_l) != 2:
         return None
-    # right: table2.col2.type → 去掉最后的 .type
-    parts_r = right.rsplit(".", 1)[0].rsplit(".", 1)
+    parts_r = right.rsplit(".", 1)
     if len(parts_r) != 2:
         return None
     return (parts_l[0], parts_l[1], parts_r[0], parts_r[1])

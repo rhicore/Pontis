@@ -1,7 +1,7 @@
 """Column Statistics Generator - 列统计生成器
 
 职责：
-- 匹配所有 *.db 下的 *.*.*.col 节点
+- 匹配所有 *.db 下的列节点
 - 读取父DB的source_path
 - 计算统计数据并追加到_meta.yml
 
@@ -19,49 +19,44 @@ DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
 
 
 def generate(store: Store) -> None:
-    """为所有.col节点生成统计信息"""
+    """为所有列节点生成统计信息"""
     logger.info("=== Generating column statistics ===")
 
     for ext in DB_EXTENSIONS:
-        for ref in store.find_nodes(f"{ext}::*.*.*.col"):
-            try:
-                _generate_for_column(ref, store)
-            except Exception as e:
-                logger.warning(f"Failed to generate stats for {ref}: {e}")
+        for db_ref in store.find_nodes(ext):
+            for table_ref in store.find_nodes(f"{db_ref}::*:table"):
+                for col_ref in store.find_nodes(f"{db_ref}::{table_ref}::*:col"):
+                    try:
+                        _generate_for_column(col_ref, db_ref, table_ref, store)
+                    except Exception as e:
+                        logger.warning(f"Failed to generate stats for {col_ref}: {e}")
 
 
-def _generate_for_column(ref: str, store: Store) -> bool:
+def _generate_for_column(col_ref: str, db_ref: str, table_ref: str,
+                         store: Store) -> bool:
     """为单个列生成统计"""
-    path, entity_name = ref.split("::", 1)
-    meta = store.get_meta(ref)
+    meta = store.get_meta(col_ref)
     if not meta:
         return False
 
-    # 跳过已处理的
     if "cardinality" in meta:
         return False
 
-    # 解析实体名: [表名].[列名].[类型].col
-    col_parts = entity_name.replace(".col", "").split(".")
-    if len(col_parts) < 3:
+    col_name = col_ref
+    table_name = table_ref
+    data_type = meta.get("col_type", "")
+    db_meta = store.get_meta(db_ref)
+    db_rel = db_meta.get("path", db_ref) if db_meta else db_ref
+    db_path = os.path.join(store.project_path, db_rel)
+    if not db_path or not os.path.isfile(db_path):
         return False
 
-    table_name = col_parts[0]
-    col_name = col_parts[1]
-    data_type = col_parts[2]
-
-    # 获取DB源路径
-    db_path = os.path.join(store.project_path, store.get_meta(path).get("path", ""))
-    if not db_path:
-        return False
-
-    # 计算统计
     stats = _calculate_stats(db_path, table_name, col_name, data_type)
     if not stats:
         return False
 
-    store.set_meta(ref, stats)
-    logger.info(f"  Stats generated: {ref} (cardinality={stats.get('cardinality')})")
+    store.set_meta(col_ref, stats)
+    logger.info(f"  Stats generated: {col_ref} (cardinality={stats.get('cardinality')})")
     return True
 
 

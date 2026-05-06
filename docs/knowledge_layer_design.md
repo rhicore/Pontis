@@ -165,19 +165,382 @@ LLM 的认知负担取决于两个因素：**需要学多少自定义规则** �
 
 ---
 
-## 主流 Agent 框架参考
+## 主流 Agent 框架的 Knowledge 寻址设计
 
-| 框架 | 知识/配置寻址方式 | 与哪个方案对应 |
-|---|---|---|
-| **Claude Code** | `CLAUDE.md` 文件放在项目根目录，agent 自动发现 | 方案 3 |
-| **Cursor** | `.cursorrules` 文件 + `.cursor/` 目录 | 方案 3 |
-| **OpenAI File Search** | 文件上传后用路径引用，无虚拟命名空间 | 方案 3 |
-| **Windsurf** | `.windsurfrules` 文件 | 方案 3 |
-| **Devin** | 项目目录下的文件，agent 用标准路径访问 | 方案 3 |
-| **SWE-Agent** | 文件系统路径，无自定义寻址 | 方案 1 |
+以下逐一分析 8 个主流框架如何解决"agent 怎么发现和访问知识"这个问题。
 
-**主流框架几乎全部用"项目目录下的特殊文件"承载知识和配置**，而非虚拟命名空间。
-它们的共同特点：知识就是文件，agent 用相同的方式发现和访问。
+### 1. Claude Code — 项目目录下的 Markdown 文件
+
+Claude Code 的知识系统完全基于项目目录下的文件：
+
+```
+~/.claude/CLAUDE.md              ← 全局知识（所有项目共享）
+~/projects/my-app/CLAUDE.md      ← 项目知识（自动加载）
+~/projects/my-app/src/CLAUDE.md  ← 目录级知识（进入该目录时加载）
+```
+
+**核心设计**：
+- **知识就是文件**。CLAUDE.md 是标准 Markdown，人可读可编辑
+- **层级发现**：agent 启动时自动沿目录树向上查找 CLAUDE.md 并加载，不需要任何特殊指令
+- **无虚拟命名空间**：不存在 `_memory_::xxx` 之类的非文件引用，所有知识都通过真实文件路径定位
+- **Memory 系统**：持久化记忆也存为文件（`~/.claude/projects/{project}/memory/*.md`），agent 通过读文件访问
+
+与 Pontis 方案对应：**方案 3**。知识的载体是真实文件，agent 用和访问代码文件完全相同的方式访问知识文件。
+
+### 2. Cursor — .cursorrules + Skills 文件
+
+Cursor 的知识系统也是项目目录下的特殊文件：
+
+```
+project/
+├── .cursorrules          ← 项目级规则（自动加载）
+├── .cursor/
+│   └── rules/            ← 规则目录
+│       ├── general.mdc
+│       └── react.mdc
+├── skills.md             ← 技能定义文件（2026 新增）
+```
+
+**核心设计**：
+- `.cursorrules` 是纯文本规则文件，agent 启动时自动读取
+- `skills.md` 定义可复用的 agent 技能模板
+- **无自定义寻址协议**：agent 用标准文件路径访问所有知识，不发明新的引用语法
+- MCP（Model Context Protocol）用于连接外部工具，但知识本身仍在文件中
+
+与 Pontis 方案对应：**方案 3**。
+
+### 3. OpenAI Agents SDK — FileSearch + Vector Store
+
+OpenAI 的知识系统基于上传文件 + 向量检索：
+
+```
+# 知识流程
+1. 上传文件 → OpenAI Vector Store
+2. Agent 通过 FileSearch 工具检索
+3. 返回匹配的文件片段
+
+# 代码示例
+agent = Agent(
+    tools=[FileSearchTool(vector_store_ids=["vs_xxx"])]
+)
+```
+
+**核心设计**：
+- **文件是知识的唯一来源**。用户上传 PDF/CSV/TXT 等文件，SDK 自动分块嵌入向量数据库
+- **无虚拟节点**：不存在"不属于任何文件的知识片段"。每条检索结果都能追溯到源文件
+- **路径即引用**：检索结果中包含源文件名和位置，agent 通过标准文件路径理解知识来源
+- 向量数据库是**检索机制**而非**寻址机制**——寻址仍然基于文件
+
+与 Pontis 方案对应：**方案 3**（文件为锚点）+ RAG 检索层。
+
+### 4. CrewAI — Knowledge Source 文件 + ChromaDB
+
+CrewAI 的知识系统支持多种文件格式，统一存入向量数据库：
+
+```python
+# 支持的知识源类型（全部基于文件或字符串）
+StringKnowledgeSource(content="...")          # 字符串
+TextFileKnowledgeSource(file_paths=["a.txt"])  # 文本文件
+PDFKnowledgeSource(file_paths=["a.pdf"])       # PDF
+CSVKnowledgeSource(file_paths=["data.csv"])    # CSV
+JSONKnowledgeSource(file_paths=["data.json"])  # JSON
+```
+
+**核心设计**：
+- **知识源 = 文件 + 元数据**。每条知识记录包含 source_file 和 chunk_id
+- **两级知识**：Agent 级别（agent 专属知识）和 Crew 级别（所有 agent 共享），但都是文件输入
+- **存储位置**：知识存入 ChromaDB（`~/.local/share/CrewAI/{project}/knowledge/`），但**每条记录都可追溯到源文件**
+- **无虚拟命名空间**：不存在"无文件锚点的知识实体"。即使 StringKnowledgeSource 也会被赋予内部文件标识
+
+关键点：CrewAI 的向量数据库是**检索加速层**，不是寻址层。知识实体的身份来源是文件，不是向量 ID。
+
+与 Pontis 方案对应：**方案 3**。
+
+### 5. Devin — Knowledge Base + Playbooks
+
+Devin 的知识系统是最接近"企业级知识管理"的：
+
+```
+# Devin 自动扫描以下内容构建知识
+- README 文件
+- 项目文件结构
+- 约定文件（convention files）
+
+# 高级功能
+- Knowledge Base：组织级知识库，按 repo/folder 组织
+- Playbooks：从成功会话中提取的可复用流程
+- Knowledge Suggestions：agent 在会话中自动生成知识建议
+```
+
+**核心设计**：
+- **知识按文件夹组织**：知识条目存在文件夹结构中，按 repo 分类，支持搜索和浏览
+- **Playbooks 是特殊的文件**：从会话历史中提取，存为结构化文件，agent 可以引用和执行
+- **MCP 访问**：所有知识管理功能通过 MCP server 暴露，但底层存储仍然是文件系统
+- **自动知识发现**：agent 扫描 README、目录结构、convention 文件来理解项目，不依赖虚拟命名空间
+
+与 Pontis 方案对应：**方案 3**（知识按文件夹组织，文件为载体）。
+
+### 6. SWE-Agent / mini-swe-agent — 纯文件系统 ACI
+
+SWE-Agent 的设计哲学是 **Agent-Computer Interface (ACI)**：
+
+```
+# SWE-Agent 的工具集（全部是标准文件操作）
+- open <path>        # 打开文件
+- edit <path>        # 编辑文件
+- search_dir <pattern> # 搜索目录
+- bash <command>     # 执行 shell 命令
+```
+
+**核心设计**：
+- **零自定义寻址**：所有操作都用标准文件路径，没有 `::` 或任何自定义分隔符
+- **知识 = 代码文件本身**：不存在单独的"知识文件"，代码库的所有文件就是 agent 的全部知识
+- **ACI 原则**：给 agent 设计好用的文件操作工具，而不是设计复杂的知识图谱
+
+SWE-Agent 的设计是方案 1（统一路径）的极端形态。但它的前提是知识本来就存在文件中（代码文件），不需要额外的知识层。
+
+与 Pontis 方案对应：**方案 1**（统一路径，无二分）。
+
+### 7. AutoGPT — Workspace + Vector Memory
+
+AutoGPT 采用混合架构：
+
+```
+workspace/                    ← 工作区目录（文件操作）
+├── auto_gpt_workspace.py
+├── output/
+│   └── research_result.txt
+
+Memory:                      ← 向量记忆（FAISS / Pinecone / Weaviate）
+├── short-term memory        ← 当前对话
+├── long-term memory         ← 向量数据库
+└── entity memory            ← 结构化实体记忆
+```
+
+**核心设计**：
+- **双存储**：文件系统存工作产出，向量数据库存语义记忆
+- **文件优先**：agent 的主要交互对象是 workspace 中的文件
+- **向量记忆是辅助**：用于检索历史对话和长期知识，但不作为寻址机制
+- 文件存储支持本地、Google Cloud Storage、S3
+
+与 Pontis 方案对应：**方案 3**（文件 workspace）+ 向量检索辅助。
+
+### 8. LangChain / LangGraph — RAG Pipeline
+
+LangChain 的知识系统是经典的 RAG 架构：
+
+```
+Documents → Chunking → Embedding → Vector Store → Retriever → Agent
+```
+
+**核心设计**：
+- **Document 是基本单元**：每个 Document 有 `page_content` + `metadata`（包含 source 文件路径）
+- **文件 → 文档 → 向量**：知识来源于文件，经过处理后存入向量数据库
+- **Retriever 是工具**：agent 通过 retriever 工具访问知识，不直接操作向量数据库
+- **无虚拟命名空间**：所有文档都追溯到源文件
+
+2025-2026 趋势：LangGraph 正在取代纯 LangChain 用于构建 agentic RAG，但文档 → 向量 → 检索的核心模式不变。
+
+与 Pontis 方案对应：**方案 3**（文件为知识源）+ RAG 检索。
+
+---
+
+### 跨框架共性与规律
+
+| 维度 | 所有框架的共识 |
+|---|---|
+| **知识载体** | **全部使用文件**。无一例外 |
+| **寻址方式** | 标准文件路径，无自定义命名空间 |
+| **发现机制** | 目录扫描（glob/list）或向量检索，但身份由文件定义 |
+| **虚拟命名空间** | **没有框架使用**。CrewAI 的 StringKnowledgeSource 也有内部文件标识 |
+| **人可编辑性** | 全部支持人直接编辑知识文件（Markdown / YAML / TXT） |
+| **检索 vs 寻址** | 向量数据库是检索加速层，不是寻址机制。知识的身份来自文件，不来自向量 ID |
+
+**关键结论**：即使框架内部使用向量数据库（CrewAI、OpenAI、LangChain），知识的**身份**仍然绑定到源文件。向量数据库解决的是"怎么快速找到相关知识"，不是"知识住在哪"。这是一个清晰的**两层分离**：
+
+1. **寻址层**：文件路径 — 知识的身份和命名空间
+2. **检索层**：向量 / BM25 / glob — 知识的发现和访问
+
+Pontis 当前的设计（Store 存储实体 + glob/search/meta 访问）已经是这个模式的实现。知识文件方案只是复用这个现有模式。
+
+---
+
+## 知识交付机制：模型实际看到什么
+
+上面分析了知识的存储和寻址。但更关键的问题是：**知识如何到达模型的 context window？模型需要主动读取，还是框架强制注入？**
+
+这直接决定了 Pontis 知识层的设计：知识是放进 Store 让 agent 通过工具发现，还是直接注入 prompt 让 agent 被动接收？
+
+### 交付模式分类
+
+| 模式 | 机制 | 模型需要行动吗？ | 使用者 |
+|---|---|---|---|
+| **系统注入** | 知识写入 system prompt，每次请求都带 | 不需要 | ChatGPT |
+| **用户消息注入** | 知识 prepend 到 user prompt | 不需要 | Claude Code |
+| **条件注入** | 匹配 trigger 时注入 context | 不需要 | Devin、Cursor |
+| **框架自动检索** | kickoff 时自动 query + 注入 | 不需要 | CrewAI |
+| **模型主动调用工具** | 模型决定何时调用 file_search tool | 需要 | OpenAI Assistants |
+
+### Claude Code — 用户消息注入（模型完全被动）
+
+**模型看到的**：每条 user message 前面都 prepend 了 CLAUDE.md 的内容。模型不觉得自己在"读文件"，它看到的就是用户消息的一部分。
+
+```
+# 模型实际收到的 user message 结构
+[CLAUDE.md 全局内容]
+[CLAUDE.md 项目内容]
+[MEMORY.md 索引]
+---
+[用户实际输入]
+```
+
+**关键细节**：
+- CLAUDE.md 不是注入到 system prompt，而是 **prepend 到 user prompt**
+- System prompt 只有 ~2,900 tokens，定义 "你是什么"
+- CLAUDE.md 内容可以是几千到上万 tokens，全部自动注入
+- `MEMORY.md`（记忆索引）也是自动加载到 context 的，模型不需要主动 Read
+- 模型**有** Read 工具可以读这些文件，但**不必须用**——内容已经在 context 里了
+- 对话过程中如果记忆被更新，下次消息自动带上新内容
+
+**模型视角**：我收到了一段很长的用户消息，开头是项目规则和记忆。我按照这些规则行动。
+
+### ChatGPT — 系统注入（最激进的强制注入）
+
+**模型看到的**：System prompt 中有一个 `Model Set Context` 区段，包含所有记忆条目。模型把这些当作系统级指令对待。
+
+```
+# ChatGPT system prompt 中的记忆区段
+MODEL SET CONTEXT
+1. [2025-05-02]. The user likes ice cream and cookies.
+2. [2025-05-04]. The user lives in Seattle.
+...
+
+ASSISTANT RESPONSE PREFERENCES       ← 15 条自动提取的偏好
+NOTABLE PAST CONVERSATION TOPICS      ← 8 条对话主题摘要
+HELPFUL USER INSIGHTS                 ← 14 条用户画像
+RECENT CONVERSATION CONTENT           ← ~40 条最近对话（含用户原始消息）
+USER INTERACTION METADATA             ← 17 条使用统计
+```
+
+**关键细节**：
+- 模型**没有读取记忆的工具**。`bio` tool 只能写入，不能读取
+- 所有记忆（显式写入的 + 自动提取的）全部 force-inject 进 system prompt
+- 不只是用户主动保存的记忆，还包括系统自动从历史对话中提取的偏好、主题摘要、用户画像
+- 每条记忆都带 `Confidence` 标签（high/medium/low），影响模型对记忆的信任度
+- 模型**无法忽略**这些信息——它们在 system prompt 中，与核心指令同级
+
+**模型视角**：这些是系统给我的指令级信息，我必须遵循。
+
+### Cursor — 条件注入（注入 + 按需激活）
+
+**模型看到的**：规则被注入到 system prompt 开头，但不是所有规则都时刻生效。
+
+```
+# Cursor 的规则注入两阶段
+Stage 1: 注入 — .cursorrules 内容写入 system prompt
+Stage 2: 激活 — 根据条件决定规则是否生效
+  - alwaysApply: true → 永远生效
+  - requestable → 模型根据上下文自行决定是否应用
+  - agent → 由 agent 智能判断
+```
+
+**关键细节**：
+- 规则内容始终在 context 中（已注入），但**是否被遵循**取决于激活条件
+- `alwaysApply: true` 的规则等同于 ChatGPT 的系统注入——模型必须遵循
+- `requestable` 规则虽然在 context 中，但模型可以忽略
+- Cursor 会**持续重新注入** system prompt 到长对话中，防止上下文漂移
+
+**模型视角**：system prompt 里有规则列表。有些是强制的，有些是参考性的。
+
+### Devin — Trigger 匹配的条件注入
+
+**模型看到的**：当 Devin 的当前任务与某个 Knowledge 条目的 trigger 描述匹配时，该条目的内容被注入 context。
+
+```
+# Devin Knowledge 条目结构
+trigger: "when working with Python projects, code review conventions"
+content: "Always use type hints. Prefer dataclasses over dicts..."
+
+# 当 Devin 执行 code review 任务时 → 匹配 trigger → 注入 content
+# 当 Devin 执行 bug fix 任务时 → 不匹配 → 不注入
+```
+
+**关键细节**：
+- 每个 Knowledge 条目**必须有 trigger 描述**，没有 trigger 的知识不会被检索
+- 不是 RAG 向量检索——是 trigger 关键词匹配
+- Playbooks（可复用流程）也通过类似机制按需注入
+- 模型**不主动检索知识**——框架在每轮推理前自动匹配并注入
+
+**模型视角**：我在执行任务时，context 中突然出现了一段相关知识。我不知道它从哪来，但它和我的任务相关。
+
+### CrewAI — 框架自动检索 + 注入
+
+**模型看到的**：`crew.kickoff()` 时，框架自动将 task prompt 改写为检索 query，从 ChromaDB 检索相关 chunks，注入到 agent 的 context 中。
+
+```
+# CrewAI 知识交付流程（全自动）
+1. 用户输入 task prompt
+2. 框架自动调用 LLM 改写 prompt 为检索 query
+   "关于用户的问题" → "用户偏好 设置"
+3. 框架用 query 检索 ChromaDB
+4. 检索到的 chunks 注入到 agent 的 task context
+5. agent 看到的 = task prompt + 注入的知识 chunks
+```
+
+**关键细节**：
+- Agent **没有知识检索工具**。知识检索由框架在 `kickoff()` 时自动完成
+- 每个 agent 有独立的知识 collection，但检索和注入都是隐式的
+- 支持 agent 级和 crew 级两层知识，但交付机制相同
+- 知识只在 kickoff 时注入一次，不是每轮对话都检索
+
+**模型视角**：我收到了一个任务描述，里面已经包含了相关知识片段。
+
+### OpenAI Assistants API — 模型主动调用工具
+
+**模型看到的**：模型有一个 `file_search` tool，模型自己决定何时调用。调用后返回的文档 chunks 作为 tool output 出现在对话中。
+
+```
+# OpenAI FileSearch 交付流程
+1. 用户提问
+2. 模型判断：需要查知识 → 调用 file_search(query)
+3. 系统返回匹配的文档 chunks（作为 tool output）
+4. 模型基于 chunks 生成回答
+```
+
+**关键细节**：
+- 这是**唯一需要模型主动行动的**框架
+- 模型需要判断"这个任务需要查资料吗？"——增加了推理负担
+- 但好处是模型可以精确控制检索时机和查询内容
+- 2025-2026 版本中，OpenAI 也在探索自动检索（模型不调用 tool 时系统也注入）
+
+**模型视角**：我有一个工具可以搜索文档。当我需要额外信息时，我调用它。
+
+---
+
+### 交付模式对比与对 Pontis 的启示
+
+| 维度 | 系统注入 (ChatGPT) | 用户消息注入 (Claude Code) | 条件注入 (Devin/Cursor) | 框架自动 (CrewAI) | 模型主动 (OpenAI) |
+|---|---|---|---|---|---|
+| **模型需要学什么** | 什么都不用学 | 什么都不用学 | 什么都不用学 | 什么都不用学 | 需要学何时调用工具 |
+| **Token 开销** | 高（每次都带） | 高（每次都带） | 中（按需） | 中（一次） | 低（按需） |
+| **模型遵从度** | 最高（system 级） | 高（user 级） | 高（注入时） | 中（context 中） | 取决于模型判断 |
+| **知识量上限** | 受 context 限制 | 受 context 限制 | 无限（按需注入） | 受检索质量限制 | 无限（按需调用） |
+| **灵活性** | 低 | 低 | 中 | 中 | 最高 |
+
+**核心发现**：5 个框架中 4 个选择**强制注入**，只有 OpenAI FileSearch 让模型主动调用。而且 OpenAI 也在往自动注入方向演进。
+
+**对 Pontis 知识层的设计含义**：
+
+Pontis 当前的设计是让 agent 通过 `glob → meta → read` 工具链**主动发现和读取**知识——这对应的是 OpenAI FileSearch 模式（模型主动）。但主流框架的实践表明：
+
+1. **强制性知识（规则、约定）应该注入 prompt，而不是放在 Store 里等 agent 发现**。Pontis 的 `_benchmark.py` 提示词（"不要拼接列"、"不要 ROUND"）实际上已经是注入模式了——这些规则直接写在 prompt 里，agent 不需要去 Store 里读
+2. **参考性知识（few-shot、pattern 统计）可以放在 Store 里让 agent 按需读取**。这类知识量大、按场景需要不同子集，适合工具访问模式
+3. **两层混合是最常见的做法**：Claude Code 把核心规则注入 CLAUDE.md，但把详细文件留给 Read 工具；Cursor 把规则注入 system prompt，但代码文件需要模型主动读取
+
+**具体建议**：
+- `conventions.yaml`（跨库规则）→ **注入 prompt**，与当前 `_benchmark.py` 的做法一致
+- `few_shots.yaml`（SQL 示例）→ 放 Store 中，agent 通过工具按需读取
+- `patterns.yaml`（SQL 模式统计）→ 放 Store 中，agent 通过工具按需读取
 
 ---
 

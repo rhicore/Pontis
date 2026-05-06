@@ -47,19 +47,36 @@ def generate(store: Store, config=None) -> None:
 
 def _generate_for_database(path: str, store: Store) -> bool:
     """为单个数据库检测列值重叠"""
-    db_path = os.path.join(store.project_path, store.get_meta(path).get("path", ""))
-    if not db_path:
+    db_meta = store.get_meta(path)
+    db_rel = db_meta.get("path", path) if db_meta else path
+    db_path = os.path.join(store.project_path, db_rel)
+    if not os.path.isfile(db_path):
         return False
 
-    # 获取所有列节点
-    col_refs = list(store.find_nodes(f"{path}::*.*.*.col"))
-    if len(col_refs) < 2:
-        logger.info(f"  Skipping {path}: only {len(col_refs)} columns")
-        return False
-
-    # 构建列信息
-    columns_info = _build_columns_info(col_refs, store)
+    # 收集所有列信息（通过 table → col 遍历）
+    columns_info = []
+    for table_ref in store.find_nodes(f"{path}::*:table"):
+        for col_ref in store.find_nodes(f"{path}::{table_ref}::*:col"):
+            col_meta = store.get_meta(col_ref)
+            if not col_meta:
+                continue
+            cardinality = col_meta.get("cardinality", 0)
+            raw_tokens = _tokenize(col_ref, strict=False)
+            strict_tokens = _tokenize(col_ref, strict=True)
+            columns_info.append({
+                'entity_name': col_ref,
+                'table': table_ref,
+                'column': col_ref,
+                'data_type': col_meta.get("col_type", ""),
+                'cardinality': cardinality,
+                'raw_tokens': raw_tokens,
+                'strict_tokens': strict_tokens,
+            })
     if not columns_info:
+        return False
+
+    if len(columns_info) < 2:
+        logger.info(f"  Skipping {path}: only {len(columns_info)} columns")
         return False
 
     # Step 1: Context计算与表级过滤
@@ -89,44 +106,6 @@ def _generate_for_database(path: str, store: Store) -> bool:
     if created_count > 0:
         logger.info(f"  Overlaps: {path} ({created_count} relations)")
     return True
-
-
-def _build_columns_info(col_refs: list, store: Store) -> List[Dict]:
-    """构建列信息列表"""
-    columns_info = []
-
-    for ref in col_refs:
-        path, entity_name = ref.split("::", 1)
-        # 解析实体名: [表名].[列名].[类型].col
-        col_base = entity_name.replace(".col", "")
-        parts = col_base.split(".")
-        if len(parts) < 3:
-            continue
-
-        table_name = parts[0]
-        column_name = parts[1]
-        data_type = parts[2]
-
-        # 获取统计信息
-        meta = store.get_meta(ref)
-        cardinality = meta.get("cardinality", 0) if meta else 0
-
-        # 计算列名tokens
-        raw_tokens = _tokenize(column_name, strict=False)
-        strict_tokens = _tokenize(column_name, strict=True)
-
-        columns_info.append({
-            'path': path,
-            'entity_name': entity_name,
-            'table': table_name,
-            'column': column_name,
-            'data_type': data_type,
-            'cardinality': cardinality,
-            'raw_tokens': raw_tokens,
-            'strict_tokens': strict_tokens,
-        })
-
-    return columns_info
 
 
 def _tokenize(text: str, strict: bool = False) -> Set[str]:
@@ -263,43 +242,26 @@ def _create_overlap_entity(path: str, overlap: Dict, store: Store) -> bool:
         safe_from_col = from_column.replace("/", "_").replace("\\", "_")
         safe_to_col = to_column.replace("/", "_").replace("\\", "_")
 
-        overlap_entity_name = f"{from_table}.{safe_from_col}__to__{to_table}.{safe_to_col}.overlap"
-        reverse_entity_name = f"{to_table}.{safe_to_col}__to__{from_table}.{safe_from_col}.overlap"
+        overlap_entity_name = f"{from_table}.{safe_from_col}__to__{to_table}.{safe_to_col}"
+        reverse_entity_name = f"{to_table}.{safe_to_col}__to__{from_table}.{safe_from_col}"
 
-        if store.node_exists(f"{path}::{overlap_entity_name}") or store.node_exists(f"{path}::{reverse_entity_name}"):
+        if store.node_exists(overlap_entity_name) or store.node_exists(reverse_entity_name):
             return False
 
         overlap_meta = {
-            "relation_type": "column_overlap",
-            "from_table": from_table,
-            "from_column": from_column,
-            "from_type": overlap['from_type'],
-            "to_table": to_table,
-            "to_column": to_column,
-            "to_type": overlap['to_type'],
-            "match_type": overlap['match_type'],
-            "reason": overlap['reason'],
             "stats": overlap['stats'],
+            "brief": f"{from_table}.{from_column} 与 {to_table}.{to_column} 重叠"
+                     f"（Jaccard={overlap['stats'].get('jaccard', 0):.4f}）",
+            "detail": f"来源：{overlap['match_type']}。{overlap['reason']}。",
             "created_at": __import__('datetime').datetime.now().isoformat(),
         }
 
-        store.create_node(f"{path}::{overlap_entity_name}", meta=overlap_meta)
+        store.create_node(overlap_entity_name, meta=overlap_meta, labels=["overlap"])
 
-        # 添加边: from_col → overlap, to_col → overlap
-        from_col_type = overlap.get('from_type', 'TEXT')
-        to_col_type = overlap.get('to_type', 'TEXT')
-        safe_from_col2 = from_column.replace("/", "_").replace("\\", "_")
-        safe_to_col2 = to_column.replace("/", "_").replace("\\", "_")
-
+        # 添加边: from_table → overlap, to_table → overlap
         store.add_edges([
-            {
-                "a": f"{path}::{from_table}.{safe_from_col2}.{from_col_type}.col",
-                "b": f"{path}::{overlap_entity_name}",
-            },
-            {
-                "a": f"{path}::{to_table}.{safe_to_col2}.{to_col_type}.col",
-                "b": f"{path}::{overlap_entity_name}",
-            },
+            {"a": from_table, "b": overlap_entity_name},
+            {"a": to_table, "b": overlap_entity_name},
         ])
 
         return True

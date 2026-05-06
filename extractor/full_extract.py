@@ -3,9 +3,6 @@
 编辑下方的 PIPELINE 列表来控制执行哪些模块、按什么顺序。
 每个元素是一个模块名，对应 extractor/modules/ 下的一个 generate() 函数。
 
-要切换 sketch 模式：将 db_column_stats + db_column_sample + db_column_topk
-替换为 db_column_sketch_stats 即可。
-
 要跳过某个阶段：直接注释掉对应行。
 
 Usage:
@@ -26,15 +23,12 @@ logger = logging.getLogger(__name__)
 # ╚══════════════════════════════════════════════════════════════════╝
 
 PIPELINE: List[str] = [
-    # ── Phase 1: 实体展开（同时创建文件节点） ──
+    # ── Phase 1: 实体展开（文件节点惰性实体化） ──
     "db_basic",
     "csv_basic",
     "serialized_basic",
-    "text_basic",
 
-    # ── Phase 2: DB 信息 ──
-    "db_info",
-    "db_table_info",
+    # ── Phase 2: DB 列信息 ──
     "db_column_stats",
     "db_column_sample",
     "db_column_topk",
@@ -52,16 +46,11 @@ PIPELINE: List[str] = [
     # ── Phase 5: 文本文件 ──
     "text_info",
 
-    # ── Phase 6: LSH 索引 ──
-    "db_column_lsh_index",
-    "csv_column_lsh_index",
-    "json_value_lsh_index",
-
-    # ── Phase 7: 关系检测 ──
+    # ── Phase 6: 关系检测 ──
     "db_table_relations",
     "db_column_overlap",
 
-    # ── Phase 8: AI 总结（仅列级，库/表级由 agent_summary 完成） ──
+    # ── Phase 7: AI 总结（仅列级，库/表级由 agent_summary 完成） ──
     "ai_db_column_summary",
     "ai_json_summary",
     "ai_text_summary",

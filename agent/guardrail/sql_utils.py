@@ -122,28 +122,27 @@ def has_read(tool_history: list, entity: str) -> bool:
 
 
 def resolve_entity_ref(store, table: str, column: str = None) -> str:
-    """从 store 查找实体的完整引用路径（含类型后缀），大小写不敏感。
+    """从 store 查找实体引用路径，大小写不敏感。
 
-    table="qualifying", column=None → "formula_1.sqlite::qualifying.table"
-    table="qualifying", column="raceId" → "formula_1.sqlite::qualifying.raceId.INT.col"
+    table="qualifying", column=None → "qualifying"（如果 label 含 table）
+    table="qualifying", column="raceId" → 匹配 label 含 col 的实体
     找不到时返回 None。
     """
     if store is None:
         return None
-    store._ensure_index()
     if column is None:
-        # 查表实体：ref 以 ::table.table 结尾，大小写不敏感
-        suffix_lower = f"::{table.lower()}.table"
-        for ref in store._id_index.values():
-            if ref.lower().endswith(suffix_lower):
-                return ref
+        for ename, labels in store.list_all():
+            if ename.lower() == table.lower() and any(
+                l == "table" or l == "view" for l in labels
+            ):
+                return ename
     else:
-        # 查列实体：entity 部分为 table.column.TYPE.col，大小写不敏感
-        prefix_lower = f"{table.lower()}.{column.lower()}."
-        for ref in store._id_index.values():
-            entity = ref.split("::", 1)[1] if "::" in ref else ref
-            if entity.lower().startswith(prefix_lower) and entity.lower().endswith(".col"):
-                return ref
+        for ename, labels in store.list_all():
+            if not any(l.startswith("col") for l in labels):
+                continue
+            # 实体名就是列名（新格式），需要检查邻接确认属于哪个表
+            if ename.lower() == column.lower():
+                return ename
     return None
 
 

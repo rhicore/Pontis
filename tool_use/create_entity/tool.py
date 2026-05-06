@@ -1,16 +1,16 @@
-"""
-Create entity tool - Create new entity nodes in the knowledge graph.
+"""Create entity tool — 统一创建入口。
 
-Supports:
-  - .rel / .disambig under .db files (data entities → project store)
-  - .convention / .pattern / .term / .lesson / .example (knowledge entities → global store)
+支持：
+  - .rel / .disambig（数据实体）
+  - .convention / .pattern / .term / .lesson / .example（知识实体 → global store）
 """
 
 import re
 
 _ALLOWED_ENTITY_RE = re.compile(
-    r".*\.(db|sqlite|sqlite3|duckdb)::.*\.(rel|disambig)$"
-    r"|.*\.(convention|pattern|term|lesson|example)$"
+    r"__to__.*$"                                    # FK/rel/overlap: bare __to__ names
+    r"|.*\.(db|sqlite|sqlite3|duckdb).*__to__.*\.(rel|disambig)$"  # legacy with suffix
+    r"|.*\.(convention|pattern|term|lesson|example)$"              # knowledge entities
 )
 
 _KNOWLEDGE_SUFFIXES = {".convention", ".pattern", ".term", ".lesson", ".example"}
@@ -21,30 +21,29 @@ def _is_knowledge_entity(ref: str) -> bool:
 
 
 def create_entity_command(
-    store,
+    obj,  # Workspace or Store
     ref: str,
     meta: dict = None,
     edges: list = None,
 ) -> str:
-    """
-    Create a new entity node.
+    """创建实体节点。
 
-    Args:
-        store: Store instance
-        ref: Entity ref string
-        meta: Initial metadata dict
-        edges: Optional list of edge dicts
-
-    Returns:
-        Success/error message
+    知识实体自动路由到 global store（通过 workspace）。
+    数据实体写入当前 project store。
     """
-    if not store.pontis_exists:
+    # 获取 store
+    if hasattr(obj, 'get_store'):
+        store = obj.get_store()
+    else:
+        store = obj
+
+    if hasattr(store, 'pontis_exists') and not store.pontis_exists:
         return f"Error: .pontis directory not found in {store.project_path}"
 
     if not _ALLOWED_ENTITY_RE.match(ref):
         return (
             "错误: 只允许创建以下类型的实体：\n"
-            "  - .rel / .disambig（数据关系实体，需在 .db 下）\n"
+            "  - __to__ 关系实体（FK/rel/overlap/disambig）\n"
             "  - .convention / .pattern / .term / .lesson / .example（知识实体）"
         )
 
@@ -53,12 +52,19 @@ def create_entity_command(
 
     meta = meta or {}
 
-    # 知识实体 → 全局 store，命名空间 ["knowledge", "global"]
-    namespaces = None
+    # 确定 labels
+    labels = None
+    project = None
     if _is_knowledge_entity(ref):
-        namespaces = ["knowledge", "global"]
+        suffix = ref.rsplit(".", 1)[-1]
+        labels = [f"knowledge/{suffix}"]
+        project = "global"
 
-    store.create_node(ref, meta=meta, edges=edges, namespaces=namespaces)
+    # 使用 workspace 路由，或 fallback 到 store
+    if hasattr(obj, 'create_entity'):
+        obj.create_entity(ref, meta=meta, edges=edges, labels=labels, project=project)
+    else:
+        store.create_node(ref, meta=meta, edges=edges, labels=labels)
 
     return f"Created entity: {ref}"
 

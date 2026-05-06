@@ -5,7 +5,7 @@
 使用 sketch 模式替代完整统计，适合大表。
 
 三阶段：
-  1. 静态提取（db_basic, csv_basic, sketch_stats, relations, overlap...）
+  1. 静态提取（db_basic, csv_basic, stats, relations, overlap...）
   2. AI 列总结（并行 prompt caching）
   3. Agent 分析（关系发现 + 总结生成）
 
@@ -31,13 +31,13 @@ logger = logging.getLogger(__name__)
 STATIC_PIPELINE = [
     "db_basic",
     "csv_basic",                    # BIRD: database_description/*.csv
-    "db_info",
-    "db_table_info",
-    "db_column_sketch_stats",
+    "db_column_stats",
+    "db_column_sample",
+    "db_column_topk",
     "csv_info",
     "db_table_relations",
     "db_fk_validate",
-    "db_column_sketch_overlap",
+    "db_column_overlap",
 ]
 
 AI_COLUMN_MODULE = "ai_db_column_summary"

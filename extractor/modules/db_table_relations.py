@@ -1,9 +1,9 @@
 """DB Table Relations Generator - 数据库表关系生成器
 
 职责：
-- 匹配 *.db/_entity/*.table 节点
+- 匹配 *.db 下的表节点
 - 分析该表的外键和命名约定关系
-- 在 _entity/ 下创建 [表名].[列名]__to__[目标表名].[目标列名].fk 实体
+- 创建 fk 实体（无类型后缀，labels=["fk"]）
 
 独立执行：
     python -m extractor.db_table_relations ./my_data
@@ -23,49 +23,44 @@ def generate(store: Store) -> None:
     logger.info("=== Generating table relations ===")
 
     for ext in DB_EXTENSIONS:
-        for ref in store.find_nodes(f"{ext}::*.table"):
-            try:
-                _generate_for_table(ref, store)
-            except Exception as e:
-                logger.warning(f"Failed to generate relations for {ref}: {e}")
+        for db_ref in store.find_nodes(ext):
+            for table_ref in store.find_nodes(f"{db_ref}--*:table"):
+                try:
+                    _generate_for_table(table_ref, db_ref, store)
+                except Exception as e:
+                    logger.warning(f"Failed to generate relations for {table_ref}: {e}")
 
 
-def _generate_for_table(ref: str, store: Store) -> bool:
-    """为单个表分析关系，在_entity/下创建.fk实体"""
-    path, entity_name = ref.split("::", 1)
-    meta = store.get_meta(ref)
+def _generate_for_table(table_ref: str, db_ref: str, store: Store) -> bool:
+    """为单个表分析关系，创建 fk 实体"""
+    meta = store.get_meta(table_ref)
     if not meta:
         return False
 
-    table_name = entity_name.replace(".table", "")
-
-    # 获取DB路径
-    db_path = os.path.join(store.project_path, store.get_meta(path).get("path", ""))
-    if not db_path:
+    # table_ref 是完整节点名（如 formula_1.db--circuits），sqlite 需要裸表名
+    raw_table = table_ref.split("--")[-1] if "--" in table_ref else table_ref
+    db_meta = store.get_meta(db_ref)
+    db_rel = db_meta.get("path", db_ref) if db_meta else db_ref
+    db_path = os.path.join(store.project_path, db_rel)
+    if not db_path or not os.path.isfile(db_path):
         return False
 
-    # 获取该表的列信息
-    columns = _get_table_columns(db_path, table_name)
+    columns = _get_table_columns(db_path, raw_table)
     if not columns:
         return False
 
-    # 查找外键关系
-    fk_relations = _find_foreign_keys(db_path, table_name)
+    fk_relations = _find_foreign_keys(db_path, raw_table)
+    naming_relations = _find_naming_relations(db_path, raw_table, columns)
 
-    # 查找命名约定关系
-    naming_relations = _find_naming_relations(db_path, table_name, columns)
-
-    # 合并所有关系
     all_relations = fk_relations + naming_relations
 
-    # 为每个关系创建.fk实体
     created_count = 0
     for rel in all_relations:
-        if _create_relation_entity(path, table_name, rel, store):
+        if _create_relation_entity(table_ref, db_ref, table_ref, rel, store):
             created_count += 1
 
     if created_count > 0:
-        logger.info(f"  Relations: {path}::{entity_name} ({created_count} relations)")
+        logger.info(f"  Relations: {table_ref} ({created_count} relations)")
     return True
 
 
@@ -95,7 +90,6 @@ def _find_foreign_keys(db_path: str, table_name: str) -> List[Dict]:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # 构建 table → PK 映射，用于 fk[4] 为空时查找真实 PK
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         all_tables = [row[0] for row in cursor.fetchall()]
         table_pks = {}
@@ -134,7 +128,6 @@ def _find_naming_relations(db_path: str, table_name: str, columns: List[Dict]) -
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         all_tables = [row[0] for row in cursor.fetchall()]
 
-        # 构建表名到主键的映射
         table_pks = {}
         for t in all_tables:
             cursor.execute(f'PRAGMA table_info("{t}")')
@@ -144,22 +137,17 @@ def _find_naming_relations(db_path: str, table_name: str, columns: List[Dict]) -
 
         conn.close()
 
-        # 检查每一列
         for col in columns:
             col_name = col["name"]
-
-            # 跳过主键
             if col.get("pk"):
                 continue
 
-            # 模式: table_id (e.g., user_id)
             for ref_table in all_tables:
                 if ref_table == table_name:
                     continue
 
                 pk_col = table_pks.get(ref_table, "id")
 
-                # users -> user_id
                 expected = f"{ref_table.rstrip('s')}s_id"
                 expected_alt = f"{ref_table.rstrip('s')}_id"
 
@@ -179,26 +167,23 @@ def _find_naming_relations(db_path: str, table_name: str, columns: List[Dict]) -
     return relations
 
 
-def _create_relation_entity(path: str, from_table: str, relation: Dict,
-                            store: Store) -> bool:
-    """在_entity/下为关系创建.fk实体"""
+def _create_relation_entity(table_ref: str, db_ref: str, from_table: str,
+                            relation: Dict, store: Store) -> bool:
+    """创建 fk 实体（无类型后缀）"""
     try:
         from_col = relation["from_column"]
         to_table = relation["to_table"]
         to_col = relation["to_column"]
 
-        # 构建关系实体名: [表名].[列名]__to__[目标表名].[目标列名].fk
         safe_from_col = from_col.replace("/", "_").replace("\\", "_")
         safe_to_table = to_table.replace("/", "_").replace("\\", "_")
         safe_to_col = to_col.replace("/", "_").replace("\\", "_")
 
-        fk_entity_name = f"{from_table}.{safe_from_col}__to__{safe_to_table}.{safe_to_col}.fk"
+        fk_entity_name = f"{from_table}.{safe_from_col}__to__{safe_to_table}.{safe_to_col}"
 
-        # 检查是否已存在
-        if store.node_exists(f"{path}::{fk_entity_name}"):
+        if store.node_exists(fk_entity_name):
             return False
 
-        # 创建关系meta — 定位信息已编码在 entity name 中，不再重复存储
         rel_type = "显式外键" if relation["type"] == "foreign_key" else "命名约定推断"
         confidence = relation.get("confidence", 0.5)
 
@@ -209,22 +194,23 @@ def _create_relation_entity(path: str, from_table: str, relation: Dict,
             "created_at": __import__('datetime').datetime.now().isoformat(),
         }
 
-        store.create_node(f"{path}::{fk_entity_name}", meta=fk_meta)
+        store.create_node(fk_entity_name, meta=fk_meta, labels=["fk"])
 
-        # 添加边: 2 tables + 2 columns → fk
+        to_table_ref = f"{db_ref}--{safe_to_table}"
         edges = [
-            {"a": f"{path}::{from_table}.table", "b": f"{path}::{fk_entity_name}"},
-            {"a": f"{path}::{safe_to_table}.table", "b": f"{path}::{fk_entity_name}"},
+            {"a": from_table, "b": fk_entity_name},
+            {"a": to_table_ref, "b": fk_entity_name},
         ]
-        # 查找列实体并连接
-        from_col_refs = list(store.find_nodes(f"{path}::{from_table}.{safe_from_col}.*.col"))
-        to_col_refs = list(store.find_nodes(f"{path}::{safe_to_table}.{safe_to_col}.*.col"))
-        if from_col_refs:
-            edges.append({"a": from_col_refs[0], "b": f"{path}::{fk_entity_name}"})
-        if to_col_refs:
-            edges.append({"a": to_col_refs[0], "b": f"{path}::{fk_entity_name}"})
-        store.add_edges(edges)
 
+        # 查找列实体并连接（from_table 已经是完整节点名 db--table）
+        from_col_ref = f"{from_table}--{safe_from_col}"
+        to_col_ref = f"{to_table_ref}--{safe_to_col}"
+        if store.node_exists(from_col_ref):
+            edges.append({"a": from_col_ref, "b": fk_entity_name})
+        if store.node_exists(to_col_ref):
+            edges.append({"a": to_col_ref, "b": fk_entity_name})
+
+        store.add_edges(edges)
         return True
 
     except Exception as e:

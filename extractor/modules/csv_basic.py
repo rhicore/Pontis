@@ -1,8 +1,8 @@
-"""CSV/TSV Basic Generator - 表格文件发现与实体展开
+"""CSV/TSV Basic Generator - 表格实体展开
 
 职责：
-1. 通过 store.find_nodes() 发现所有 CSV/TSV 文件（含虚节点）
-2. 为未索引的文件创建节点（含 _inode）
+1. 通过 store.find_nodes() 发现所有 CSV/TSV 文件（虚节点即可）
+2. 写入文件级属性（delimiter 等），自动实体化
 3. 展开列实体
 """
 import os
@@ -51,22 +51,17 @@ def _infer_type(sample_rows: list, col_idx: int) -> str:
 
 
 def _process_table(rel_path: str, store: Store, delimiter: str = ',') -> None:
-    """处理单个表格文件：创建文件节点 + 展开列实体"""
+    """处理单个表格文件：写入属性（自动实体化）+ 展开列实体"""
     abs_path = os.path.join(store.project_path, rel_path)
     if not os.path.exists(abs_path):
         return
 
-    stat = os.stat(abs_path)
-
-    # 创建文件节点
-    meta = {
-        "path": rel_path,
-        "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+    basename = os.path.basename(rel_path)
+    store.set_meta(basename, {
         "created_at": datetime.now().isoformat(),
         "delimiter": "," if delimiter == ',' else "\\t",
-    }
-    store.create_node(rel_path, meta=meta)
-    logger.info(f"  Created file node: {rel_path}")
+    })
+    logger.info(f"  CSV properties: {basename}")
 
     # 读取表头并推断类型
     import csv
@@ -81,31 +76,32 @@ def _process_table(rel_path: str, store: Store, delimiter: str = ',') -> None:
                 break
             sample_rows.append(row)
 
-    stem = os.path.splitext(os.path.basename(rel_path))[0]
+    stem = os.path.splitext(basename)[0]
     for col_idx, col_name in enumerate(headers):
         safe_col = col_name.replace("/", "_").replace("\\", "_").replace(".", "_")
         col_type = _infer_type(sample_rows, col_idx)
-        col_entity_name = f"{stem}.{safe_col}.{col_type}.col"
-        store.create_node(f"{rel_path}::{col_entity_name}",
-                          meta={"created_at": datetime.now().isoformat()})
+        col_ref = f"{basename}--{stem}--{safe_col}"
+        store.create_node(col_ref,
+                          meta={"created_at": datetime.now().isoformat(),
+                                "col_type": col_type},
+                          labels=[f"col/{col_type}"])
+        store.add_edges([{"a": basename, "b": col_ref}])
 
-    logger.info(f"  Entity: {rel_path} ({len(headers)} columns)")
+    logger.info(f"  Entity: {basename} ({len(headers)} columns)")
 
 
 def generate(store: Store) -> None:
-    """发现所有 CSV/TSV 文件，创建文件节点并展开列实体"""
+    """发现所有 CSV/TSV 文件，写入属性并展开列实体"""
     logger.info("=== Generating CSV/TSV entities ===")
 
     count = 0
     for pattern in ["**/*.csv", "**/*.tsv"]:
         delimiter = '\t' if pattern.endswith('.tsv') else ','
         for path in store.find_nodes(pattern):
-            if store.node_exists(path):
-                continue
             try:
                 _process_table(path, store, delimiter=delimiter)
                 count += 1
             except Exception as e:
                 logger.warning(f"Failed to process {path}: {e}")
 
-    logger.info(f"  Processed {count} new CSV/TSV files")
+    logger.info(f"  Processed {count} CSV/TSV files")

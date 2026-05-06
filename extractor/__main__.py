@@ -8,7 +8,7 @@ Usage:
 
     # 运行单个模块
     python -m extractor run db_column_stats ./my_data
-    python -m extractor run db_column_stats,db_info ./my_data -v
+    python -m extractor run db_column_stats,db_table_relations ./my_data -v
 
     # 列出可用模块
     python -m extractor list

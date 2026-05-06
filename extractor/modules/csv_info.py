@@ -2,7 +2,7 @@
 
 职责：
 - 匹配 *.csv/*.tsv 节点
-- 添加文件级元信息（行数、列数、文件大小等）
+- 添加文件级元信息（行数、列数）
 
 独立执行：
     python -m extractor.csv_info ./my_data
@@ -57,15 +57,9 @@ def _generate_for_csv(path: str, store: Store, delimiter: str) -> bool:
             # 统计行数
             row_count = sum(1 for _ in reader)
 
-        # 文件大小
-        file_size = os.path.getsize(csv_path)
-
-        # 更新meta
         store.set_meta(path, {
             "row_count": row_count,
             "column_count": column_count,
-            "file_size": file_size,
-            "delimiter": "," if delimiter == ',' else "\\t",
         })
 
         logger.info(f"  CSV info: {path} ({row_count} rows, {column_count} cols)")

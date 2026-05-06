@@ -1,9 +1,6 @@
 """AI DB Column Summary — 并行版数据库列 AI 总结生成器
 
-按表分组并行处理，利用 prompt caching 共享前缀：
-  - 分析指令：所有调用共用（不变）
-  - 表信息：同表的列共用（表名、列清单、FK 关系）
-  - 列统计：每列独有
+按表分组并行处理，利用 prompt caching 共享前缀。
 
 独立执行：
     python -m extractor.ai_db_column_summary ./my_data
@@ -21,7 +18,6 @@ logger = logging.getLogger(__name__)
 DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
 MAX_WORKERS = 8
 
-# ── 分析指令（所有调用共用，作为 system prompt）──
 _ANALYSIS_INSTRUCTIONS = """\
 请用中文分析这个数据库列，重点关注以下方面：
 
@@ -54,59 +50,49 @@ def generate(store: Store, config=None) -> None:
 
 def _process_database(db_ref: str, store: Store, llm) -> None:
     """处理一个数据库：按表分组，每组并行。"""
-    col_refs = list(store.find_nodes(f"{db_ref}::*.*.*.col"))
-    if not col_refs:
-        return
-
     # 按 table 分组
     table_groups = defaultdict(list)
-    for ref in col_refs:
-        entity_name = ref.split("::", 1)[1]
-        col_parts = entity_name.replace(".col", "").split(".")
-        if len(col_parts) >= 3:
-            table_groups[col_parts[0]].append(ref)
+    for table_ref in store.find_nodes(f"{db_ref}::*:table"):
+        for col_ref in store.find_nodes(f"{db_ref}::{table_ref}::*:col"):
+            table_groups[table_ref].append(col_ref)
+
+    if not table_groups:
+        return
 
     total = 0
-    for table_name, cols in table_groups.items():
+    for table_ref, col_refs in table_groups.items():
         try:
-            n = _process_table(db_ref, table_name, cols, store, llm)
+            n = _process_table(db_ref, table_ref, col_refs, store, llm)
             total += n
         except Exception as e:
-            logger.warning(f"Failed for {db_ref}::{table_name}: {e}")
+            logger.warning(f"Failed for {db_ref}::{table_ref}: {e}")
 
     if total:
         logger.info(f"  AI column summary: {db_ref} ({total} cols)")
 
 
-def _process_table(db_ref: str, table_name: str, col_refs: list,
+def _process_table(db_ref: str, table_ref: str, col_refs: list,
                    store: Store, llm) -> int:
     """处理一张表：构建共享前缀，并行处理各列。"""
-    # 过滤已有 summary 的列，收集 meta
     pending = []
     for ref in col_refs:
         meta = store.get_meta(ref)
         if meta and not (meta.get("brief") and meta.get("detail")):
-            entity_name = ref.split("::", 1)[1]
-            col_parts = entity_name.replace(".col", "").split(".")
-            if len(col_parts) >= 3:
-                pending.append((ref, col_parts[1], col_parts[2], meta))
+            pending.append((ref, meta))
 
     if not pending:
         return 0
 
-    # ── 构建共享前缀（同表所有列共用，利用 prompt caching）──
-    table_info = _build_table_info(db_ref, table_name, store)
     shared_prefix = [
         {"role": "system", "content": _ANALYSIS_INSTRUCTIONS},
-        {"role": "user", "content": table_info},
+        {"role": "user", "content": _build_table_info(db_ref, table_ref, store)},
     ]
 
-    # 并行处理各列
     done = 0
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {}
-        for ref, col_name, data_type, meta in pending:
-            col_block = _build_column_block(col_name, data_type, meta)
+        for ref, meta in pending:
+            col_block = _build_column_block(ref, meta)
             futures[executor.submit(
                 _process_column, ref, col_block, shared_prefix, llm, store
             )] = ref
@@ -119,13 +105,12 @@ def _process_table(db_ref: str, table_name: str, col_refs: list,
                 logger.debug(f"Column failed: {futures[future]}: {e}")
 
     if done:
-        logger.info(f"  AI summary: {db_ref}::{table_name}.table ({done}/{len(pending)})")
+        logger.info(f"  AI summary: {db_ref}::{table_ref} ({done}/{len(pending)})")
     return done
 
 
 def _process_column(col_ref: str, col_block: str,
                     shared_prefix: list, llm, store: Store) -> bool:
-    """处理单列：用共享前缀 + 列信息调 LLM。"""
     messages = shared_prefix + [{"role": "user", "content": col_block}]
     detail, brief = generate_with_prefix(llm, messages, max_tokens=150)
 
@@ -141,54 +126,48 @@ def _process_column(col_ref: str, col_block: str,
     return False
 
 
-def _build_table_info(db_ref: str, table_name: str, store: Store) -> str:
+def _build_table_info(db_ref: str, table_ref: str, store: Store) -> str:
     """构建表级信息（同表所有列共用的 prompt 前缀）。"""
-    parts = [f"数据库: {db_ref}", f"表: {table_name}"]
+    parts = [f"数据库: {db_ref}", f"表: {table_ref}"]
 
-    # 表 summary
-    table_meta = store.get_meta(f"{db_ref}::{table_name}.table") or {}
+    table_meta = store.get_meta(table_ref) or {}
     if table_meta.get("row_count") is not None:
         parts.append(f"行数: {table_meta['row_count']}")
     if table_meta.get("brief"):
         parts.append(f"表描述: {table_meta['brief']}")
 
     # 列清单
-    all_cols = list(store.find_nodes(f"{db_ref}::{table_name}.*.*.col"))
-    if all_cols:
-        col_lines = []
-        for ref in all_cols:
-            ent = ref.split("::", 1)[1]
-            p = ent.replace(".col", "").split(".")
-            if len(p) >= 3:
-                col_lines.append(f"  {p[1]} ({p[2]})")
+    col_lines = []
+    for col_ref in store.find_nodes(f"{db_ref}::{table_ref}::*:col"):
+        col_meta = store.get_meta(col_ref)
+        dtype = col_meta.get("col_type", "?") if col_meta else "?"
+        col_lines.append(f"  {col_ref} ({dtype})")
+    if col_lines:
         parts.append("所有列:\n" + "\n".join(col_lines))
 
-    # FK（从 entity name 解析定位信息）
-    fk_refs = list(store.find_nodes(f"{db_ref}::{table_name}.*__to__*.fk"))
+    # FK
+    fk_refs = list(store.find_nodes(f"{db_ref}::*:fk"))
     if fk_refs:
         fk_lines = []
-        for ref in fk_refs:
-            ent = ref.split("::", 1)[1].replace(".fk", "")
-            # 格式: from_table.from_col__to__to_table.to_col
-            if "__to__" in ent:
-                fk_desc = ent.replace("__to__", " → ").replace(".", ".", 1)
-                # from_table.from_col → to_table.to_col
-                sides = ent.split("__to__")
-                if len(sides) == 2:
-                    left = sides[0]  # from_table.from_col
-                    right = sides[1]  # to_table.to_col
-                    fk_lines.append(f"  {left} → {right}")
+        for fk_ref in fk_refs:
+            if table_ref in fk_ref:
+                ent = fk_ref
+                if "__to__" in ent:
+                    sides = ent.split("__to__")
+                    if len(sides) == 2:
+                        fk_lines.append(f"  {sides[0]} → {sides[1]}")
         if fk_lines:
             parts.append("外键:\n" + "\n".join(fk_lines))
 
     return "\n".join(parts)
 
 
-def _build_column_block(col_name: str, data_type: str, meta: dict) -> str:
-    """构建单列的统计信息 prompt（与原始 _build_prompt 的列部分完全一致）。"""
+def _build_column_block(col_name: str, meta: dict) -> str:
+    """构建单列的统计信息 prompt。"""
+    dtype = meta.get("col_type", "?")
     parts = [
         f"列: {col_name}",
-        f"类型: {data_type}",
+        f"类型: {dtype}",
     ]
 
     cardinality = meta.get("cardinality")

@@ -55,7 +55,7 @@ class SQLEntityCheck(Guardrail):
 
         missing = []
         for t in sorted(tables):
-            if not has_read(tool_history, f"{t}.table"):
+            if not has_read(tool_history, t):
                 ref = resolve_entity_ref(store, t)
                 if not ref:
                     continue
@@ -64,7 +64,7 @@ class SQLEntityCheck(Guardrail):
                 missing.append(ref)
                 self._warned.add(ref)
         for table, col in extract_col_refs(sql, aliases):
-            if not has_read(tool_history, f"{table}.{col}"):
+            if not has_read(tool_history, col):
                 ref = resolve_entity_ref(store, table, col)
                 if not ref:
                     continue

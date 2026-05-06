@@ -105,25 +105,23 @@ class SQLDisambigCheck(Guardrail):
             self._disambig_cache = cache
             return cache
 
-        store._ensure_index()
-        for eid, ref in store._id_index.items():
-            if not ref.endswith(".disambig"):
+        for ename, labels in store.list_all():
+            if "disambig" not in labels:
                 continue
 
-            entity_part = ref.split("::", 1)[1] if "::" in ref else ref
-            term = entity_part.rsplit(".", 1)[0]
+            # term = entity name without .disambig suffix (if present)
+            term = ename.replace(".disambig", "")
 
             disambig_tables = set()
-            for adj_id in store._adjacent.get(eid, set()):
-                adj_ref = store._id_index.get(adj_id, "")
-                if not adj_ref or "::" not in adj_ref:
-                    continue
-                adj_entity = adj_ref.split("::", 1)[1]
-                if adj_entity.endswith(".table"):
-                    table_name = adj_entity.rsplit(".", 1)[0]
-                    disambig_tables.add(table_name.lower())
+            for neighbor in store.neighbors(ename):
+                # Check if neighbor is a table via label lookup
+                n_labels = store._get_labels_by_id(
+                    store._name_to_id(neighbor) or ""
+                ) if store._name_to_id(neighbor) else []
+                if "table" in n_labels:
+                    disambig_tables.add(neighbor.lower())
 
-            cache.append((ref, term, disambig_tables))
+            cache.append((ename, term, disambig_tables))
 
         self._disambig_cache = cache
         return cache

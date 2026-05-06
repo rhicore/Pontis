@@ -1,8 +1,8 @@
-"""DB Basic Generator - 数据库文件发现与实体展开
+"""DB Basic Generator - 数据库实体展开
 
 职责：
-1. 通过 store.find_nodes() 发现所有数据库文件（含虚节点）
-2. 为未索引的文件创建节点（含 _inode）
+1. 通过 store.find_nodes() 发现所有数据库文件（虚节点即可）
+2. 提取库级属性（table_count/view_count/index_count），写入时自动实体化
 3. 展开表/视图/列实体
 """
 import os
@@ -34,7 +34,7 @@ def _normalize_type(sql_type: str) -> str:
 
 
 def generate(store: Store) -> None:
-    """发现所有数据库文件，创建文件节点并展开实体"""
+    """发现所有数据库文件，写入属性并展开实体"""
     logger.info("=== Generating DB entities ===")
 
     db_patterns = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb",
@@ -42,74 +42,80 @@ def generate(store: Store) -> None:
     count = 0
     for pattern in db_patterns:
         for path in store.find_nodes(pattern):
-            if store.node_exists(path):
-                continue  # 已索引，跳过
             try:
                 _process_database(path, store)
                 count += 1
             except Exception as e:
                 logger.warning(f"Failed to process DB {path}: {e}")
 
-    logger.info(f"  Processed {count} new database files")
+    logger.info(f"  Processed {count} database files")
 
 
 def _process_database(rel_path: str, store: Store) -> None:
-    """处理单个数据库：创建文件节点 + 展开表/视图/列实体"""
+    """处理单个数据库：写入库属性（自动实体化文件节点）+ 展开表/视图/列实体"""
     abs_path = os.path.join(store.project_path, rel_path)
-    stat = os.stat(abs_path)
+    basename = os.path.basename(rel_path)
 
-    # 创建文件节点
-    meta = {
-        "path": rel_path,
-        "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-        "created_at": datetime.now().isoformat(),
-    }
-    store.create_node(rel_path, meta=meta)
-    logger.info(f"  Created file node: {rel_path}")
-
-    # 展开实体
     import sqlite3
     conn = sqlite3.connect(abs_path)
     cursor = conn.cursor()
+
+    # 写入库级属性（自动实体化文件节点）
+    cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    table_count = cursor.fetchone()[0]
+    cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='view'")
+    view_count = cursor.fetchone()[0]
+    cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='index'")
+    index_count = cursor.fetchone()[0]
+    store.set_meta(basename, {
+        "created_at": datetime.now().isoformat(),
+        "table_count": table_count,
+        "view_count": view_count,
+        "index_count": index_count,
+    })
+    logger.info(f"  DB properties: {basename} ({table_count} tables, {view_count} views)")
 
     # 获取表
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     for (table_name,) in cursor.fetchall():
         safe_name = table_name.replace("/", "_").replace("\\", "_")
 
-        store.create_node(f"{rel_path}::{safe_name}.table",
-                          meta={"created_at": datetime.now().isoformat()})
-
-        col_edges = []
         cursor.execute(f'PRAGMA table_info("{table_name}")')
-        for col in cursor.fetchall():
+        columns = cursor.fetchall()
+        pk_col = next((col[1] for col in columns if col[5] == 1), None)
+
+        table_ref = f"{basename}--{safe_name}"
+        store.create_node(table_ref,
+                          meta={"created_at": datetime.now().isoformat(),
+                                "primary_key": pk_col},
+                          labels=["table"])
+        store.add_edges([{"a": basename, "b": table_ref}])
+
+        for col in columns:
             col_name = col[1]
             col_type = _normalize_type(col[2])
             safe_col = col_name.replace("/", "_").replace("\\", "_")
 
-            col_entity_name = f"{safe_name}.{safe_col}.{col_type}.col"
-            store.create_node(f"{rel_path}::{col_entity_name}",
-                              meta={"created_at": datetime.now().isoformat()})
+            col_ref = f"{table_ref}--{safe_col}"
+            store.create_node(col_ref,
+                              meta={"created_at": datetime.now().isoformat(),
+                                    "col_type": col_type},
+                              labels=[f"col/{col_type}"])
+            store.add_edges([{"a": table_ref, "b": col_ref}])
 
-            col_edges.append({
-                "a": f"{rel_path}::{safe_name}.table",
-                "b": f"{rel_path}::{col_entity_name}",
-            })
-
-        if col_edges:
-            store.add_edges(col_edges)
-
-        logger.info(f"  Entity: {rel_path}::{safe_name}.table")
+        logger.info(f"  Entity: {table_ref}")
 
     # 获取视图
     cursor.execute("SELECT name FROM sqlite_master WHERE type='view'")
     for (view_name,) in cursor.fetchall():
         safe_name = view_name.replace("/", "_").replace("\\", "_")
 
-        store.create_node(f"{rel_path}::{safe_name}.view",
-                          meta={"created_at": datetime.now().isoformat()})
+        view_ref = f"{basename}--{safe_name}"
+        store.create_node(view_ref,
+                          meta={"created_at": datetime.now().isoformat()},
+                          labels=["view"])
+        store.add_edges([{"a": basename, "b": view_ref}])
 
-        view_col_edges = []
         try:
             cursor.execute(f'PRAGMA table_info("{view_name}")')
             for col in cursor.fetchall():
@@ -117,21 +123,15 @@ def _process_database(rel_path: str, store: Store) -> None:
                 col_type = _normalize_type(col[2])
                 safe_col = col_name.replace("/", "_").replace("\\", "_")
 
-                col_entity_name = f"{safe_name}.{safe_col}.{col_type}.col"
-                store.create_node(f"{rel_path}::{col_entity_name}",
+                col_ref = f"{view_ref}--{safe_col}"
+                store.create_node(col_ref,
                                   meta={"created_at": datetime.now().isoformat(),
-                                        "source_view": view_name})
-
-                view_col_edges.append({
-                    "a": f"{rel_path}::{safe_name}.view",
-                    "b": f"{rel_path}::{col_entity_name}",
-                })
+                                        "col_type": col_type, "source_view": view_name},
+                                  labels=[f"col/{col_type}"])
+                store.add_edges([{"a": view_ref, "b": col_ref}])
         except Exception:
             pass
 
-        if view_col_edges:
-            store.add_edges(view_col_edges)
-
-        logger.info(f"  Entity: {rel_path}::{safe_name}.view")
+        logger.info(f"  Entity: {view_ref}")
 
     conn.close()

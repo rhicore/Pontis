@@ -1,126 +1,108 @@
-"""
-Glob tool - Node retrieval via Store graph traversal.
+"""Glob tool — Cypher URN 查询 + 标签格式化显示。
 
-Uses store.find_nodes() for pattern matching with native :: edge traversal.
-Supports bidirectional traversal and per-hop dedup.
+使用 Finder.find() 进行 URN 解析和图遍历。
+显示格式：project://\tname\t:labels\tinfo
 
-Returns format: [name] | [Info]
+支持 workspace 或 store（兼容旧调用方式）。
 """
 import os
-from typing import Optional
+from typing import Optional, Union
 
-from tool_use.utils.formatters import get_type_config, get_file_type_from_name
+from tool_use.utils.formatters import format_labels, get_info
 from tool_use.config import TOOL_PAGINATION
 
 
-def _format_node_info(store, ref: str, meta: dict) -> str:
-    """Format brief info for a node (file or entity)."""
-    is_entity = "::" in ref
-    name = ref.split("::", 1)[1] if is_entity else ref
-
-    node_type = meta.get('type', '')
-    file_type = get_file_type_from_name(name, node_type)
-    config = get_type_config(file_type)
-    info = config.info_fn(meta)
-
-    brief = meta.get("brief", "")
-    if brief:
-        return f"{info}, {brief}" if info != "-" else brief
-    return info
+def _get_project_name(obj) -> str:
+    """从 workspace 或 store 获取项目名。"""
+    if hasattr(obj, 'config'):
+        # Workspace
+        dp = obj.config.default_project()
+        if dp:
+            return dp
+    # Fallback: 从 store 路径推断
+    if hasattr(obj, 'project_path'):
+        return os.path.basename(obj.project_path)
+    return "local"
 
 
-def _common_ref_prefix(refs: list) -> str:
-    """找所有 ref 的最长公共前缀，停在 :: 边界上。"""
-    if not refs:
-        return ""
-    prefix = refs[0]
-    for s in refs[1:]:
-        while not s.startswith(prefix):
-            prefix = prefix[:-1]
-        if not prefix:
-            return ""
-    # 只在 :: 边界截断，确保缩写后剩余部分仍有意义
-    if "::" not in prefix:
-        return ""  # 没到 entity 层级，不值得缩写
-    # 保留到最后一个 :: 后面（如 "california_schools.db::"）
-    last_sep = prefix.rfind("::")
-    return prefix[:last_sep + 2]
+def _get_store(obj):
+    """从 workspace 获取 store，或直接返回 store。"""
+    if hasattr(obj, 'get_store'):
+        return obj.get_store()
+    return obj
+
+
+def _do_find(obj, pattern: str):
+    """使用 Finder 或 store.find_nodes() 查询。"""
+    if hasattr(obj, 'finder'):
+        return obj.finder.find(pattern)
+    # Fallback: store.find_nodes() 返回 [name, ...]
+    store = obj
+    names = store.find_nodes(pattern)
+    results = []
+    for name in names:
+        meta = store.get_meta(name) or {}
+        labels = meta.get("_labels", [])
+        results.append((name, labels))
+    return results
 
 
 def glob_command(
-    store,
+    obj,  # Workspace or Store
     path_pattern: str,
     offset: int = 0,
     limit: Optional[int] = None,
     current_cwd: str = ""
 ) -> str:
-    """
-    Search nodes via Store graph traversal using path::entity patterns.
-
-    Delegates to store.find_nodes() which handles:
-    - Single segment: match file nodes and entity nodes
-    - Multi-segment (::): bidirectional edge traversal with dedup
+    """Cypher URN 查询，返回标签格式化显示。
 
     Args:
-        store: Store instance
-        path_pattern: Glob pattern with optional :: segments
-        offset: Starting index (0-based)
-        limit: Max results per page
-        current_cwd: Current working directory (unused, kept for compat)
-
-    Returns:
-        Formatted results: [ref] | [Info]
+        obj: Workspace 或 Store 实例
+        path_pattern: URN pattern，支持 Cypher 风格
+        offset: 起始索引
+        limit: 每页最大条数
     """
     page_conf = TOOL_PAGINATION["glob"]
     if limit is None:
         limit = page_conf.default_limit
     limit = min(limit, page_conf.max_limit)
 
-    if not store.pontis_exists:
+    store = _get_store(obj)
+    if hasattr(store, 'pontis_exists') and not store.pontis_exists:
         return "No .pontis directory found. Run extractor first."
 
-    refs = store.find_nodes(path_pattern)
+    results = _do_find(obj, path_pattern)
 
-    if not refs:
+    if not results:
         return "No objects found"
+
+    project_name = _get_project_name(obj)
 
     # Build all result lines
-    all_refs = []
-    all_infos = []
-    for ref in refs:
-        meta = store.get_meta(ref)
+    all_items = []
+    for name, labels in results:
+        meta = store.get_meta(name)
         if meta is None:
             continue
-        info = _format_node_info(store, ref, meta)
-        all_refs.append(ref)
-        all_infos.append(info)
+        info = get_info(labels, meta)
+        label_str = format_labels(labels)
+        all_items.append((name, label_str, info))
 
-    if not all_refs:
+    if not all_items:
         return "No objects found"
 
-    total = len(all_refs)
+    total = len(all_items)
+    page = all_items[offset:offset + limit]
 
-    # 检测 ref 公共前缀（如 "california_schools.db::"），缩写以节省 token
-    prefix = _common_ref_prefix(all_refs)
-    if prefix:
-        header = f"[{prefix}]\n"
-    else:
-        header = ""
-        prefix = ""
-
-    page_refs = all_refs[offset:offset + limit]
-    page_infos = all_infos[offset:offset + limit]
-
-    if not page_refs:
+    if not page:
         return f"No results at offset {offset}. Total results: {total}"
 
     lines = []
-    for ref, info in zip(page_refs, page_infos):
-        display = ref[len(prefix):] if prefix else ref
-        lines.append(f"{display} | {info}")
-    output = header + "\n".join(lines)
+    for name, label_str, info in page:
+        lines.append(f"{project_name}://\t{name}\t{label_str}\t{info}")
+    output = "\n".join(lines)
 
-    end = offset + len(page_refs)
+    end = offset + len(page)
     if end < total:
         output += f"\n(共 {total} 条结果，当前显示第 {offset + 1}-{end} 条。使用 offset={end} 查看后续结果)"
 

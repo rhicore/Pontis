@@ -1,9 +1,8 @@
-"""Serialized Basic Generator - 序列化文件发现与实体展开
+"""Serialized Basic Generator - 序列化文件结构分析
 
 职责：
-1. 通过 store.find_nodes() 发现所有序列化文件（含虚节点）
-2. 为未索引的文件创建节点（含 _inode）
-3. 分析文件结构并更新 meta
+1. 通过 store.find_nodes() 发现所有序列化文件（虚节点即可）
+2. 分析文件结构，写入属性时自动实体化
 """
 import os
 import logging
@@ -14,42 +13,37 @@ logger = logging.getLogger(__name__)
 
 
 def generate(store: Store) -> None:
-    """发现所有序列化文件，创建文件节点并分析结构"""
+    """发现所有序列化文件，分析结构并写入属性"""
     logger.info("=== Generating serialized file entities ===")
 
     count = 0
     for pattern in ["**/*.json", "**/*.jsonl", "**/*.yaml", "**/*.yml", "**/*.xml", "**/*.toml", "**/*.hcl"]:
         for path in store.find_nodes(pattern):
-            if store.node_exists(path):
-                continue
             try:
                 _process_serialized(path, store)
                 count += 1
             except Exception as e:
                 logger.warning(f"Failed to process {path}: {e}")
 
-    logger.info(f"  Processed {count} new serialized files")
+    logger.info(f"  Processed {count} serialized files")
 
 
 def _process_serialized(rel_path: str, store: Store) -> None:
-    """处理单个序列化文件：创建文件节点 + 分析结构"""
+    """处理单个序列化文件：写入结构属性（自动实体化）"""
     abs_path = os.path.join(store.project_path, rel_path)
     if not os.path.exists(abs_path):
         return
 
-    stat = os.stat(abs_path)
-
-    # 创建文件节点
-    meta = {
-        "path": rel_path,
-        "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-        "created_at": datetime.now().isoformat(),
+    basename = os.path.basename(rel_path)
+    ext = os.path.splitext(rel_path)[1].lower()
+    label_map = {
+        ".json": "file/json", ".jsonl": "file/json",
+        ".yaml": "file/yaml", ".yml": "file/yaml",
+        ".xml": "file/xml", ".toml": "file/toml", ".hcl": "file/hcl",
     }
-    store.create_node(rel_path, meta=meta)
-    logger.info(f"  Created file node: {rel_path}")
+    labels = [label_map.get(ext, "file/json")]
 
     # 分析结构
-    file_size = stat.st_size
     with open(abs_path, 'r', encoding='utf-8', errors='ignore') as f:
         content = f.read()
 
@@ -57,7 +51,6 @@ def _process_serialized(rel_path: str, store: Store) -> None:
     top_info = _analyze_structure(abs_path, content, rel_path)
 
     store.set_meta(rel_path, {
-        "file_size": file_size,
         "line_count": line_count,
         "char_count": len(content),
         **top_info,

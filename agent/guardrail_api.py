@@ -33,12 +33,14 @@ class GuardrailContext:
 
     def __init__(self, *, messages: list, tool_history: list,
                  store, rounds: int,
-                 pending_calls: List[Tuple[str, dict]]):
+                 pending_calls: List[Tuple[str, dict]],
+                 workspace=None):
         self._messages = messages
         self._tool_history = tool_history
         self._store = store
         self.rounds = rounds
         self.pending_calls = pending_calls
+        self._workspace = workspace
 
     # ── 类型判断 ──
 
@@ -76,6 +78,11 @@ class GuardrailContext:
     def store(self):
         """领域数据（可选，通用框架为 None）。"""
         return self._store
+
+    @property
+    def workspace(self):
+        """Workspace 实例（可选）。"""
+        return self._workspace
 
 
 class Guardrail(ABC):

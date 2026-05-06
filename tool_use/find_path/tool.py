@@ -1,72 +1,61 @@
 """Find_path tool — 图谱上的表级路径发现。
 
-不依赖 _adjacent 图（FK 实体不连接目标表），
-而是解析 FK/overlap 实体名构建表级邻接，再 BFS 找最短路径。
+解析 FK/overlap 实体（通过 _labels）构建表级邻接，再 BFS 找最短路径。
+兼容新旧实体命名（带或不带 .fk/.overlap 后缀）。
 """
 import re
 from collections import defaultdict, deque
 from typing import Dict, List, Optional, Set, Tuple
 
 
+def _get_store(obj):
+    if hasattr(obj, 'get_store'):
+        return obj.get_store()
+    return obj
+
+
 def _parse_fk_overlap_entities(store) -> Tuple[Dict[str, Set[str]], Dict[Tuple[str, str], List[str]]]:
-    """解析所有 FK/overlap 实体，构建表级邻接。
-
-    Returns:
-        table_adj: {table_name: {connected_table_names}}
-        edge_map: {(t1, t2): [entity_names]}  (t1 < t2 排序)
-    """
-    store._ensure_index()
-
+    """解析所有 FK/overlap 实体，构建表级邻接。"""
     table_adj: Dict[str, Set[str]] = defaultdict(set)
     edge_map: Dict[Tuple[str, str], List[str]] = defaultdict(list)
 
-    for eid, ref in store._id_index.items():
-        if "::" not in ref:
+    for ename, labels in store.list_all():
+        is_fk = any("fk" in l.split("/") for l in labels) or ename.endswith(".fk")
+        is_overlap = any("overlap" in l.split("/") for l in labels) or ename.endswith(".overlap")
+        if not is_fk and not is_overlap:
             continue
-        entity = ref.split("::", 1)[1]
-
-        if ".fk" not in entity and ".overlap" not in entity:
+        if "__to__" not in ename:
             continue
 
-        # Match.country_id__to__Country.id.fk
-        # Player.id__to__Player_Attributes.id.overlap
-        m = re.match(r"(\w+)\.(\w+)__to__(\w+)\.(\w+)\.(fk|overlap)", entity)
+        rel_type = "fk" if is_fk else "overlap"
+
+        # 兼容新旧命名
+        base = ename.replace(".fk", "").replace(".overlap", "")
+        m = re.match(r"(\w+)\.(\w+)__to__(\w+)\.(\w+)", base)
         if not m:
             continue
 
         src_table = m.group(1)
         dst_table = m.group(3)
-        rel_type = m.group(5)
 
         table_adj[src_table].add(dst_table)
         table_adj[dst_table].add(src_table)
 
         key = tuple(sorted([src_table, dst_table]))
-        edge_map[key].append(entity)
+        edge_map[key].append(ename)
 
     return dict(table_adj), dict(edge_map)
 
 
-def _extract_file_prefix(ref: str) -> str:
-    """从 ref 中提取文件前缀（如 'european_football_2.sqlite::'）。"""
-    if "::" in ref:
-        return ref.split("::")[0] + "::"
-    return ""
-
-
-def _table_ref(table_name: str, file_prefix: str) -> str:
-    """构造完整的 table ref。"""
-    return f"{file_prefix}{table_name}.table"
-
-
 def _summarize_connections(entities: List[str], max_show: int = 5) -> str:
     """将同类 FK/overlap 合并摘要显示。"""
-    # 按关系类型和目标表分组
     groups: Dict[str, List[str]] = defaultdict(list)
     for e in entities:
-        m = re.match(r"(\w+)\.(\w+)__to__(\w+)\.(\w+)\.(fk|overlap)", e)
+        base = e.replace(".fk", "").replace(".overlap", "")
+        m = re.match(r"(\w+)\.(\w+)__to__(\w+)\.(\w+)", base)
         if m:
-            src_table, src_col, dst_table, dst_col, rel = m.groups()
+            src_table, src_col, dst_table, dst_col = m.groups()
+            rel = "fk" if ".fk" in e or "fk" in e else "overlap"
             key = f"{rel} → {dst_table}.{dst_col}"
             groups[key].append(f"{src_table}.{src_col}")
 
@@ -85,48 +74,36 @@ def _summarize_connections(entities: List[str], max_show: int = 5) -> str:
 
 
 def find_path_command(
-    store,
+    obj,  # Workspace or Store
     from_ref: str,
     to_ref: str,
     max_depth: int = 4,
 ) -> str:
-    """在知识图谱上查找两个表之间的最短路径。
-
-    Args:
-        store: Store 实例
-        from_ref: 起始实体 ref（通常是 .table）
-        to_ref: 目标实体 ref（通常是 .table）
-        max_depth: 最大搜索深度（表跳数），默认 4
-    """
-    if not store.pontis_exists:
+    """在知识图谱上查找两个表之间的最短路径。"""
+    store = _get_store(obj)
+    if hasattr(store, 'pontis_exists') and not store.pontis_exists:
         return f"Error: .pontis directory not found in {store.project_path}"
 
-    # 解析 ref 提取表名
     def _table_name(ref: str) -> Optional[str]:
-        if "::" not in ref:
-            return None
-        entity = ref.split("::", 1)[1]
-        m = re.match(r"(\w+)\.table", entity)
-        return m.group(1) if m else None
+        for sep in ("::", "--"):
+            if sep in ref:
+                ref = ref.split(sep)[-1]
+        ref = ref.replace(".table", "")
+        return ref if ref else None
 
     src_name = _table_name(from_ref)
     dst_name = _table_name(to_ref)
 
     if not src_name:
-        return f"Error: 无法解析起始实体：{from_ref}（需要 *.table 格式）"
+        return f"Error: 无法解析起始实体：{from_ref}"
     if not dst_name:
-        return f"Error: 无法解析目标实体：{to_ref}（需要 *.table 格式）"
+        return f"Error: 无法解析目标实体：{to_ref}"
 
     if src_name == dst_name:
         return f"起始和目标是同一个表：{src_name}"
 
-    # 从输入 ref 提取文件前缀
-    file_prefix = _extract_file_prefix(from_ref) or _extract_file_prefix(to_ref)
-
-    # 构建表级邻接
     table_adj, edge_map = _parse_fk_overlap_entities(store)
 
-    # BFS
     visited = {src_name}
     queue = deque([(src_name, [src_name])])
     found = None
@@ -158,14 +135,12 @@ def find_path_command(
             f"图谱中存在的表: {', '.join(tables)}"
         )
 
-    # 格式化输出
     hops = len(found) - 1
     lines = [f"路径（{hops} 跳）:"]
 
     for table in found:
-        lines.append(f"  {_table_ref(table, file_prefix)}")
+        lines.append(f"  {table}")
 
-    # 详细的连接信息
     if hops > 0:
         lines.append("")
         lines.append("连接详情:")
@@ -177,12 +152,10 @@ def find_path_command(
             lines.append(f"{t1} ↔ {t2}（{len(entities)} 个关系）:")
             lines.append(_summarize_connections(entities))
 
-    # 紧凑格式
     compact = " → ".join(found)
     lines.append("")
     lines.append(f"紧凑路径: {compact}")
 
-    # 桥接表提示
     if hops >= 2:
         bridges = found[1:-1]
         lines.append(f"桥接表: {', '.join(bridges)}")

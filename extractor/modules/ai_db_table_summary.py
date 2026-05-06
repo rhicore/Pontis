@@ -1,7 +1,7 @@
 """AI DB Table Summary - 数据库表 AI 总结生成器
 
 职责：
-- 匹配所有 *.db/_entity/*.table 节点
+- 匹配所有 *.db 下的表节点
 - 读取表名、列信息
 - 使用 LLM 生成 detail（详细总结）和 brief（简要概括）
 - 追加到 _meta.yml
@@ -9,7 +9,6 @@
 独立执行：
     python -m extractor.ai_db_table_summary ./my_data
 """
-import os
 import logging
 from typing import List
 from storage import Store
@@ -22,7 +21,7 @@ DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
 
 
 def generate(store: Store) -> None:
-    """为所有 .table 节点生成 AI 总结"""
+    """为所有表节点生成 AI 总结"""
     logger.info("=== AI: DB table summary ===")
 
     llm = load_config().get_llm()
@@ -31,24 +30,24 @@ def generate(store: Store) -> None:
         return
 
     for ext in DB_EXTENSIONS:
-        for ref in store.find_nodes(f"{ext}::*.table"):
-            try:
-                _generate_for_table(ref, store, llm)
-            except Exception as e:
-                logger.warning(f"Failed for {ref}: {e}")
+        for db_ref in store.find_nodes(ext):
+            for table_ref in store.find_nodes(f"{db_ref}::*:table"):
+                try:
+                    _generate_for_table(table_ref, db_ref, store, llm)
+                except Exception as e:
+                    logger.warning(f"Failed for {table_ref}: {e}")
 
 
-def _generate_for_table(ref: str, store: Store, llm) -> bool:
-    path, entity_name = ref.split("::", 1)
-    meta = store.get_meta(ref)
+def _generate_for_table(table_ref: str, db_ref: str, store: Store, llm) -> bool:
+    meta = store.get_meta(table_ref)
     if not meta:
         return False
 
     if "detail" in meta and "brief" in meta:
         return False
 
-    table_name = entity_name.replace(".table", "")
-    columns = _get_column_info(path, table_name, store)
+    table_name = table_ref
+    columns = _get_column_info(db_ref, table_ref, store)
     prompt = _build_prompt(table_name, columns)
 
     try:
@@ -60,8 +59,8 @@ def _generate_for_table(ref: str, store: Store, llm) -> bool:
             updates["brief"] = brief
 
         if updates:
-            store.set_meta(ref, updates)
-            logger.info(f"  AI summary: {ref}")
+            store.set_meta(table_ref, updates)
+            logger.info(f"  AI summary: {table_ref}")
             return True
     except Exception as e:
         logger.debug(f"LLM failed: {e}")
@@ -69,19 +68,16 @@ def _generate_for_table(ref: str, store: Store, llm) -> bool:
     return False
 
 
-def _get_column_info(db_path: str, table_name: str, store: Store) -> List[dict]:
+def _get_column_info(db_ref: str, table_ref: str, store: Store) -> List[dict]:
     columns = []
-    for col_ref in store.find_nodes(f"{db_path}::{table_name}.*.*.col"):
+    for col_ref in store.find_nodes(f"{db_ref}::{table_ref}::*:col"):
         col_meta = store.get_meta(col_ref)
         if col_meta:
-            _, col_name = col_ref.split("::", 1)
-            col_parts = col_name.replace(".col", "").split(".")
-            if len(col_parts) >= 3:
-                columns.append({
-                    "name": col_parts[1],
-                    "type": col_parts[2],
-                    "detail": col_meta.get("detail", ""),
-                })
+            columns.append({
+                "name": col_ref,
+                "type": col_meta.get("col_type", "?"),
+                "detail": col_meta.get("detail", ""),
+            })
     return columns
 
 

@@ -1,7 +1,7 @@
 """DB Column TopK Generator - 数据库列TopK值生成器
 
 职责：
-- 匹配所有 *.db 下的 *.*.*.col 节点
+- 匹配所有 *.db 下的列节点
 - 将topk数据直接放入列节点的_meta.yml根级别
 
 独立执行：
@@ -22,45 +22,40 @@ def generate(store: Store, k: int = 5) -> None:
     logger.info("=== Generating DB column TopK values ===")
 
     for ext in DB_EXTENSIONS:
-        for ref in store.find_nodes(f"{ext}::*.*.*.col"):
-            try:
-                _generate_for_column(ref, store, k)
-            except Exception as e:
-                logger.warning(f"Failed to generate topk for {ref}: {e}")
+        for db_ref in store.find_nodes(ext):
+            for table_ref in store.find_nodes(f"{db_ref}::*:table"):
+                for col_ref in store.find_nodes(f"{db_ref}::{table_ref}::*:col"):
+                    try:
+                        _generate_for_column(col_ref, db_ref, table_ref,
+                                             store, k)
+                    except Exception as e:
+                        logger.warning(f"Failed to generate topk for {col_ref}: {e}")
 
 
-def _generate_for_column(ref: str, store: Store,
-                         k: int) -> bool:
+def _generate_for_column(col_ref: str, db_ref: str, table_ref: str,
+                         store: Store, k: int) -> bool:
     """为单个列生成topk数据并存入meta根级别"""
-    path, entity_name = ref.split("::", 1)
-    meta = store.get_meta(ref)
+    meta = store.get_meta(col_ref)
     if not meta:
         return False
 
-    # 检查是否已处理
     if "topk" in meta:
         return False
 
-    # 解析实体名: [表名].[列名].[类型].col
-    col_parts = entity_name.replace(".col", "").split(".")
-    if len(col_parts) < 3:
+    col_name = col_ref
+    table_name = table_ref
+    db_meta = store.get_meta(db_ref)
+    db_rel = db_meta.get("path", db_ref) if db_meta else db_ref
+    db_path = os.path.join(store.project_path, db_rel)
+    if not db_path or not os.path.isfile(db_path):
         return False
 
-    table_name = col_parts[0]
-    col_name = col_parts[1]
-
-    # 获取DB源路径
-    db_path = os.path.join(store.project_path, store.get_meta(path).get("path", ""))
-    if not db_path:
-        return False
-
-    # 计算TopK
     topk = _calculate_topk(db_path, table_name, col_name, k)
     if topk is None:
         return False
 
-    store.set_meta(ref, {"topk": topk})
-    logger.info(f"  TopK added: {ref} ({len(topk)} items)")
+    store.set_meta(col_ref, {"topk": topk})
+    logger.info(f"  TopK added: {col_ref} ({len(topk)} items)")
     return True
 
 

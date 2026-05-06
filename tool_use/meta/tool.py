@@ -1,22 +1,34 @@
-"""
-Meta tool - View metadata for file/directory/entity nodes.
+"""Meta tool — 双模式元数据查看。
 
-Store.get_meta(ref) handles ref resolution internally:
-  "event.db"              → file node (via inode)
-  "event.db::users.table" → entity node
-
-Virtual properties are always computed and included.
+模式1：meta(ref) → 自身 meta + related 分组
+模式2：meta(ref, neighbor_label) → 只看匹配 neighbor_label 的邻居
 """
+import os
 from typing import List, Optional, Union
 
-from tool_use.config import INFO_TYPE_CONFIG
-from tool_use.utils.formatters import get_meta_type_config, format_meta_output
+from tool_use.utils.formatters import format_labels, get_info, format_meta_output
+from tool_use.config import resolve_meta_config
 
-# Keys that contain adjacency ref lists (injected by Store.get_meta)
 _ADJACENCY_KEYS = {"fk", "rel", "disambig", "col", "overlap", "table", "view"}
 
 
-def _resolve_adjacency(meta: dict, store) -> dict:
+def _get_store(obj):
+    if hasattr(obj, 'get_store'):
+        return obj.get_store()
+    return obj
+
+
+def _get_project_name(obj) -> str:
+    if hasattr(obj, 'config'):
+        dp = obj.config.default_project()
+        if dp:
+            return dp
+    if hasattr(obj, 'project_path'):
+        return os.path.basename(obj.project_path)
+    return "local"
+
+
+def _resolve_adjacency(meta: dict, store, labels: List[str]) -> dict:
     """将邻接 ref 列表解析为 'entity_name | info' 格式的多行字符串。"""
     resolved = dict(meta)
     for key in _ADJACENCY_KEYS:
@@ -26,18 +38,11 @@ def _resolve_adjacency(meta: dict, store) -> dict:
 
         lines = []
         for ref in refs:
-            entity_name = ref.split("::", 1)[1] if "::" in ref else ref
-            suffix = "." + entity_name.rsplit(".", 1)[-1] if "." in entity_name else ""
-
-            # 用与 glob/search 相同的 info 逻辑
             adj_meta = store.get_meta(ref) or {}
-            type_config = INFO_TYPE_CONFIG.get(suffix)
-            if type_config:
-                info = type_config.info_fn(adj_meta)
-            else:
-                info = adj_meta.get("brief", "-")
-
-            lines.append(f"  {entity_name} | {info}")
+            adj_labels = adj_meta.get("_labels", [])
+            info = get_info(adj_labels, adj_meta)
+            label_str = format_labels(adj_labels)
+            lines.append(f"  {ref}\t{label_str}\t{info}")
 
         if lines:
             resolved[key] = "\n".join(lines)
@@ -45,27 +50,68 @@ def _resolve_adjacency(meta: dict, store) -> dict:
     return resolved
 
 
+def _find_neighbors_by_label(store, ref: str, neighbor_label: str) -> List[tuple]:
+    """找所有标签匹配 neighbor_label 的邻居。"""
+    neighbors = store.neighbors(ref)
+    results = []
+    for n in neighbors:
+        n_id = store._name_to_id(n)
+        if not n_id:
+            continue
+        n_labels = store._get_labels_by_id(n_id)
+        if _label_matches(n_labels, neighbor_label):
+            n_meta = store.get_meta(n) or {}
+            results.append((n, n_labels, n_meta))
+    return results
+
+
+def _label_matches(entity_labels: List[str], query: str) -> bool:
+    """层级标签匹配：查询标签匹配实体标签的任意路径段或子路径。"""
+    for stored in entity_labels:
+        segs = stored.split("/")
+        for i in range(len(segs)):
+            for j in range(i + 1, len(segs) + 1):
+                if "/".join(segs[i:j]) == query:
+                    return True
+    return False
+
+
+def _format_neighbor_list(project_name: str, neighbors: List[tuple]) -> str:
+    """格式化邻居列表。"""
+    if not neighbors:
+        return "No matching neighbors found"
+    lines = []
+    for name, labels, meta in neighbors:
+        info = get_info(labels, meta)
+        label_str = format_labels(labels)
+        lines.append(f"{project_name}://\t{name}\t{label_str}\t{info}")
+    return "\n".join(lines)
+
+
 def meta_command(
-    store,
+    obj,  # Workspace or Store
     path: str,
     all: bool = False,
     property: Optional[Union[str, List[str]]] = None,
+    neighbor_label: Optional[str] = None,
     current_cwd: str = ""
 ) -> str:
-    """
-    View metadata for a node.
+    """查看节点元数据。
+
+    模式1：meta(path) → 自身 meta + related 分组
+    模式2：meta(path, neighbor_label) → 只看匹配 neighbor_label 的邻居
 
     Args:
-        store: Store instance
-        path: ref string (file path or path::entity)
-        all: Whether to show all metadata
-        property: Specific property or list of properties to view
-        current_cwd: Current working directory (unused)
-
-    Returns:
-        Formatted metadata
+        obj: Workspace 或 Store 实例
+        path: 实体名或文件路径
+        all: 显示全部字段
+        property: 指定字段
+        neighbor_label: 邻居标签过滤
     """
-    if not store.pontis_exists:
+    store = _get_store(obj)
+    project_name = _get_project_name(obj)
+
+    if hasattr(store, 'pontis_exists') and not store.pontis_exists:
         return f"Error: .pontis directory not found in {store.project_path}"
 
     meta = store.get_meta(path)
@@ -76,8 +122,16 @@ def meta_command(
     if not meta:
         return f"Empty metadata for '{path}'"
 
-    # 将邻接 ref 列表解析为 entity_name | info 格式
-    meta = _resolve_adjacency(meta, store)
+    labels = meta.get("_labels", [])
+
+    # 模式2：邻居标签过滤
+    if neighbor_label:
+        neighbors = _find_neighbors_by_label(store, path, neighbor_label)
+        return _format_neighbor_list(project_name, neighbors)
+
+    # 模式1：自身 meta + related 分组
+    # Resolve adjacency lists
+    meta = _resolve_adjacency(meta, store, labels)
 
     # Normalize property to list
     props = None
@@ -87,7 +141,6 @@ def meta_command(
         else:
             props = list(property)
 
-    # If specific property/properties requested
     if props:
         from tool_use.utils.formatters import _format_meta_value
         lines = []
@@ -103,20 +156,9 @@ def meta_command(
             lines.append(f"未找到: {', '.join(missing)}. 可用字段: {', '.join(available)}")
         return "\n".join(lines)
 
-    # Determine type config by extracting extension from ref
-    is_entity = "::" in path
-    if is_entity:
-        entity_name = path.split("::", 1)[1]
-        if "." in entity_name:
-            file_ext = "." + entity_name.split(".")[-1].lower()
-        else:
-            file_ext = ""
-    else:
-        import os
-        _, ext = os.path.splitext(path)
-        file_ext = ext.lower()
-
-    config = get_meta_type_config(file_ext)
+    # Header
+    header_line = f"{project_name}://\t{path}\t{format_labels(labels)}"
+    config = resolve_meta_config(labels)
 
     # 邻接 key 不截断
     config.untruncated_keys = config.untruncated_keys | _ADJACENCY_KEYS
@@ -124,12 +166,13 @@ def meta_command(
     # Format output
     result = format_meta_output(meta, config, show_all=all, specific_key=None)
 
-    # Fallback: if default_keys matched nothing, show all fields
     if not result and not all:
-        lines = []
+        lines = [header_line, ""]
         for key, value in sorted(meta.items()):
             lines.append(f"{key}: {value}")
         result = "\n".join(lines)
+    else:
+        result = header_line + "\n\n" + result
 
     return result
 

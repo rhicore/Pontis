@@ -9,6 +9,7 @@
 独立执行：
     python -m extractor.modules.db_fk_validate ./my_data
 """
+import os
 import logging
 import sqlite3
 from pathlib import Path
@@ -22,7 +23,11 @@ def generate(store: Store) -> None:
     """校验所有 .fk 实体的实际数据一致性。"""
     logger.info("=== Validating FK data consistency ===")
 
-    fk_refs = list(store.find_nodes("*.db::*__to__*.fk"))
+    # 查找 FK 实体：新版通过标签，旧版通过后缀
+    fk_refs = list(store.find_nodes("*:fk"))
+    if not fk_refs:
+        # 旧版兼容：通过 .fk 后缀
+        fk_refs = list(store.find_nodes("*.fk"))
     if not fk_refs:
         logger.info("  No FK entities found")
         return
@@ -41,12 +46,13 @@ def generate(store: Store) -> None:
 def _parse_fk_entity(entity_name: str) -> dict | None:
     """从 FK 实体名解析出 from_table, from_col, to_table, to_col。
 
-    格式: {from_table}.{from_col}__to__{to_table}.{to_col}.fk
+    格式: {from_table}.{from_col}__to__{to_table}.{to_col}（新版无后缀）
+    或: {from_table}.{from_col}__to__{to_table}.{to_col}.fk（旧版带后缀）
     """
-    if not entity_name.endswith(".fk"):
+    if "__to__" not in entity_name:
         return None
 
-    body = entity_name[:-3]  # strip .fk
+    body = entity_name.replace(".fk", "")
     parts = body.split("__to__", 1)
     if len(parts) != 2:
         return None
@@ -69,20 +75,19 @@ def _parse_fk_entity(entity_name: str) -> dict | None:
 
 def _get_db_path(ref: str, store: Store) -> str | None:
     """从 FK ref 获取数据库文件绝对路径。"""
-    db_ref = ref.split("::", 1)[0]
-    db_meta = store.get_meta(db_ref)
-    if not db_meta:
+    _files = store.find_nodes(f"{ref}::*:file")
+    if not _files:
         return None
-    rel_path = db_meta.get("path", "")
-    if not rel_path:
-        return None
-    return str(Path(store.project_path) / rel_path)
+    db_entity = _files[0]
+    db_meta = store.get_meta(db_entity)
+    db_rel = db_meta.get("path", db_entity) if db_meta else db_entity
+    db_path = os.path.join(store.project_path, db_rel)
+    return db_path
 
 
 def _validate_one(ref: str, store: Store) -> bool:
     """校验单个 FK 实体。"""
-    db_path = ref.split("::", 1)[0]
-    entity_name = ref.split("::", 1)[1]
+    entity_name = ref
 
     parsed = _parse_fk_entity(entity_name)
     if not parsed:

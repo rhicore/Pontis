@@ -1,6 +1,6 @@
 """目录虚属性 — child_count, file_count, subdir_count"""
 import os
-from typing import Dict, Callable
+from typing import Callable, Dict
 
 
 def child_count(project_path: str, file_rel_path: str, entity_path: str = "") -> int:

@@ -4,7 +4,7 @@ Uses ToolRegistry pattern: tools are registered with (schema, executor) pairs,
 allowing different agent modes to have different tool sets.
 """
 import importlib
-from typing import Callable, Dict, List, Any, Tuple
+from typing import Callable, Dict, List, Tuple
 
 
 # tool_name → tool_use directory mapping
@@ -39,13 +39,13 @@ class ToolRegistry:
         """返回 OpenAI tool calling schema 列表。"""
         return [schema for schema, _ in self._tools.values()]
 
-    def execute(self, name: str, arguments: dict, store) -> str:
-        """执行工具调用。"""
+    def execute(self, name: str, arguments: dict, store, workspace=None) -> str:
+        """执行工具调用。传入 workspace 供新式工具使用。"""
         if name not in self._tools:
             return f"Unknown tool: {name}"
         _, executor = self._tools[name]
         try:
-            return executor(store, arguments)
+            return executor(store, arguments, workspace=workspace)
         except Exception as e:
             return f"Tool error ({name}): {type(e).__name__}: {e}"
 
@@ -69,7 +69,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "path_pattern": {
                             "type": "string",
-                            "description": "Glob pattern with optional :: segments for edge traversal, e.g. '*.db::*.table::*.*.*.col'",
+                            "description": "Glob pattern, e.g. '*.db' for files or '*.*.*.col' for column entities",
                         },
                         "offset": {
                             "type": "integer",
@@ -126,31 +126,6 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                 },
             },
         },
-        "read": {
-            "type": "function",
-            "function": {
-                "name": "read",
-                "description": _load_prompt("read"),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "File path or path::entity to read",
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Start line (1-indexed for text)",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max lines/rows to read, default 2000",
-                        },
-                    },
-                    "required": ["file_path"],
-                },
-            },
-        },
         "meta": {
             "type": "function",
             "function": {
@@ -161,7 +136,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Ref string: file path, path::entity, or ent_id, e.g. 'event.db::users.table'",
+                            "description": "Entity name or file path, e.g. 'users' (table) or 'event.db'",
                         },
                         "all": {
                             "type": "boolean",
@@ -176,44 +151,6 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                         },
                     },
                     "required": ["path"],
-                },
-            },
-        },
-        "lookup": {
-            "type": "function",
-            "function": {
-                "name": "lookup",
-                "description": _load_prompt("lookup"),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "file_pattern": {
-                            "type": "string",
-                            "description": "Glob pattern for files (via Store graph), e.g. '*.db', '*.json'",
-                        },
-                        "type": {
-                            "type": "string",
-                            "description": "Data type to search: INT, TEXT, REAL, BOOL, STR",
-                        },
-                        "predicate": {
-                            "type": "string",
-                            "description": "Filter expression, e.g. 'INT > 100', 'STR = \"active\"'",
-                        },
-                        "output_mode": {
-                            "type": "string",
-                            "enum": ["distinct_count", "file_count"],
-                            "description": "Output mode, default 'distinct_count'",
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Starting index (0-based), default 0",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max results per page, default 50",
-                        },
-                    },
-                    "required": ["file_pattern", "type", "predicate"],
                 },
             },
         },
@@ -302,11 +239,11 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "from_ref": {
                             "type": "string",
-                            "description": "起始实体 ref，如 'db::TableA.table'",
+                            "description": "起始表名，如 'TableA'",
                         },
                         "to_ref": {
                             "type": "string",
-                            "description": "目标实体 ref，如 'db::TableB.table'",
+                            "description": "目标表名，如 'TableB'",
                         },
                         "max_depth": {
                             "type": "integer",
@@ -333,7 +270,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "实体引用，格式 path::entity_name，如 'event.db::user_event_join.view'",
+                            "description": "实体名称，如 'no_concat.convention' 或 'users__orders.rel'",
                         },
                         "meta": {
                             "type": "object",
@@ -366,14 +303,14 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "节点引用：文件路径、path::entity、或 ent_id",
+                            "description": "节点引用，如 'event.db' 或 'users'",
                         },
                         "fields": {
                             "type": "object",
-                            "description": "要更新的字段键值对，如 {\"brief\": \"...\", \"detail\": \"...\"}",
+                            "description": "要更新的字段，允许 brief 和 detail，如 {\"brief\": \"...\", \"detail\": \"...\"}",
                         },
                     },
-                    "required": ["ref", "fields"],
+                    "required": ["ref"],
                 },
             },
         },
@@ -412,7 +349,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "要删除的节点 ref，如 'event.db' 或 'event.db::users.table'",
+                            "description": "要删除的节点 ref，如 'event.db' 或 'users'",
                         },
                     },
                     "required": ["ref"],
@@ -453,16 +390,16 @@ def _build_agent_schema() -> dict:
 
 # ==================== Tool Executors ====================
 
-def _exec_glob(store, arguments: dict) -> str:
+def _exec_glob(store, arguments: dict, *, workspace=None) -> str:
     from tool_use.glob.tool import glob_command
     return glob_command(
-        store, arguments["path_pattern"],
+        workspace or store, arguments["path_pattern"],
         offset=arguments.get("offset", 0),
         limit=arguments.get("limit"),
     )
 
 
-def _exec_grep(store, arguments: dict) -> str:
+def _exec_grep(store, arguments: dict, *, workspace=None) -> str:
     from tool_use.grep.tool import grep_command
     return grep_command(
         store,
@@ -476,43 +413,20 @@ def _exec_grep(store, arguments: dict) -> str:
     )
 
 
-def _exec_read(store, arguments: dict) -> str:
-    from tool_use.read.tool import read_command
-    kwargs = {"store": store, "file_path": arguments["file_path"]}
-    if "offset" in arguments:
-        kwargs["offset"] = arguments["offset"]
-    if "limit" in arguments:
-        kwargs["limit"] = arguments["limit"]
-    return read_command(**kwargs)
-
-
-def _exec_meta(store, arguments: dict) -> str:
+def _exec_meta(store, arguments: dict, *, workspace=None) -> str:
     from tool_use.meta.tool import meta_command
     return meta_command(
-        store,
+        workspace or store,
         path=arguments["path"],
         all=arguments.get("all", False),
         property=arguments.get("property"),
     )
 
 
-def _exec_lookup(store, arguments: dict) -> str:
-    from tool_use.lookup.tool import lookup_command
-    return lookup_command(
-        store,
-        file_pattern=arguments["file_pattern"],
-        type=arguments["type"],
-        predicate=arguments["predicate"],
-        output_mode=arguments.get("output_mode", "distinct_count"),
-        offset=arguments.get("offset", 0),
-        limit=arguments.get("limit"),
-    )
-
-
-def _exec_search(store, arguments: dict) -> str:
+def _exec_search(store, arguments: dict, *, workspace=None) -> str:
     from tool_use.search.tool import search_command
     return search_command(
-        store,
+        workspace or store,
         path_pattern=arguments["path_pattern"],
         query=arguments["query"],
         offset=arguments.get("offset", 0),
@@ -520,7 +434,7 @@ def _exec_search(store, arguments: dict) -> str:
     )
 
 
-def _exec_bash(store, arguments: dict) -> str:
+def _exec_bash(store, arguments: dict, *, workspace=None) -> str:
     from tool_use.bash.tool import bash_command
     return bash_command(
         command=arguments["command"],
@@ -529,7 +443,7 @@ def _exec_bash(store, arguments: dict) -> str:
     )
 
 
-def _exec_query(store, arguments: dict) -> str:
+def _exec_query(store, arguments: dict, *, workspace=None) -> str:
     from tool_use.query.tool import query_command
     return query_command(
         store,
@@ -539,27 +453,27 @@ def _exec_query(store, arguments: dict) -> str:
     )
 
 
-def _exec_find_path(store, arguments: dict) -> str:
+def _exec_find_path(store, arguments: dict, *, workspace=None) -> str:
     from tool_use.find_path.tool import find_path_command
     return find_path_command(
-        store,
+        workspace or store,
         from_ref=arguments["from_ref"],
         to_ref=arguments["to_ref"],
         max_depth=arguments.get("max_depth", 4),
     )
 
 
-def _exec_create_entity(store, arguments: dict) -> str:
+def _exec_create_entity(store, arguments: dict, *, workspace=None) -> str:
     from tool_use.create_entity.tool import create_entity_command
     return create_entity_command(
-        store,
+        workspace or store,
         ref=arguments["ref"],
         meta=arguments.get("meta"),
         edges=arguments.get("edges"),
     )
 
 
-def _exec_update_meta(store, arguments: dict) -> str:
+def _exec_update_meta(store, arguments: dict, *, workspace=None) -> str:
     from tool_use.update_meta.tool import update_meta_command
     return update_meta_command(
         store,
@@ -568,12 +482,12 @@ def _exec_update_meta(store, arguments: dict) -> str:
     )
 
 
-def _exec_add_edge(store, arguments: dict) -> str:
+def _exec_add_edge(store, arguments: dict, *, workspace=None) -> str:
     from tool_use.add_edge.tool import add_edge_command
     return add_edge_command(store, edges=arguments["edges"])
 
 
-def _exec_delete(store, arguments: dict) -> str:
+def _exec_delete(store, arguments: dict, *, workspace=None) -> str:
     from tool_use.delete.tool import delete_command
     return delete_command(store, ref=arguments["ref"])
 
@@ -610,9 +524,7 @@ def _get_agent_schema() -> dict:
 _READONLY_EXECUTORS = {
     "glob": _exec_glob,
     "grep": _exec_grep,
-    "read": _exec_read,
     "meta": _exec_meta,
-    "lookup": _exec_lookup,
     "search": _exec_search,
     "bash": _exec_bash,
     "query": _exec_query,
@@ -627,44 +539,21 @@ _WRITE_EXECUTORS = {
 }
 
 
-# ──────────────────────────────────────────────────────────
-#  模式 → 默认工具集
-# ──────────────────────────────────────────────────────────
-# 新增模式只需在此加一行。
-
-_MODE_TOOLS = {
-    "readonly":  ["glob", "grep", "read", "meta", "lookup", "search",
-                  "bash", "query", "find_path", "agent"],
-    "writer":    ["glob", "grep", "read", "meta", "lookup", "search",
-                  "bash", "query", "find_path", "agent",
-                  "create_entity", "update_meta", "add_edge", "delete"],
-    "sub_agent": ["glob", "grep", "read", "meta", "lookup", "search",
-                  "bash", "query", "find_path",
-                  "create_entity", "update_meta", "add_edge", "delete"],
-    "benchmark": ["glob", "grep", "read", "meta", "lookup", "search",
-                  "bash", "query", "find_path"],
-}
-
-
 def build_registry(spec) -> ToolRegistry:
     """根据 AgentSpec 构建工具注册表。
 
-    流程：从 _MODE_TOOLS 取模式默认集合 → 排除 disabled_tools → 逐个注册。
-    特殊处理：agent 工具需要根据 mode 创建 AgentExecutor。
+    使用 spec.tools（由 resolve_mode 填充）作为工具列表。
     """
+    tool_names = spec.tools
     mode = spec.mode
-    base_tools = list(_MODE_TOOLS.get(mode, _MODE_TOOLS["readonly"]))
-    disabled = set(spec.disabled_tools)
-    enabled = [t for t in base_tools if t not in disabled]
 
     readonly_schemas = _get_readonly_schemas()
     write_schemas = _get_write_schemas()
 
     registry = ToolRegistry()
 
-    for name in enabled:
+    for name in tool_names:
         if name == "agent":
-            # agent 工具特殊处理：executor 需要包装 registry 和 mode
             from tool_use.sub_agent.tool import AgentExecutor
             sub_mode = "writer" if mode in ("writer", "sub_agent") else "readonly"
             registry.register("agent", _get_agent_schema(),
@@ -674,71 +563,33 @@ def build_registry(spec) -> ToolRegistry:
         elif name in write_schemas:
             registry.register(name, write_schemas[name], _WRITE_EXECUTORS[name])
 
-    # debug 模式注入 log 工具
-    if spec.debug:
-        registry.register("log", _build_log_schema(), _exec_log)
-
     return registry
-
-
-# ==================== Debug Tool ====================
-
-def _build_log_schema() -> dict:
-    return {
-        "type": "function",
-        "function": {
-            "name": "log",
-            "description": _load_prompt("log"),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "category": {
-                        "type": "string",
-                        "enum": ["tool_result", "tool_missing", "tool_ux", "prompt_unclear"],
-                        "description": "问题类别",
-                    },
-                    "feedback": {
-                        "type": "string",
-                        "description": "具体问题描述（中文，包含工具名、参数、期望等细节）",
-                    },
-                },
-                "required": ["category", "feedback"],
-            },
-        },
-    }
-
-
-def _exec_log(store, arguments: dict) -> str:
-    from tool_use.log.tool import log_command
-    return log_command(
-        category=arguments["category"],
-        feedback=arguments["feedback"],
-    )
-
-
-def enable_debug(registry: ToolRegistry) -> None:
-    """向已有 registry 注入 log 工具（调试模式）。"""
-    registry.register("log", _build_log_schema(), _exec_log)
 
 
 # ==================== 向后兼容封装 ====================
 
 def build_readonly_registry() -> ToolRegistry:
     """向后兼容：构建只读模式工具集。"""
-    from agent.agent import AgentSpec
-    return build_registry(AgentSpec(mode="readonly"))
+    from agent.config import AgentSpec, resolve_mode
+    spec = AgentSpec(mode="readonly")
+    resolve_mode(spec)
+    return build_registry(spec)
 
 
 def build_writer_registry() -> ToolRegistry:
     """向后兼容：构建写入模式工具集。"""
-    from agent.agent import AgentSpec
-    return build_registry(AgentSpec(mode="writer"))
+    from agent.config import AgentSpec, resolve_mode
+    spec = AgentSpec(mode="writer")
+    resolve_mode(spec)
+    return build_registry(spec)
 
 
 # ==================== 向后兼容 ====================
 
-def execute_tool(name: str, arguments: dict, store) -> str:
+def execute_tool(name: str, arguments: dict, store, workspace=None) -> str:
     """执行工具（向后兼容）。"""
-    from agent.agent import AgentSpec
-    registry = build_registry(AgentSpec())
-    return registry.execute(name, arguments, store)
+    from agent.config import AgentSpec, resolve_mode
+    spec = AgentSpec()
+    resolve_mode(spec)
+    registry = build_registry(spec)
+    return registry.execute(name, arguments, store, workspace=workspace)

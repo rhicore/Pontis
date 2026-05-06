@@ -8,7 +8,6 @@
 独立执行：
     python -m extractor.db_column_rel ./my_data
 """
-import os
 import json
 import logging
 from typing import Optional
@@ -29,9 +28,16 @@ def generate(store: Store, config=None) -> None:
         logger.warning("LLM not configured, skipping relation generation")
         return
 
-    # 查找所有.overlap实体
+    # 查找所有 overlap 实体（通过标签或后缀，兼容新旧数据）
     created_count = 0
     for ext in DB_EXTENSIONS:
+        for ref in store.find_nodes(f"{ext}::*:overlap"):
+            try:
+                if _generate_for_overlap(ref, store, llm):
+                    created_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to generate relation for {ref}: {e}")
+        # 兼容旧命名（带 .overlap 后缀）
         for ref in store.find_nodes(f"{ext}::*.overlap"):
             try:
                 if _generate_for_overlap(ref, store, llm):
@@ -45,20 +51,28 @@ def generate(store: Store, config=None) -> None:
 
 def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
     """为单个.overlap实体生成.rel关系"""
-    path, entity_name = ref.split("::", 1)
+    entity_name = ref
     overlap_meta = store.get_meta(ref)
     if not overlap_meta:
         return False
 
-    # 检查是否已存在.rel实体
-    rel_entity_name = entity_name.replace(".overlap", ".rel")
-    if store.node_exists(f"{path}::{rel_entity_name}"):
+    # 查找父 db 文件实体
+    db_parents = store.find_connected(ref, "*.db")
+    db_ref = db_parents[0] if db_parents else ""
+
+    # 检查是否已存在.rel实体（兼容新旧命名）
+    rel_entity_name = entity_name.replace(".overlap", "")
+    # 也检查带 .rel 后缀的旧实体
+    old_rel_entity_name = entity_name.replace(".overlap", ".rel")
+    if store.node_exists(rel_entity_name) or store.node_exists(old_rel_entity_name):
         return False
 
     stats = overlap_meta.get("stats", {})
-    # 从 entity name 解析定位信息（overlap meta 不再存储冗余字段）
-    # 格式: from_table.from_col__to__to_table.to_col.overlap
+    # 从 entity name 解析定位信息
+    # 格式: from_table.from_col__to__to_table.to_col（新版无后缀）
+    # 或: from_table.from_col__to__to_table.to_col.overlap（旧版带后缀）
     base_name = entity_name.replace(".overlap", "")
+    base_name = base_name.replace(".rel", "")
     if "__to__" not in base_name:
         return False
     left, right = base_name.split("__to__", 1)
@@ -109,20 +123,14 @@ def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
         "created_at": __import__('datetime').datetime.now().isoformat(),
     }
 
-    store.create_node(f"{path}::{rel_entity_name}", meta=rel_meta)
+    store.create_node(rel_entity_name, meta=rel_meta, labels=["rel"])
 
     # 添加边: source table → rel, target table → rel
     safe_from_table = from_table.replace("/", "_").replace("\\", "_")
     safe_to_table = to_table.replace("/", "_").replace("\\", "_")
     store.add_edges([
-        {
-            "a": f"{path}::{safe_from_table}.table",
-            "b": f"{path}::{rel_entity_name}",
-        },
-        {
-            "a": f"{path}::{safe_to_table}.table",
-            "b": f"{path}::{rel_entity_name}",
-        },
+        {"a": safe_from_table, "b": rel_entity_name},
+        {"a": safe_to_table, "b": rel_entity_name},
     ])
 
     logger.info(f"  Relation: {rel_entity_name} (confidence={confidence:.2f})")

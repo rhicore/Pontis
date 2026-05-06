@@ -1,7 +1,7 @@
 """DB Column Sample Generator - 数据库列采样生成器
 
 职责：
-- 匹配所有 *.db 下的 *.*.*.col 节点
+- 匹配所有 *.db 下的列节点
 - 将sample数据直接放入列节点的_meta.yml根级别
 
 独立执行：
@@ -22,45 +22,40 @@ def generate(store: Store, sample_size: int = 10) -> None:
     logger.info("=== Generating DB column samples ===")
 
     for ext in DB_EXTENSIONS:
-        for ref in store.find_nodes(f"{ext}::*.*.*.col"):
-            try:
-                _generate_for_column(ref, store, sample_size)
-            except Exception as e:
-                logger.warning(f"Failed to generate sample for {ref}: {e}")
+        for db_ref in store.find_nodes(ext):
+            for table_ref in store.find_nodes(f"{db_ref}::*:table"):
+                for col_ref in store.find_nodes(f"{db_ref}::{table_ref}::*:col"):
+                    try:
+                        _generate_for_column(col_ref, db_ref, table_ref,
+                                             store, sample_size)
+                    except Exception as e:
+                        logger.warning(f"Failed to generate sample for {col_ref}: {e}")
 
 
-def _generate_for_column(ref: str, store: Store,
-                         sample_size: int) -> bool:
+def _generate_for_column(col_ref: str, db_ref: str, table_ref: str,
+                         store: Store, sample_size: int) -> bool:
     """为单个列生成sample数据并存入meta根级别"""
-    path, entity_name = ref.split("::", 1)
-    meta = store.get_meta(ref)
+    meta = store.get_meta(col_ref)
     if not meta:
         return False
 
-    # 检查是否已处理
     if "sample" in meta:
         return False
 
-    # 解析实体名: [表名].[列名].[类型].col
-    col_parts = entity_name.replace(".col", "").split(".")
-    if len(col_parts) < 3:
+    col_name = col_ref
+    table_name = table_ref
+    db_meta = store.get_meta(db_ref)
+    db_rel = db_meta.get("path", db_ref) if db_meta else db_ref
+    db_path = os.path.join(store.project_path, db_rel)
+    if not db_path or not os.path.isfile(db_path):
         return False
 
-    table_name = col_parts[0]
-    col_name = col_parts[1]
-
-    # 获取DB源路径
-    db_path = os.path.join(store.project_path, store.get_meta(path).get("path", ""))
-    if not db_path:
-        return False
-
-    # 生成样本
     samples = _get_samples(db_path, table_name, col_name, sample_size)
     if samples is None:
         return False
 
-    store.set_meta(ref, {"sample": samples})
-    logger.info(f"  Sample added: {ref} ({len(samples)} items)")
+    store.set_meta(col_ref, {"sample": samples})
+    logger.info(f"  Sample added: {col_ref} ({len(samples)} items)")
     return True
 
 

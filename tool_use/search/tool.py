@@ -5,7 +5,7 @@ import os
 from collections import Counter
 from typing import List, Optional
 
-from tool_use.utils.formatters import get_type_config, get_file_type_from_name
+from tool_use.utils.formatters import format_labels, get_info
 from tool_use.config import TOOL_PAGINATION
 
 
@@ -15,18 +15,34 @@ def _tokenize(text: str) -> List[str]:
     for part in re.split(r'[\s,，。.!！?？;；:：、/\\|()\[\]{}]+', text.lower()):
         if not part:
             continue
-        # 纯 ASCII 词 → 直接加入
         if re.match(r'^[a-z0-9_]+$', part):
             if len(part) > 1:
                 tokens.append(part)
         else:
-            # 含 CJK → 按字符 bigram 拆分
             chars = [c for c in part if c.strip()]
             for i in range(len(chars)):
                 tokens.append(chars[i])
                 if i + 1 < len(chars):
                     tokens.append(chars[i] + chars[i + 1])
     return tokens
+
+
+def _get_store(obj):
+    """从 workspace 获取 store，或直接返回 store。"""
+    if hasattr(obj, 'get_store'):
+        return obj.get_store()
+    return obj
+
+
+def _get_project_name(obj) -> str:
+    """从 workspace 或 store 获取项目名。"""
+    if hasattr(obj, 'config'):
+        dp = obj.config.default_project()
+        if dp:
+            return dp
+    if hasattr(obj, 'project_path'):
+        return os.path.basename(obj.project_path)
+    return "local"
 
 
 def _bm25_search(store, query: str, path_pattern: str = "",
@@ -36,10 +52,8 @@ def _bm25_search(store, query: str, path_pattern: str = "",
     if not query_tokens:
         return []
 
-    # 收集所有文档
-    docs = []  # [(ref, tokens, info_str)]
+    docs = []
     for ref, meta in store.walk_metas():
-        # path_pattern 过滤
         if path_pattern and path_pattern.strip() not in ("", "*"):
             import fnmatch
             if not fnmatch.fnmatch(ref.lower(), path_pattern.lower()):
@@ -55,27 +69,20 @@ def _bm25_search(store, query: str, path_pattern: str = "",
         if not tokens:
             continue
 
-        # 显示信息
-        name = meta.get('name', os.path.basename(ref))
-        node_type = meta.get('type', '')
-        file_type = get_file_type_from_name(name, node_type)
-        config = get_type_config(file_type)
-        info = config.info_fn(meta)
-        display_info = f"{info}, {brief}" if brief and info != "-" else (brief or info)
+        labels = meta.get("_labels", [])
+        info = get_info(labels, meta)
 
-        docs.append((ref, tokens, display_info))
+        docs.append((ref, tokens, info, labels))
 
     if not docs:
         return []
 
-    # BM25 计算
     N = len(docs)
-    avgdl = sum(len(t) for _, t, _ in docs) / N
+    avgdl = sum(len(t) for _, t, _, _ in docs) / N
     query_token_set = set(query_tokens)
 
-    # IDF
     df = Counter()
-    for _, tokens, _ in docs:
+    for _, tokens, _, _ in docs:
         seen = set(tokens) & query_token_set
         for t in seen:
             df[t] += 1
@@ -85,7 +92,7 @@ def _bm25_search(store, query: str, path_pattern: str = "",
         idf[t] = math.log((N - df.get(t, 0) + 0.5) / (df.get(t, 0) + 0.5) + 1)
 
     results = []
-    for ref, tokens, info in docs:
+    for ref, tokens, info, labels in docs:
         tf = Counter(tokens)
         dl = len(tokens)
         score = 0.0
@@ -97,30 +104,23 @@ def _bm25_search(store, query: str, path_pattern: str = "",
             denominator = tf_val + k1 * (1 - b + b * dl / avgdl)
             score += idf.get(t, 0) * numerator / denominator
         if score > 0:
-            results.append((score, ref, info))
+            results.append((score, ref, info, labels))
 
     results.sort(key=lambda x: -x[0])
     return results
 
 
 def search_command(
-    store,
+    obj,  # Workspace or Store
     path_pattern: str,
     query: str,
     offset: int = 0,
     limit: Optional[int] = None,
     current_cwd: str = ""
 ) -> str:
-    """BM25 语义检索，搜索实体的 brief 和 detail。
-
-    Args:
-        store: Store 实例
-        path_pattern: glob 模式限定搜索范围
-        query: 搜索查询
-        offset: 起始位置
-        limit: 每页最大条数
-    """
-    if not store.pontis_exists:
+    """BM25 语义检索，搜索实体的 brief 和 detail。"""
+    store = _get_store(obj)
+    if hasattr(store, 'pontis_exists') and not store.pontis_exists:
         return f"Error: .pontis directory not found in {store.project_path}"
 
     page_conf = TOOL_PAGINATION["search"]
@@ -139,41 +139,16 @@ def search_command(
     if not page:
         return f"No results at offset {offset}. Total results: {total}"
 
-    page_refs = [ref for _, ref, _ in page]
-    page_infos = [info for _, _, info in page]
-
-    # 检测 ref 公共前缀缩写
-    prefix = _common_ref_prefix(page_refs)
-    if prefix:
-        header = f"[{prefix}]\n"
-    else:
-        header = ""
-        prefix = ""
+    project_name = _get_project_name(obj)
 
     lines = []
-    for ref, info in zip(page_refs, page_infos):
-        display = ref[len(prefix):] if prefix else ref
-        lines.append(f"{display} | {info}")
-    output = header + '\n'.join(lines)
+    for score, ref, info, labels in page:
+        label_str = format_labels(labels)
+        lines.append(f"{project_name}://\t{ref}\t{label_str}\t{info}")
+    output = '\n'.join(lines)
 
     end = offset + len(page)
     if end < total:
         output += f"\n(共 {total} 条结果，当前显示第 {offset + 1}-{end} 条。使用 offset={end} 查看后续结果)"
 
     return output
-
-
-def _common_ref_prefix(refs: list) -> str:
-    """找所有 ref 的最长公共前缀，停在 :: 边界上。"""
-    if not refs:
-        return ""
-    prefix = refs[0]
-    for s in refs[1:]:
-        while not s.startswith(prefix):
-            prefix = prefix[:-1]
-        if not prefix:
-            return ""
-    if "::" not in prefix:
-        return ""
-    last_sep = prefix.rfind("::")
-    return prefix[:last_sep + 2]
