@@ -47,9 +47,13 @@ class PontusAgent:
                  system_prompt: Optional[str] = None,
                  guardrails: Optional[List[Guardrail]] = None,
                  logger_name: Optional[str] = None,
-                 trace_callback=None):
+                 trace_callback=None,
+                 active_projects: Optional[List[str]] = None):
         self.project_path = project_path
-        self.workspace = Workspace(project_path=project_path)
+        if not active_projects:
+            active_projects = [os.path.basename(os.path.abspath(project_path))]
+        self.workspace = Workspace(project_path=project_path,
+                                   active_projects=active_projects)
         self.store = self.workspace.get_store()
         self.config = load_agent_config(project_path)
         self.logger = logging.getLogger(logger_name or __name__)

@@ -3,7 +3,7 @@
 职责：
 - 匹配 *.db 下的所有 *.*.*.col 节点
 - 使用Jaccard相似度检测列值重叠（硬性规则）
-- 在_entity/ 下创建 [表名].[列名]__to__[表名].[列名].overlap 实体
+- 在 _entity/ 下创建 [表名].[列名]->[表名].[列名] 实体（labels=["overlap"]）
 
 检测流程（漏斗筛选模型）：
 1. Context Check - 表级语义过滤（共享非停用词）
@@ -98,7 +98,7 @@ def _generate_for_database(path: str, store: Store) -> bool:
         # 检测列对重叠
         overlaps = _detect_column_overlaps(db_path, cols1, cols2)
 
-        # 创建.overlap实体
+        # 创建 overlap 实体
         for overlap in overlaps:
             if _create_overlap_entity(path, overlap, store):
                 created_count += 1
@@ -232,26 +232,28 @@ def _calculate_overlap(db_path: str, col1: Dict, col2: Dict) -> Optional[Dict]:
 
 
 def _create_overlap_entity(path: str, overlap: Dict, store: Store) -> bool:
-    """在_entity/下为重叠关系创建.overlap实体"""
+    """在 _entity/ 下为重叠关系创建实体（labels=["overlap"]）"""
     try:
         from_table = overlap['from_table']
         from_column = overlap['from_column']
         to_table = overlap['to_table']
         to_column = overlap['to_column']
 
-        safe_from_col = from_column.replace("/", "_").replace("\\", "_")
-        safe_to_col = to_column.replace("/", "_").replace("\\", "_")
+        raw_from_table = from_table.split("--")[-1] if "--" in from_table else from_table
+        raw_to_table = to_table.split("--")[-1] if "--" in to_table else to_table
+        raw_from_col = from_column.split("--")[-1] if "--" in from_column else from_column
+        raw_to_col = to_column.split("--")[-1] if "--" in to_column else to_column
+        safe_from_col = raw_from_col.replace("/", "_").replace("\\", "_")
+        safe_to_col = raw_to_col.replace("/", "_").replace("\\", "_")
 
-        overlap_entity_name = f"{from_table}.{safe_from_col}__to__{to_table}.{safe_to_col}"
-        reverse_entity_name = f"{to_table}.{safe_to_col}__to__{from_table}.{safe_from_col}"
+        overlap_entity_name = f"{raw_from_table}.{safe_from_col}->{raw_to_table}.{safe_to_col}"
+        reverse_entity_name = f"{raw_to_table}.{safe_to_col}->{raw_from_table}.{safe_from_col}"
 
         if store.node_exists(overlap_entity_name) or store.node_exists(reverse_entity_name):
             return False
 
         overlap_meta = {
             "stats": overlap['stats'],
-            "brief": f"{from_table}.{from_column} 与 {to_table}.{to_column} 重叠"
-                     f"（Jaccard={overlap['stats'].get('jaccard', 0):.4f}）",
             "detail": f"来源：{overlap['match_type']}。{overlap['reason']}。",
             "created_at": __import__('datetime').datetime.now().isoformat(),
         }

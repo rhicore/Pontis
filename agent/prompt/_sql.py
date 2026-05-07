@@ -9,7 +9,7 @@ _SQL_RULES = r"""## 数据库 SQL 准则
 
 ### 目标一：发现 schema
 
-用 glob 发现数据库中的表和列（Cypher 风格 URN）：
+用 glob 发现数据库中的表和列：
 - `glob "*.db"` — 列出所有数据库文件
 - `glob "*:table"` — 列出所有表
 - `glob "*:col"` — 列出所有列
@@ -21,7 +21,7 @@ _SQL_RULES = r"""## 数据库 SQL 准则
 meta 帮助理解表列语义。meta 的 detail 会显示实体丰富的总结信息。
 当不确定选哪个列时（尤其名称相似的列），用 `meta` 查看 detail、sample、topk 来确认。
 
-也可以用 `meta("drivers", neighbor_label="col")` 快速查看表的所有列。
+也可以用 `meta("drivers")` 快速查看表的所有列。
 
 ### 目标三：理解表间关系（必须在写 JOIN 之前完成）
 
@@ -29,25 +29,25 @@ meta 帮助理解表列语义。meta 的 detail 会显示实体丰富的总结�
 - `glob "*:fk"` — 外键关系（精确的 JOIN 条件）
 - `glob "*:rel"` — 语义关系（AI 推断，辅助参考）
 - `glob "*:overlap"` — 列值重叠
-- `glob "*.disambig"` — 语义消歧
+- `glob "*:disambig"` — 语义消歧
 
-FK 实体名编码了精确的 JOIN 条件，例如 `orders.user_id__to__users.id`（labels: `["fk"]`）表示 `orders.user_id = users.id`。
+FK 实体名编码了精确的 JOIN 条件，例如 `orders.user_id->users.id`（labels: `["fk"]`）表示 `orders.user_id = users.id`。
 rel 实体是 AI 推断的辅助线索，可靠性低于 FK，使用前应验证数据。
 overlap 实体仅表示列值有重叠，不能直接作为 JOIN 条件使用。
 
-如果两个表之间没有直接关系，可以用 `find_path` 查找通过中间表的桥接路径。
+如果两个表之间没有直接关系，可以用 glob 多跳遍历查找桥接路径，如 `glob "(*:table)--(*:fk)--(*:table)--(*:fk)--(目标表:table)"`。
 
 ### 输出前检查
 
 1. 确保你读取了输出 SQL 中涉及的任何实体的元数据
-2. 模糊性的排除：有 `.disambig` 消歧实体时必须读取确认
+2. 模糊性的排除：有 disambig 消歧实体时必须读取确认
 3. 确保 JOIN 关系的正确性、连贯性、合理性
 4. 生成的 SQL 能在以上信息约束下满足用户提问
 
 ### 写 SQL 前的规划步骤（必须执行）
 
 1. **需要哪些表**：根据问题和 evidence 确定
-2. **表之间如何 JOIN**：基于 .fk/.rel 确认 JOIN 条件
+2. **表之间如何 JOIN**：基于 fk/rel 确认 JOIN 条件
 3. **WHERE 条件是什么**：只包含问题明确要求的过滤条件
 
 **常见错误**：
@@ -72,13 +72,13 @@ query 是辅助验证工具，不是探索工具。探索数据库结构应使�
 
 1. **glob** — 发现文件、表、列、关系等结构
 2. **meta** — 读取实体的 detail 字段理解语义
-3. **确认关系** — 读取 .fk/.rel/.overlap 确认 JOIN 路径
-4. **检查消歧** — 读取 .disambig 排除语义歧义
+3. **确认关系** — 读取 fk/rel/overlap 确认 JOIN 路径
+4. **检查消歧** — 读取 disambig 排除语义歧义
 5. **query** — 仅在前四步完成后，用于辅助验证
 
 ### 消歧实体的特殊重要性
 
-.disambig 实体标记了名称相近但含义不同的表或列。
+disambig 实体标记了名称相近但含义不同的表或列。
 
 **忽略消歧实体是错选表/列的首要原因**。输出 SQL 前必须确认已读取并理解所有相关消歧实体。
 
@@ -86,7 +86,7 @@ query 是辅助验证工具，不是探索工具。探索数据库结构应使�
 
 | 错误模式 | 正确做法 |
 |---|---|
-| 猜测 JOIN 条件 | 先 glob .fk/.rel 确认 |
+| 猜测 JOIN 条件 | 先 glob *:fk / *:rel 确认 |
 | 猜测列名 | 先 meta 确认列语义 |
 | 多加/少加列 | 只 SELECT 问题要求的字段 |
 | 猜测 WHERE 值 | 先 query SELECT DISTINCT 确认实际值 |

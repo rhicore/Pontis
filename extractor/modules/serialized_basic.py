@@ -37,11 +37,11 @@ def _process_serialized(rel_path: str, store: Store) -> None:
     basename = os.path.basename(rel_path)
     ext = os.path.splitext(rel_path)[1].lower()
     label_map = {
-        ".json": "file/json", ".jsonl": "file/json",
-        ".yaml": "file/yaml", ".yml": "file/yaml",
-        ".xml": "file/xml", ".toml": "file/toml", ".hcl": "file/hcl",
+        ".json": ["file", "json"], ".jsonl": ["file", "json"],
+        ".yaml": ["file", "yaml"], ".yml": ["file", "yaml"],
+        ".xml": ["file", "xml"], ".toml": ["file", "toml"], ".hcl": ["file", "hcl"],
     }
-    labels = [label_map.get(ext, "file/json")]
+    labels = label_map.get(ext, ["file", "json"])
 
     # 分析结构
     with open(abs_path, 'r', encoding='utf-8', errors='ignore') as f:

@@ -1,7 +1,7 @@
 """Agent Analyze — 为所有实体生成 AI 总结（brief/detail）。
 
 唯一职责：深入理解数据，为表、列、关系、文件等所有实体撰写高质量总结。
-不负责发现关系（.rel）或消歧（.disambig），这些由专门的脚本处理。
+不负责发现关系（rel）或消歧（disambig），这些由专门的脚本处理。
 
 子智能体用于处理具体的单表/单任务，降低单次对话的复杂度。
 
@@ -11,6 +11,7 @@
 import logging
 
 from storage import Store
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -63,13 +64,13 @@ COORDINATOR_PROMPT = """\
 
 对单张表可以用子智能体写 summary，task 中提供：
 - 这张表的基本信息和你的理解
-- 与其他表的关系（已发现的 .rel / .fk）
+- 与其他表的关系（已发现的 rel / fk）
 - 如果这张表依赖枢纽表，告诉子智能体枢纽表的 summary
 
 ## 处理范围
 
 - 数据库中的表和列
-- .fk 和 .rel 实体
+- fk 和 rel 实体
 - 所有表完成后，为数据库文件本身写 brief / detail
 - JSON、CSV、文本等其他文件（如果文本过长可调用子智能体）
 
@@ -77,9 +78,10 @@ COORDINATOR_PROMPT = """\
 """
 
 
-def generate(store: Store, *, debug: bool = False) -> None:
+def generate(store: Store) -> None:
     """为所有实体生成 AI 总结。"""
-    from agent.agent import create_agent, AgentSpec
+    from agent.config import create_agent, AgentSpec
+    from agent.guardrail import build_guardrails
     from agent.utils import load_agent_config
 
     config = load_agent_config(store.project_path)
@@ -89,10 +91,11 @@ def generate(store: Store, *, debug: bool = False) -> None:
 
     logger.info("=== Agent Analyze (summaries only) ===")
 
-    agent = create_agent(store.project_path, AgentSpec(
-        mode="writer",
-        debug=debug,
-    ))
+    spec = AgentSpec(mode="writer")
+    project_name = os.path.basename(os.path.abspath(store.project_path))
+    spec.projects = [project_name]
+    spec.guardrails = build_guardrails(spec, ["round_limit"])
+    agent = create_agent(store.project_path, spec)
 
     agent.chat(COORDINATOR_PROMPT)
     logger.info("=== Agent Analyze done ===")

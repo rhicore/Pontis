@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 class ProjectEntry:
     path: str
     backend: str = "fs"
-    default: bool = False
     groups: List[str] = field(default_factory=list)
 
 
@@ -31,15 +30,16 @@ class StoreConfig:
     routing: List[RoutingRule] = field(default_factory=list)
 
     def default_project(self) -> Optional[str]:
-        for name, entry in self.projects.items():
-            if entry.default:
-                return name
         return next(iter(self.projects)) if self.projects else None
 
     def resolve_path(self, project: str) -> Optional[str]:
         entry = self.projects.get(project)
         if entry:
-            return os.path.abspath(os.path.expanduser(entry.path))
+            p = os.path.expanduser(entry.path)
+            # fs backend 做 abspath，其他 backend（s3/db 等）保持原样
+            if entry.backend == "fs" and not os.path.isabs(p):
+                p = os.path.abspath(p)
+            return p
         return None
 
     def resolve_backend(self, project: str) -> str:
@@ -58,7 +58,10 @@ class StoreConfig:
 
 
 def load_config(config_path: str = None, project_path: str = None) -> StoreConfig:
-    """加载配置，优先级：config_path > project_path/pontis.yml > fallback。"""
+    """加载配置，优先级：config_path > project_path/pontis.yml > 全局 pontis.yml。
+
+    全局 pontis.yml 位于项目根目录（Pontis/pontis.yml），定义可用项目和默认开启项。
+    """
     sources = []
     if config_path:
         sources.append(config_path)
@@ -68,9 +71,10 @@ def load_config(config_path: str = None, project_path: str = None) -> StoreConfi
             if os.path.exists(p):
                 sources.append(p)
                 break
-    global_cfg = os.path.expanduser("~/.pontis/config.yml")
-    if os.path.exists(global_cfg):
-        sources.append(global_cfg)
+    # 全局默认配置（项目根目录 pontis.yml）
+    builtin_cfg = os.path.join(os.path.dirname(os.path.dirname(__file__)), "pontis.yml")
+    if os.path.exists(builtin_cfg):
+        sources.append(builtin_cfg)
 
     merged_projects = {}
     merged_routing = []
@@ -83,7 +87,6 @@ def load_config(config_path: str = None, project_path: str = None) -> StoreConfi
                 merged_projects[name] = ProjectEntry(
                     path=pdata["path"],
                     backend=pdata.get("backend", "fs"),
-                    default=pdata.get("default", False),
                     groups=pdata.get("groups", []),
                 )
             else:
@@ -94,9 +97,11 @@ def load_config(config_path: str = None, project_path: str = None) -> StoreConfi
                 project=rdata["project"],
             ))
 
-    if not merged_projects and project_path:
+    if project_path:
+        # project_path 始终注册（除非配置中已存在同名项目）
         pname = os.path.basename(os.path.abspath(project_path))
-        merged_projects[pname] = ProjectEntry(path=project_path, default=True)
-        logger.info("No config found; using project name '%s' (fallback)", pname)
+        if pname not in merged_projects:
+            merged_projects[pname] = ProjectEntry(path=project_path)
+            logger.info("Registered project '%s' from project_path", pname)
 
     return StoreConfig(projects=merged_projects, routing=merged_routing)

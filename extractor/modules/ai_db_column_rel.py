@@ -1,9 +1,9 @@
 """DB Column Relation Generator - 数据库列关系LLM打分生成器
 
 职责：
-- 读取 *.db 下的所有 *.overlap 实体（硬性规则检测结果）
+- 读取 *.db 下的所有 overlap 实体（labels=["overlap"]）
 - 使用LLM进行语义验证和置信度打分
-- 在 _entity/ 下创建 [表名].[列名]__to__[表名].[列名].rel 实体
+- 在 _entity/ 下创建 [表名].[列名]->[表名].[列名] 实体（labels=["rel"]）
 
 独立执行：
     python -m extractor.db_column_rel ./my_data
@@ -20,7 +20,7 @@ DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
 
 
 def generate(store: Store, config=None) -> None:
-    """为所有.overlap实体生成LLM关系评分"""
+    """为所有 overlap 实体生成 LLM 关系评分"""
     logger.info("=== Generating column relations (LLM scoring) ===")
 
     llm = config.get_llm() if config else None
@@ -50,7 +50,7 @@ def generate(store: Store, config=None) -> None:
 
 
 def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
-    """为单个.overlap实体生成.rel关系"""
+    """为单个 overlap 实体生成 rel 关系"""
     entity_name = ref
     overlap_meta = store.get_meta(ref)
     if not overlap_meta:
@@ -60,22 +60,17 @@ def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
     db_parents = store.find_connected(ref, "*.db")
     db_ref = db_parents[0] if db_parents else ""
 
-    # 检查是否已存在.rel实体（兼容新旧命名）
-    rel_entity_name = entity_name.replace(".overlap", "")
-    # 也检查带 .rel 后缀的旧实体
-    old_rel_entity_name = entity_name.replace(".overlap", ".rel")
-    if store.node_exists(rel_entity_name) or store.node_exists(old_rel_entity_name):
+    # rel 实体与 overlap 同名（类型通过 label 区分）
+    rel_entity_name = entity_name
+    if store.node_exists(rel_entity_name):
         return False
 
     stats = overlap_meta.get("stats", {})
     # 从 entity name 解析定位信息
-    # 格式: from_table.from_col__to__to_table.to_col（新版无后缀）
-    # 或: from_table.from_col__to__to_table.to_col.overlap（旧版带后缀）
-    base_name = entity_name.replace(".overlap", "")
-    base_name = base_name.replace(".rel", "")
-    if "__to__" not in base_name:
+    # 格式: from_table.from_col->to_table.to_col
+    if "->" not in entity_name:
         return False
-    left, right = base_name.split("__to__", 1)
+    left, right = entity_name.split("->", 1)
     # left = from_table.from_col, right = to_table.to_col
     left_parts = left.split(".", 1)
     right_parts = right.split(".", 1)
@@ -111,12 +106,10 @@ def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
         logger.debug(f"Filtered {entity_name}: confidence {confidence} < 0.5")
         return False
 
-    # 创建.rel实体 — 定位信息已编码在 entity name 中
+    # 创建 rel 实体（类型通过 label 区分）
     can_join = llm_result.get("can_join", confidence >= 0.5)
     reason = llm_result.get("reason", "")
     rel_meta = {
-        "brief": f"{from_table}.{from_column} 与 {to_table}.{to_column} 关联"
-                 f"（置信度 {confidence:.2f}）",
         "detail": f"来源：overlap 检测（Jaccard={stats.get('jaccard', 0):.4f}）。"
                   f"启发式分数={heuristic_score}，LLM置信度={confidence:.2f}。"
                   f"{'可JOIN' if can_join else '不建议JOIN'}。{reason}",
@@ -126,11 +119,11 @@ def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
     store.create_node(rel_entity_name, meta=rel_meta, labels=["rel"])
 
     # 添加边: source table → rel, target table → rel
-    safe_from_table = from_table.replace("/", "_").replace("\\", "_")
-    safe_to_table = to_table.replace("/", "_").replace("\\", "_")
+    from_table_ref = f"{db_ref}--{from_table}" if db_ref else from_table
+    to_table_ref = f"{db_ref}--{to_table}" if db_ref else to_table
     store.add_edges([
-        {"a": safe_from_table, "b": rel_entity_name},
-        {"a": safe_to_table, "b": rel_entity_name},
+        {"a": from_table_ref, "b": rel_entity_name},
+        {"a": to_table_ref, "b": rel_entity_name},
     ])
 
     logger.info(f"  Relation: {rel_entity_name} (confidence={confidence:.2f})")

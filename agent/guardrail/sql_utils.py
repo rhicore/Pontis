@@ -138,7 +138,7 @@ def resolve_entity_ref(store, table: str, column: str = None) -> str:
                 return ename
     else:
         for ename, labels in store.list_all():
-            if not any(l.startswith("col") for l in labels):
+            if "col" not in labels:
                 continue
             # 实体名就是列名（新格式），需要检查邻接确认属于哪个表
             if ename.lower() == column.lower():

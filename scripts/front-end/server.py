@@ -16,12 +16,12 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from agent.agent import PontisAgent
+from agent.agent import PontusAgent
 
 app = FastAPI(title="Pontis Agent")
 
 # --- Session Management ---
-_sessions: dict[str, PontisAgent] = {}
+_sessions: dict[str, PontusAgent] = {}
 
 
 def _validate_project_path(path: str) -> Optional[str]:
@@ -38,10 +38,10 @@ def _validate_project_path(path: str) -> Optional[str]:
     return None
 
 
-def _get_or_create_agent(session_id: str, project_path: str) -> PontisAgent:
+def _get_or_create_agent(session_id: str, project_path: str) -> PontusAgent:
     key = f"{session_id}:{project_path}"
     if key not in _sessions:
-        _sessions[key] = PontisAgent(project_path)
+        _sessions[key] = PontusAgent(project_path)
     return _sessions[key]
 
 

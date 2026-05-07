@@ -1,12 +1,13 @@
-"""Agent Disambiguate — 发现语义歧义，创建 .disambig 实体。
+"""Agent Disambiguate — 发现语义歧义，创建 disambig 实体。
 
 唯一职责：扫描同名/近名实体，判断语义差异，创建消歧实体并更新相关列的 detail。
-不负责发现关系（.rel）或写总结（由 agent_analyze 处理）。
+不负责发现关系（rel）或写总结（由 agent_analyze 处理）。
 
 独立执行:
     python -m extractor.agent_disambiguate ./my_data
 """
 import logging
+import os
 
 from storage import Store
 
@@ -17,7 +18,7 @@ PROMPT = """\
 
 ## 你的目标
 
-发现数据库中同名或近名实体的语义差异，创建 .disambig 消歧实体。
+发现数据库中同名或近名实体的语义差异，创建 disambig 消歧实体。
 
 ## 什么是语义歧义
 
@@ -37,7 +38,7 @@ PROMPT = """\
 a. glob 查看所有表
 b. meta 查看每张表的基本信息
 c. 查看所有列实体，收集列名到表名的映射
-d. 查看已有的 .fk、.overlap、.rel、.disambig 实体
+d. 查看已有的 fk、overlap、rel、disambig 实体
 
 ### 3. 扫描列级歧义
 收集所有列名，找出出现在多个表中的同名列：
@@ -52,28 +53,28 @@ d. 查看已有的 .fk、.overlap、.rel、.disambig 实体
 - 如 `results` vs `constructorResults`（都含 "results" 但含义不同）
 - 如 `schools` vs `frpm`（都涉及学校但数据粒度不同）
 
-### 5. 创建 .disambig 实体
+### 5. 创建 disambig 实体
 
-ref: `[数据库]::[你概括的共同模式].disambig`
+ref: `[你概括的共同模式]:disambig`
 
 命名由你自己决定，用英文简短概括这些实体之间的**共同模式或歧义主题**。不只是列名本身，而是能体现歧义本质的概括。
 可以涉及 2 个或更多实体（列或表），不限于同名列，只要它们之间存在容易混淆的语义歧义就需要消歧。
 
 命名示例：
-- `points` 列在 results 和 driverStandings 中含义不同 → `points.disambig`
-- `position` 和 `positionText` 容易混淆 → `position.disambig`
-- SOC、SOCType、EILCode 都涉及学校类型分类 → `school_type.disambig`
-- results 和 constructorResults 名称相近 → `results_table.disambig`
-- schools.School、frpm.School Name、satscores.sname 指向同一概念 → `school_name.disambig`
-- rtype='S'/'D' 和 cds 的前导零问题涉及 satscores 的编码体系 → `cds_encoding.disambig`
+- `points` 列在 results 和 driverStandings 中含义不同 → `points:disambig`
+- `position` 和 `positionText` 容易混淆 → `position:disambig`
+- SOC、SOCType、EILCode 都涉及学校类型分类 → `school_type:disambig`
+- results 和 constructorResults 名称相近 → `results_table:disambig`
+- schools.School、frpm.School Name、satscores.sname 指向同一概念 → `school_name:disambig`
+- rtype='S'/'D' 和 cds 的前导零问题涉及 satscores 的编码体系 → `cds_encoding:disambig`
 
 meta:
 - brief: ≤50字描述歧义核心
 - detail: 客观列出每个涉及的实体的具体语义差异
 
-edges: 连接到所有涉及的实体（可以是列实体 `.col`、表实体 `.table` 等，不限制类型和数量）
+edges: 连接到所有涉及的实体（不限制类型和数量）
 
-创建前先 glob 检查是否已存在同名 .disambig 实体。
+创建前先 glob 检查是否已存在同名 disambig 实体（`glob "*:disambig"`）。
 
 ### 6. detail 写作原则：只描述事实，不给操作建议
 
@@ -115,16 +116,17 @@ points 在不同表中的含义：
 
 ## 注意
 
-- 不是所有同名列都需要消歧——如果含义完全相同，不需要创建 .disambig
+- 不是所有同名列都需要消歧——如果含义完全相同，不需要创建 disambig
 - 判断歧义必须基于实际数据（看过统计信息和抽样值），不要凭空猜测
 - 用中文写 brief 和 detail
 - **只描述客观差异，不要给任何操作建议**
 """
 
 
-def generate(store: Store, *, debug: bool = False) -> None:
-    """发现语义歧义，创建 .disambig 实体。"""
-    from agent.agent import create_agent, AgentSpec
+def generate(store: Store) -> None:
+    """发现语义歧义，创建 disambig 实体。"""
+    from agent.config import create_agent, AgentSpec
+    from agent.guardrail import build_guardrails
     from agent.utils import load_agent_config
 
     config = load_agent_config(store.project_path)
@@ -134,10 +136,11 @@ def generate(store: Store, *, debug: bool = False) -> None:
 
     logger.info("=== Agent Disambiguate ===")
 
-    agent = create_agent(store.project_path, AgentSpec(
-        mode="writer",
-        debug=debug,
-    ))
+    spec = AgentSpec(mode="writer")
+    project_name = os.path.basename(os.path.abspath(store.project_path))
+    spec.projects = [project_name]
+    spec.guardrails = build_guardrails(spec, ["round_limit"])
+    agent = create_agent(store.project_path, spec)
 
     agent.chat(PROMPT)
     logger.info("=== Agent Disambiguate done ===")

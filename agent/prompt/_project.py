@@ -3,21 +3,44 @@ import os
 
 import yaml
 
+from storage.config import load_config
 
-def build_project_context(project_path: str) -> str:
-    """构建动态项目上下文：项目路径 + 实体/边统计。"""
+
+def build_project_context(project_path: str, spec=None) -> str:
+    """构建动态项目上下文：只显示本次开启的项目及统计。"""
+    config = load_config(project_path=project_path)
+
+    # 确定当前项目列表
+    if spec and spec.projects:
+        active = spec.projects
+    else:
+        active = [os.path.basename(os.path.abspath(project_path))]
+
+    parts = ["## 当前项目"]
+
+    for name in active:
+        path = config.resolve_path(name)
+        if not path:
+            continue
+        parts.append(f"### {name}")
+        parts.append(f"- 路径: {path}")
+        overview = _get_project_overview(path)
+        if overview:
+            parts.append(overview)
+
+    return "\n".join(parts)
+
+
+def _get_project_overview(project_path: str) -> str:
+    """扫描项目的 .pontis 目录，按标签统计实体。"""
+    if not project_path:
+        return ""
+
     pontis_path = os.path.join(project_path, ".pontis")
-    overview = _get_project_overview(pontis_path)
-    return f"## 当前项目\n- 项目路径: {project_path}\n\n{overview}"
-
-
-def _get_project_overview(pontis_path: str) -> str:
-    """扫描 .pontis 目录，按 _labels 统计实体类型。"""
     if not os.path.exists(pontis_path):
-        return "(无 .pontis 目录，请先运行 extractor)"
+        return ""
 
-    lines = ["## 数据概览"]
-
+    lines = []
     nodes_dir = os.path.join(pontis_path, "nodes")
     label_counts = {}
 
@@ -35,16 +58,8 @@ def _get_project_overview(pontis_path: str) -> str:
                 continue
 
             labels = raw.get("_labels", [])
-            # 用首个标签的首段作为分类 key
-            if labels:
-                key = labels[0].split("/")[0]
-            else:
-                ename = raw.get("_entity_name", "")
-                if "." in ename:
-                    key = ename.rsplit(".", 1)[-1]
-                else:
-                    key = "other"
-            label_counts[key] = label_counts.get(key, 0) + 1
+            for lbl in labels:
+                label_counts[lbl] = label_counts.get(lbl, 0) + 1
 
     if label_counts:
         parts = [f"{k}({v})" for k, v in sorted(label_counts.items())]

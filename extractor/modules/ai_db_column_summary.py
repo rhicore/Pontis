@@ -152,8 +152,8 @@ def _build_table_info(db_ref: str, table_ref: str, store: Store) -> str:
         for fk_ref in fk_refs:
             if table_ref in fk_ref:
                 ent = fk_ref
-                if "__to__" in ent:
-                    sides = ent.split("__to__")
+                if "->" in ent:
+                    sides = ent.split("->")
                     if len(sides) == 2:
                         fk_lines.append(f"  {sides[0]} → {sides[1]}")
         if fk_lines:

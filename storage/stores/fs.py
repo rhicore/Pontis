@@ -25,6 +25,7 @@ class FSStore(Store):
     def __init__(self, project_path: str):
         super().__init__()
         self._project_path = os.path.abspath(project_path)
+        self._project_name = os.path.basename(self._project_path)
         self._pontis_root = os.path.join(self._project_path, ".pontis")
         self._nodes_root = os.path.join(self._pontis_root, "nodes")
         self._dirs_cache: Dict[str, str] = {}  # full_rel_path → bare_name
@@ -256,13 +257,13 @@ class FSStore(Store):
         self._ensure_index()
         for adj_id in self._adjacent.get(ent_id, set()):
             adj_labels = self._get_labels_by_id(adj_id)
-            if any(l.startswith("file") for l in adj_labels):
+            if "file" in adj_labels:
                 adj_meta = self._meta_cache.get(adj_id, {})
                 file_rel_path = adj_meta.get("path", self._id_index.get(adj_id, ""))
                 break
         if not file_rel_path:
             file_rel_path = meta.get("path", "")
-        entity_path = "" if any(l.startswith("file") for l in entity_labels) else ename
+        entity_path = "" if "file" in entity_labels else ename
 
         return enrich_meta(meta, self._project_path, file_rel_path, entity_path,
                            include_props=include_props, store=self)
@@ -381,15 +382,15 @@ class FSStore(Store):
             stat = os.stat(physical)
             ext = os.path.splitext(name)[1].lower()
             label_map = {
-                ".db": "file/db", ".sqlite": "file/db", ".sqlite3": "file/db", ".duckdb": "file/db",
-                ".csv": "file/csv", ".tsv": "file/csv",
-                ".json": "file/json", ".jsonl": "file/json",
-                ".yaml": "file/yaml", ".yml": "file/yaml",
-                ".xml": "file/xml",
-                ".toml": "file/toml",
-                ".hcl": "file/hcl",
+                ".db": ["file", "db"], ".sqlite": ["file", "db"], ".sqlite3": ["file", "db"], ".duckdb": ["file", "db"],
+                ".csv": ["file", "csv"], ".tsv": ["file", "csv"],
+                ".json": ["file", "json"], ".jsonl": ["file", "json"],
+                ".yaml": ["file", "yaml"], ".yml": ["file", "yaml"],
+                ".xml": ["file", "xml"],
+                ".toml": ["file", "toml"],
+                ".hcl": ["file", "hcl"],
             }
-            labels = [label_map.get(ext, "file")]
+            labels = label_map.get(ext, ["file"])
             return {
                 "_inode": stat.st_ino,
                 "_labels": labels,

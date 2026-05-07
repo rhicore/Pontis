@@ -27,31 +27,31 @@ class ModeConfig:
 
 _MODE_PRESETS = {
     "readonly": ModeConfig(
-        tools=["glob", "grep", "meta", "search", "bash", "query", "find_path", "agent"],
-        prompts=["base", "namespace", "entities", "sql", "guardrail", "readonly", "project"],
+        tools=["glob", "grep", "meta", "search", "bash", "query", "agent"],
+        prompts=["base", "tool", "ontology", "meta", "sql", "guardrail", "readonly", "project"],
         guardrail_builders=["round_limit", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
     ),
     "writer": ModeConfig(
-        tools=["glob", "grep", "meta", "search", "bash", "query", "find_path", "agent",
+        tools=["glob", "grep", "meta", "search", "bash", "query", "agent",
                "create_entity", "update_meta", "add_edge", "delete"],
-        prompts=["base", "namespace", "entities", "sql", "guardrail", "writer", "project"],
+        prompts=["base", "tool", "ontology", "meta", "sql", "guardrail", "writer", "project"],
         guardrail_builders=["round_limit", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
     ),
     "sub_agent": ModeConfig(
-        tools=["glob", "grep", "meta", "search", "bash", "query", "find_path",
+        tools=["glob", "grep", "meta", "search", "bash", "query",
                "create_entity", "update_meta", "add_edge", "delete"],
-        prompts=["base", "namespace", "entities", "sql", "guardrail", "writer", "sub_agent"],
+        prompts=["base", "tool", "ontology", "meta", "sql", "guardrail", "writer", "sub_agent"],
         guardrail_builders=["round_limit", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
     ),
     "benchmark": ModeConfig(
-        tools=["glob", "grep", "meta", "search", "bash", "query", "find_path"],
-        prompts=["base", "namespace", "entities", "sql", "guardrail", "benchmark", "project"],
+        tools=["glob", "grep", "meta", "search", "bash", "query"],
+        prompts=["base", "tool", "ontology", "meta", "sql", "guardrail", "benchmark", "project"],
         guardrail_builders=["round_limit", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
     ),
     "reflection": ModeConfig(
-        tools=["glob", "grep", "meta", "search", "bash", "query", "find_path",
+        tools=["glob", "grep", "meta", "search", "bash", "query",
                "create_entity", "update_meta", "add_edge", "delete"],
-        prompts=["base", "namespace", "entities", "reflection"],
+        prompts=["base", "tool", "ontology", "meta", "reflection"],
         guardrail_builders=["round_limit"],
     ),
 }
@@ -61,9 +61,9 @@ _MODE_PRESETS = {
 class AgentSpec:
     """Agent 创建的完整参数包。mode 决定初始值，用户可覆盖各字段。"""
     project_path: str = ""
+    projects: List[str] = field(default_factory=list)  # 本次开启的项目名列表，空则只开启 project_path
     mode: str = "readonly"
     effort: str = "mid"
-    debug: bool = False
     max_rounds: Optional[int] = None
 
     # mode 决定初始值，用户可覆盖
@@ -88,13 +88,11 @@ def resolve_mode(spec: AgentSpec) -> None:
     # 条件追加
     if spec.effort != "mid" and "effort" not in spec.prompts:
         spec.prompts.append("effort")
-    if spec.debug and "debug" not in spec.prompts:
-        spec.prompts.append("debug")
 
 
 def create_agent(project_path: str, spec: AgentSpec = None,
                  logger_name: Optional[str] = None,
-                 trace_callback=None) -> "PontisAgent":
+                 trace_callback=None) -> "PontusAgent":
     """工厂：根据 spec 自动组装 prompt + tools + guardrails。"""
     # 延迟导入避免循环
     from agent.agent import PontusAgent
@@ -109,7 +107,8 @@ def create_agent(project_path: str, spec: AgentSpec = None,
 
     return PontusAgent(project_path, tools=tools, system_prompt=prompt,
                        guardrails=spec.guardrails, logger_name=logger_name,
-                       trace_callback=trace_callback)
+                       trace_callback=trace_callback,
+                       active_projects=spec.projects or None)
 
 
 def default_spec(project_path: str) -> AgentSpec:

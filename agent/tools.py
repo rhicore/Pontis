@@ -7,17 +7,21 @@ import importlib
 from typing import Callable, Dict, List, Tuple
 
 
-# tool_name → tool_use directory mapping
+# tool_name → directory name in agent/tool_use/ (when they differ)
 _TOOL_DIR_MAP = {
     "agent": "sub_agent",
+    "bash": "SH_bash",
+    "grep": "FS_grep",
+    "query": "DB_query",
 }
 
 
 def _load_prompt(tool_name: str) -> str:
-    """Load tool prompt from tool_use/<tool>/prompt.py."""
+    """Load tool prompt from agent/tool_use/{dir}/prompt.py."""
     try:
         dir_name = _TOOL_DIR_MAP.get(tool_name, tool_name)
-        mod = importlib.import_module(f"tool_use.{dir_name}.prompt")
+        mod_path = f"agent.tool_use.{dir_name}.prompt"
+        mod = importlib.import_module(mod_path)
         return mod.get_description()
     except (ImportError, AttributeError):
         return ""
@@ -67,9 +71,9 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path_pattern": {
+                        "ref": {
                             "type": "string",
-                            "description": "Glob pattern, e.g. '*.db' for files or '*.*.*.col' for column entities",
+                            "description": "URN glob pattern, e.g. '*.db' for files, '*.*.*:col' for columns, supports / hop, ** varlen, :: project",
                         },
                         "offset": {
                             "type": "integer",
@@ -80,7 +84,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                             "description": "Max results per page, default 100",
                         },
                     },
-                    "required": ["path_pattern"],
+                    "required": ["ref"],
                 },
             },
         },
@@ -134,9 +138,9 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {
+                        "ref": {
                             "type": "string",
-                            "description": "Entity name or file path, e.g. 'users' (table) or 'event.db'",
+                            "description": "实体名称，如 'users' (表) 或 'event.db'",
                         },
                         "all": {
                             "type": "boolean",
@@ -150,7 +154,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                             "description": "Show specific property or list of properties, e.g. 'brief' or ['brief','detail']",
                         },
                     },
-                    "required": ["path"],
+                    "required": ["ref"],
                 },
             },
         },
@@ -162,7 +166,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path_pattern": {
+                        "ref": {
                             "type": "string",
                             "description": "Glob pattern to scope the search",
                         },
@@ -179,7 +183,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                             "description": "Max results per page, default 100",
                         },
                     },
-                    "required": ["path_pattern", "query"],
+                    "required": ["ref", "query"],
                 },
             },
         },
@@ -229,28 +233,28 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                 },
             },
         },
-        "find_path": {
+        "cypher": {
             "type": "function",
             "function": {
-                "name": "find_path",
-                "description": _load_prompt("find_path"),
+                "name": "cypher",
+                "description": _load_prompt("cypher"),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "from_ref": {
+                        "query": {
                             "type": "string",
-                            "description": "起始表名，如 'TableA'",
+                            "description": "Cypher query statement",
                         },
-                        "to_ref": {
-                            "type": "string",
-                            "description": "目标表名，如 'TableB'",
-                        },
-                        "max_depth": {
+                        "offset": {
                             "type": "integer",
-                            "description": "最大搜索深度（表跳数），默认 4",
+                            "description": "Starting index (0-based), default 0",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max results per page, default 100",
                         },
                     },
-                    "required": ["from_ref", "to_ref"],
+                    "required": ["query"],
                 },
             },
         },
@@ -270,7 +274,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "实体名称，如 'no_concat.convention' 或 'users__orders.rel'",
+                            "description": "实体引用，格式 [project::]name[:tag1[:tag2]]，如 'account.id->district.id:fk' 或 'no_concat:convention'",
                         },
                         "meta": {
                             "type": "object",
@@ -303,14 +307,14 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "节点引用，如 'event.db' 或 'users'",
+                            "description": "实体引用：名称或 glob 模式（必须唯一匹配）",
                         },
                         "fields": {
                             "type": "object",
-                            "description": "要更新的字段，允许 brief 和 detail，如 {\"brief\": \"...\", \"detail\": \"...\"}",
+                            "description": "要更新的字段，允许 brief 和 detail",
                         },
                     },
-                    "required": ["ref"],
+                    "required": ["ref", "fields"],
                 },
             },
         },
@@ -327,8 +331,8 @@ def _build_write_schemas() -> Dict[str, dict]:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "a": {"type": "string", "description": "节点 ref"},
-                                    "b": {"type": "string", "description": "节点 ref"},
+                                    "a": {"type": "string", "description": "节点 ref（名称或 glob 模式）"},
+                                    "b": {"type": "string", "description": "节点 ref（名称或 glob 模式）"},
                                 },
                                 "required": ["a", "b"],
                             },
@@ -349,7 +353,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "要删除的节点 ref，如 'event.db' 或 'users'",
+                            "description": "实体引用：名称或 glob 模式（必须唯一匹配）",
                         },
                     },
                     "required": ["ref"],
@@ -391,16 +395,16 @@ def _build_agent_schema() -> dict:
 # ==================== Tool Executors ====================
 
 def _exec_glob(store, arguments: dict, *, workspace=None) -> str:
-    from tool_use.glob.tool import glob_command
+    from tool.glob.tool import glob_command
     return glob_command(
-        workspace or store, arguments["path_pattern"],
+        workspace or store, arguments["ref"],
         offset=arguments.get("offset", 0),
         limit=arguments.get("limit"),
     )
 
 
 def _exec_grep(store, arguments: dict, *, workspace=None) -> str:
-    from tool_use.grep.tool import grep_command
+    from tool.FS_grep.tool import grep_command
     return grep_command(
         store,
         pattern=arguments["pattern"],
@@ -414,20 +418,20 @@ def _exec_grep(store, arguments: dict, *, workspace=None) -> str:
 
 
 def _exec_meta(store, arguments: dict, *, workspace=None) -> str:
-    from tool_use.meta.tool import meta_command
+    from tool.meta.tool import meta_command
     return meta_command(
         workspace or store,
-        path=arguments["path"],
+        ref=arguments["ref"],
         all=arguments.get("all", False),
         property=arguments.get("property"),
     )
 
 
 def _exec_search(store, arguments: dict, *, workspace=None) -> str:
-    from tool_use.search.tool import search_command
+    from tool.search.tool import search_command
     return search_command(
         workspace or store,
-        path_pattern=arguments["path_pattern"],
+        ref=arguments["ref"],
         query=arguments["query"],
         offset=arguments.get("offset", 0),
         limit=arguments.get("limit"),
@@ -435,7 +439,7 @@ def _exec_search(store, arguments: dict, *, workspace=None) -> str:
 
 
 def _exec_bash(store, arguments: dict, *, workspace=None) -> str:
-    from tool_use.bash.tool import bash_command
+    from tool.SH_bash.tool import bash_command
     return bash_command(
         command=arguments["command"],
         cwd=store.project_path,
@@ -444,7 +448,7 @@ def _exec_bash(store, arguments: dict, *, workspace=None) -> str:
 
 
 def _exec_query(store, arguments: dict, *, workspace=None) -> str:
-    from tool_use.query.tool import query_command
+    from tool.DB_query.tool import query_command
     return query_command(
         store,
         sql=arguments["sql"],
@@ -453,18 +457,18 @@ def _exec_query(store, arguments: dict, *, workspace=None) -> str:
     )
 
 
-def _exec_find_path(store, arguments: dict, *, workspace=None) -> str:
-    from tool_use.find_path.tool import find_path_command
-    return find_path_command(
+def _exec_cypher(store, arguments: dict, *, workspace=None) -> str:
+    from tool.cypher.tool import cypher_command
+    return cypher_command(
         workspace or store,
-        from_ref=arguments["from_ref"],
-        to_ref=arguments["to_ref"],
-        max_depth=arguments.get("max_depth", 4),
+        query=arguments["query"],
+        offset=arguments.get("offset", 0),
+        limit=arguments.get("limit", 100),
     )
 
 
 def _exec_create_entity(store, arguments: dict, *, workspace=None) -> str:
-    from tool_use.create_entity.tool import create_entity_command
+    from tool.create_entity.tool import create_entity_command
     return create_entity_command(
         workspace or store,
         ref=arguments["ref"],
@@ -474,22 +478,22 @@ def _exec_create_entity(store, arguments: dict, *, workspace=None) -> str:
 
 
 def _exec_update_meta(store, arguments: dict, *, workspace=None) -> str:
-    from tool_use.update_meta.tool import update_meta_command
+    from tool.update_meta.tool import update_meta_command
     return update_meta_command(
-        store,
+        workspace or store,
         ref=arguments["ref"],
         fields=arguments["fields"],
     )
 
 
 def _exec_add_edge(store, arguments: dict, *, workspace=None) -> str:
-    from tool_use.add_edge.tool import add_edge_command
-    return add_edge_command(store, edges=arguments["edges"])
+    from tool.add_edge.tool import add_edge_command
+    return add_edge_command(workspace or store, edges=arguments["edges"])
 
 
 def _exec_delete(store, arguments: dict, *, workspace=None) -> str:
-    from tool_use.delete.tool import delete_command
-    return delete_command(store, ref=arguments["ref"])
+    from tool.delete.tool import delete_command
+    return delete_command(workspace or store, ref=arguments["ref"])
 
 
 # ==================== Schema & Executor Tables ====================
@@ -528,7 +532,7 @@ _READONLY_EXECUTORS = {
     "search": _exec_search,
     "bash": _exec_bash,
     "query": _exec_query,
-    "find_path": _exec_find_path,
+    "cypher": _exec_cypher,
 }
 
 _WRITE_EXECUTORS = {
@@ -554,7 +558,7 @@ def build_registry(spec) -> ToolRegistry:
 
     for name in tool_names:
         if name == "agent":
-            from tool_use.sub_agent.tool import AgentExecutor
+            from agent.tool_use.sub_agent.tool import AgentExecutor
             sub_mode = "writer" if mode in ("writer", "sub_agent") else "readonly"
             registry.register("agent", _get_agent_schema(),
                               AgentExecutor(registry, mode=sub_mode))

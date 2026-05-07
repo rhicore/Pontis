@@ -43,26 +43,17 @@ def enrich_meta(meta: dict, project_path: str, file_rel_path: str,
                      include_props)
         return result
 
-    # 按 _labels 查注册表
+    # 按 _labels 查注册表（扁平标签：逐个查 key）
     labels = result.get("_labels", [])
     matched = False
 
     if labels:
-        # 优先精确匹配完整 label（如 "file/db"），再匹配首段（如 "table"）
         for label in labels:
             if label in prop_registry:
                 _apply_group(result, prop_registry[label], project_path,
                              file_rel_path, entity_path, include_props)
                 matched = True
                 break
-        if not matched:
-            for label in labels:
-                seg = label.split("/")[0]
-                if seg in prop_registry:
-                    _apply_group(result, prop_registry[seg], project_path,
-                                 file_rel_path, entity_path, include_props)
-                    matched = True
-                    break
 
     if not matched and os.path.isfile(full_path):
         _apply_group(result, common_fallback, project_path, file_rel_path,

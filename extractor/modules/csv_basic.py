@@ -84,7 +84,7 @@ def _process_table(rel_path: str, store: Store, delimiter: str = ',') -> None:
         store.create_node(col_ref,
                           meta={"created_at": datetime.now().isoformat(),
                                 "col_type": col_type},
-                          labels=[f"col/{col_type}"])
+                          labels=["col", col_type])
         store.add_edges([{"a": basename, "b": col_ref}])
 
     logger.info(f"  Entity: {basename} ({len(headers)} columns)")

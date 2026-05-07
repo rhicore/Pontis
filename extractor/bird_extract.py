@@ -126,7 +126,7 @@ def extract_one(db_dir: str, force: bool = False, no_ai: bool = False,
             # Agent 分析
             if AI_MODULE in registry:
                 t0 = time.time()
-                registry[AI_MODULE](store, debug=debug)
+                registry[AI_MODULE](store)
                 dt = time.time() - t0
                 result["agent"] = dt
                 logger.info(f"Agent phase done: {dt:.1f}s")
@@ -134,7 +134,7 @@ def extract_one(db_dir: str, force: bool = False, no_ai: bool = False,
             # Agent 关系发现
             if JOIN_DETECT_MODULE in registry:
                 t0 = time.time()
-                registry[JOIN_DETECT_MODULE](store, debug=debug)
+                registry[JOIN_DETECT_MODULE](store)
                 dt = time.time() - t0
                 result["join_detect"] = dt
                 logger.info(f"Join detect phase done: {dt:.1f}s")
@@ -142,7 +142,7 @@ def extract_one(db_dir: str, force: bool = False, no_ai: bool = False,
             # Agent 语义消歧
             if DISAMBIGUATE_MODULE in registry:
                 t0 = time.time()
-                registry[DISAMBIGUATE_MODULE](store, debug=debug)
+                registry[DISAMBIGUATE_MODULE](store)
                 dt = time.time() - t0
                 result["disambiguate"] = dt
                 logger.info(f"Disambiguate phase done: {dt:.1f}s")

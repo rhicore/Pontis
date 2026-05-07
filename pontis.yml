@@ -1,0 +1,37 @@
+projects:
+  global:
+    path: ~/.pontis_global
+    backend: fs
+  california_schools:
+    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/california_schools
+    backend: fs
+  card_games:
+    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/card_games
+    backend: fs
+  codebase_community:
+    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/codebase_community
+    backend: fs
+  debit_card_specializing:
+    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/debit_card_specializing
+    backend: fs
+  european_football_2:
+    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/european_football_2
+    backend: fs
+  financial:
+    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/financial
+    backend: fs
+  formula_1:
+    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/formula_1
+    backend: fs
+  student_club:
+    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/student_club
+    backend: fs
+  superhero:
+    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/superhero
+    backend: fs
+  thrombosis_prediction:
+    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/thrombosis_prediction
+    backend: fs
+  toxicology:
+    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/toxicology
+    backend: fs

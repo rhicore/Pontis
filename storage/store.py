@@ -101,10 +101,6 @@ class Store(ABC):
     def _write_edges_storage(self, edges: List[dict]):
         """写入边数据。"""
 
-    @abstractmethod
-    def _ensure_storage(self):
-        """确保存储结构存在。"""
-
     # ==================== 抽象方法：虚实体/虚属性 ====================
 
     def discover_virtual(self, pattern: str,
@@ -164,12 +160,18 @@ class Store(ABC):
         self._build_index()
 
     def _build_index(self):
+        from storage.labels import normalize_labels
         self._id_index.clear()
         self._inode_index.clear()
         self._name_index.clear()
         self._adjacent.clear()
 
         for ent_id, raw in self._scan_entities():
+            # 归一化旧格式标签 "col/INT" → ["col", "INT"]
+            if "_labels" in raw:
+                raw["_labels"] = normalize_labels(raw["_labels"])
+                self._meta_cache[ent_id] = raw
+
             ename = raw.get("_entity_name", "")
             inode = raw.get("_inode")
 
@@ -329,7 +331,7 @@ class Store(ABC):
                 adj_labels = self._get_labels_by_id(adj_id)
                 group_key = None
                 for lbl in adj_labels:
-                    group_key = lbl.split("/")[0]
+                    group_key = lbl
                     break
                 if group_key is None:
                     group_key = adj_name.rsplit(".", 1)[-1] if "." in adj_name else adj_name
@@ -368,18 +370,13 @@ class Store(ABC):
 
         return self.create_node(ref)
 
-    def meta_exists(self, ref: str) -> bool:
-        return self._resolve_to_id(ref) is not None
-
     def _read_raw(self, ent_id: str) -> Optional[dict]:
         return self._read_entity_meta(ent_id)
 
     # ==================== Meta Write ====================
 
     def set_meta(self, ref: str, data: dict):
-        ent_id = self._name_to_id(ref)
-        if not ent_id:
-            ent_id = self._resolve_to_id(ref)
+        ent_id = self._resolve_to_id(ref)
 
         if ent_id:
             stale_err = self._check_stale(ent_id)
@@ -403,9 +400,7 @@ class Store(ABC):
         self._record_read_timestamp(ent_id)
 
     def put_meta(self, ref: str, data: dict):
-        ent_id = self._name_to_id(ref)
-        if not ent_id:
-            ent_id = self._resolve_to_id(ref)
+        ent_id = self._resolve_to_id(ref)
 
         if ent_id:
             stale_err = self._check_stale(ent_id)
@@ -517,13 +512,8 @@ class Store(ABC):
 
     @staticmethod
     def _label_matches_legacy(entity_labels: List[str], query: str) -> bool:
-        for stored in entity_labels:
-            segs = stored.split("/")
-            for i in range(len(segs)):
-                for j in range(i + 1, len(segs) + 1):
-                    if "/".join(segs[i:j]) == query:
-                        return True
-        return False
+        from storage.labels import label_matches
+        return label_matches(entity_labels, query)
 
     def find_connected(self, ref: str, pattern: str = "*") -> List[str]:
         return self.neighbors(ref) if pattern == "*" else [

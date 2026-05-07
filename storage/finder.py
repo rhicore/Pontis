@@ -159,6 +159,15 @@ class Finder:
     def is_mounted(self, project: str) -> bool:
         return project in self._mounted
 
+    def query(self, cypher: str) -> list:
+        """Cypher 查询入口。"""
+        from storage.cypher import parse_cypher, CypherExecutor
+        store = self.get_default_store()
+        if not store:
+            return []
+        executor = CypherExecutor(store)
+        return executor.execute(parse_cypher(cypher))
+
     # ── 核心查询 ──
 
     def find(self, urn: str) -> List[Tuple[str, List[str]]]:
@@ -356,17 +365,9 @@ class Finder:
 
     @staticmethod
     def label_matches(entity_labels: List[str], query_label: str) -> bool:
-        """查询标签匹配实体标签的任意路径段或子路径。
-
-        存储标签 "col/INT" 可被 "col", "INT", "col/INT" 匹配。
-        """
-        for stored in entity_labels:
-            segs = stored.split("/")
-            for i in range(len(segs)):
-                for j in range(i + 1, len(segs) + 1):
-                    if "/".join(segs[i:j]) == query_label:
-                        return True
-        return False
+        """扁平标签匹配。query_label 是否在 entity_labels 中。"""
+        from storage.labels import label_matches
+        return label_matches(entity_labels, query_label)
 
     def _match_labels(self, entity_labels: List[str], seg: Segment) -> bool:
         """AND: 所有 labels_and 必须匹配。OR: 至少一个 labels_or 匹配。"""

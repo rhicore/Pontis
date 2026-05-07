@@ -179,7 +179,8 @@ def _create_relation_entity(table_ref: str, db_ref: str, from_table: str,
         safe_to_table = to_table.replace("/", "_").replace("\\", "_")
         safe_to_col = to_col.replace("/", "_").replace("\\", "_")
 
-        fk_entity_name = f"{from_table}.{safe_from_col}__to__{safe_to_table}.{safe_to_col}"
+        raw_from_table = from_table.split("--")[-1] if "--" in from_table else from_table
+        fk_entity_name = f"{raw_from_table}.{safe_from_col}->{safe_to_table}.{safe_to_col}"
 
         if store.node_exists(fk_entity_name):
             return False
@@ -188,7 +189,6 @@ def _create_relation_entity(table_ref: str, db_ref: str, from_table: str,
         confidence = relation.get("confidence", 0.5)
 
         fk_meta = {
-            "brief": f"{from_table}.{from_col} → {to_table}.{to_col} 外键",
             "detail": f"{from_table} 表的 {from_col} 列引用 {to_table} 表的 {to_col} 列。"
                       f"来源：{rel_type}（置信度 {confidence}）。",
             "created_at": __import__('datetime').datetime.now().isoformat(),

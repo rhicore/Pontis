@@ -8,7 +8,7 @@ from agent.guardrail.sql_utils import get_db_prefix, has_read, extract_join_col_
 
 
 _ENTITY_PATTERN = re.compile(
-    r'(\w+)\.(\w+)__(?:to|rel)__(\w+)\.(\w+)(?:\.(fk|rel|overlap))?'
+    r'(\w+)\.(\w+)->(\w+)\.(\w+)'
 )
 
 
@@ -164,24 +164,12 @@ class BridgeTableCheck(Guardrail):
 def _parse_col_pair(entity: str) -> Optional[tuple]:
     """从关系实体名提取列对 (table1, col1, table2, col2)。
 
-    支持格式:
-      - results.driverId__to__driverStandings.driverId（新版无后缀）
-      - results.driverId__to__driverStandings.driverId.overlap（旧版带后缀）
-      - schools.District__to__satscores.dname（新版）
+    格式: table1.col1->table2.col2
     """
-    # 去除可能的类型后缀
-    base = entity
-    for suffix in (".fk", ".rel", ".overlap", ".disambig"):
-        if base.endswith(suffix):
-            base = base[:-len(suffix)]
-            break
-
-    if "__to__" in base:
-        left, right = base.split("__to__", 1)
-    elif "__rel__" in base:
-        left, right = base.split("__rel__", 1)
-    else:
+    if "->" not in entity:
         return None
+
+    left, right = entity.split("->", 1)
 
     parts_l = left.rsplit(".", 1)
     if len(parts_l) != 2:

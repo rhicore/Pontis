@@ -99,8 +99,9 @@ def _process_database(rel_path: str, store: Store) -> None:
             col_ref = f"{table_ref}--{safe_col}"
             store.create_node(col_ref,
                               meta={"created_at": datetime.now().isoformat(),
-                                    "col_type": col_type},
-                              labels=[f"col/{col_type}"])
+                                    "col_type": col_type,
+                                    "brief": f"{col_name} ({col_type})"},
+                              labels=["col", col_type])
             store.add_edges([{"a": table_ref, "b": col_ref}])
 
         logger.info(f"  Entity: {table_ref}")
@@ -127,7 +128,7 @@ def _process_database(rel_path: str, store: Store) -> None:
                 store.create_node(col_ref,
                                   meta={"created_at": datetime.now().isoformat(),
                                         "col_type": col_type, "source_view": view_name},
-                                  labels=[f"col/{col_type}"])
+                                  labels=["col", col_type])
                 store.add_edges([{"a": view_ref, "b": col_ref}])
         except Exception:
             pass

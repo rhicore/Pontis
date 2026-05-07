@@ -1,7 +1,7 @@
 """DB FK Validate — 校验 FK 实体的实际数据一致性。
 
 职责：
-- 遍历所有 .fk 实体
+- 遍历所有 fk 实体
 - 对每个显式 FK 执行实际 JOIN 查询，验证数据一致性
 - 计算 match_rate、violation_count，检测格式问题（如前导零缺失）
 - 将校验结果写入 FK 实体的 meta
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def generate(store: Store) -> None:
-    """校验所有 .fk 实体的实际数据一致性。"""
+    """校验所有 fk 实体的实际数据一致性。"""
     logger.info("=== Validating FK data consistency ===")
 
     # 查找 FK 实体：新版通过标签，旧版通过后缀
@@ -46,14 +46,12 @@ def generate(store: Store) -> None:
 def _parse_fk_entity(entity_name: str) -> dict | None:
     """从 FK 实体名解析出 from_table, from_col, to_table, to_col。
 
-    格式: {from_table}.{from_col}__to__{to_table}.{to_col}（新版无后缀）
-    或: {from_table}.{from_col}__to__{to_table}.{to_col}.fk（旧版带后缀）
+    格式: {from_table}.{from_col}->{to_table}.{to_col}
     """
-    if "__to__" not in entity_name:
+    if "->" not in entity_name:
         return None
 
-    body = entity_name.replace(".fk", "")
-    parts = body.split("__to__", 1)
+    parts = entity_name.split("->", 1)
     if len(parts) != 2:
         return None
 
@@ -129,6 +127,8 @@ def _validate_one(ref: str, store: Store) -> bool:
                     f'  AND EXISTS (SELECT 1 FROM "{tt}" s WHERE s."{tc}" = \'0\' || t."{fc}")'
                 ).fetchone()[0]
                 if fixed == violation_count and fixed > 0:
+                    len_f = conn.execute(f'SELECT MAX(LENGTH("{fc}")) FROM "{ft}"').fetchone()[0] or 0
+                    len_t = conn.execute(f'SELECT MAX(LENGTH("{tc}")) FROM "{tt}"').fetchone()[0] or 0
                     format_hint = (
                         f"发现 {violation_count} 条 FK 违规，全部可通过在 {ft}.{fc} 前补 '0' 修复。"
                         f"推测 {ft}.{fc} 部分值缺少前导零（{len_f}位），而 {tt}.{tc} 为完整格式（{len_t}位）。"
