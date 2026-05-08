@@ -3,9 +3,9 @@
 供全量提取、部分执行等脚本共用的基础设施。
 """
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from storage import Store
+from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def get_registry() -> Dict[str, object]:
     return _REGISTRY
 
 
-def run_pipeline(pipeline: List[str], store: Store, config=None) -> None:
+def run_pipeline(pipeline: List[str], workspace: Workspace, config=None) -> None:
     """按 pipeline 列表顺序执行模块。"""
     registry = get_registry()
 
@@ -109,15 +109,15 @@ def run_pipeline(pipeline: List[str], store: Store, config=None) -> None:
 
         try:
             if name in CONFIG_MODULES:
-                func(store, config=config)
+                func(workspace, config=config)
             else:
-                func(store)
+                func(workspace)
         except Exception as e:
             logger.warning(f"Module {name} failed: {e}")
 
 
-def init_store(target: str, config_path: str = None, verbose: bool = False) -> tuple:
-    """初始化 Store 和 Config，返回 (store, config)。
+def init_workspace(target: str, config_path: str = None, verbose: bool = False) -> tuple:
+    """初始化 Workspace 和 Config，返回 (workspace, config)。
 
     供各类提取脚本共用的初始化逻辑。
     """
@@ -135,6 +135,5 @@ def init_store(target: str, config_path: str = None, verbose: bool = False) -> t
         raise ValueError(f"Target path does not exist: {target_path}")
 
     config = load_config(config_path)
-    from storage import stores
-    store = stores.create_store("fs", str(target_path))
-    return store, config
+    workspace = Workspace(project_path=str(target_path))
+    return workspace, config

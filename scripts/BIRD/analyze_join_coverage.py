@@ -87,8 +87,30 @@ def _extract_col_ref(node, tables: dict) -> tuple | None:
     return None
 
 
-def extract_entities(store, db_ref: str):
-    """从 store 中提取所有 .fk / .rel / .overlap 实体。
+def _find_nodes_by_suffix(workspace, prefix: str, suffix: str) -> list:
+    """通过 Cypher 查找 name 以 prefix 开头且以 suffix 结尾的节点。"""
+    rows = workspace.cypher(
+        "MATCH (n) WHERE n.name STARTS WITH $prefix AND n.name ENDS WITH $suffix RETURN n.name AS name",
+        params={"prefix": prefix, "suffix": suffix}
+    )
+    return [r["name"] for r in rows if r.get("name")]
+
+
+def _find_db_nodes(workspace) -> list:
+    """查找数据库根节点。"""
+    for ext in [".db::", ".sqlite::", ".sqlite3::", ".duckdb::"]:
+        rows = workspace.cypher(
+            "MATCH (n) WHERE n.name CONTAINS $ext RETURN n.name AS name",
+            params={"ext": ext}
+        )
+        names = [r["name"] for r in rows if r.get("name")]
+        if names:
+            return names
+    return []
+
+
+def extract_entities(workspace, db_ref: str):
+    """从 workspace 中提取所有 .fk / .rel / .overlap 实体。
 
     返回三个集合，元素为 (table1, col1, table2, col2)，已规范化排序。
     """
@@ -96,15 +118,15 @@ def extract_entities(store, db_ref: str):
     rel_set = set()
     overlap_set = set()
 
-    for ref in store.find_nodes(f"{db_ref}*.fk"):
+    for ref in _find_nodes_by_suffix(workspace, db_ref, ".fk"):
         _, entity = ref.split("::", 1)
         fk_set.add(_normalize_relation(entity))
 
-    for ref in store.find_nodes(f"{db_ref}*.rel"):
+    for ref in _find_nodes_by_suffix(workspace, db_ref, ".rel"):
         _, entity = ref.split("::", 1)
         rel_set.add(_normalize_relation(entity))
 
-    for ref in store.find_nodes(f"{db_ref}*.overlap"):
+    for ref in _find_nodes_by_suffix(workspace, db_ref, ".overlap"):
         _, entity = ref.split("::", 1)
         overlap_set.add(_normalize_relation(entity))
 
@@ -153,17 +175,15 @@ def main():
         sys.exit(1)
 
     sys.path.insert(0, str(PROJECT_ROOT))
-    from storage import Store
+    from storage.workspace import Workspace
 
-    store = Store(str(db_dir))
+    ws = Workspace(project_path=str(db_dir))
 
     # 找到 db ref
+    db_nodes = _find_db_nodes(ws)
     db_ref = None
-    for pattern in ["*.db::*", "*.sqlite::*", "*.sqlite3::*", "*.duckdb::*"]:
-        nodes = list(store.find_nodes(pattern))
-        if nodes:
-            db_ref = nodes[0].split("::", 1)[0] + "::"
-            break
+    if db_nodes:
+        db_ref = db_nodes[0].split("::", 1)[0] + "::"
     if not db_ref:
         print("Error: cannot find database root in store")
         sys.exit(1)
@@ -171,7 +191,7 @@ def main():
     print(f"=== Database: {db_id} ===\n")
 
     # 1. 提取实体
-    fk_set, rel_set, overlap_set = extract_entities(store, db_ref)
+    fk_set, rel_set, overlap_set = extract_entities(ws, db_ref)
 
     # REL 中与 FK 同方向的去掉（避免同一对既有 FK 又有 REL）
     # 但为了展示，我们先保留，后面交集分析时再处理

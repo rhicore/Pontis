@@ -245,28 +245,19 @@ def _apply_post_filters(results: list, filters: list) -> list:
 #  公共 API
 # ═══════════════════════════════════════════════════════════
 
-def _get_project_name(obj) -> str:
-    if hasattr(obj, 'config'):
-        dp = obj.config.default_project()
-        if dp:
-            return dp
-    if hasattr(obj, 'project_path'):
-        return os.path.basename(obj.project_path)
+def _get_project_name(workspace) -> str:
+    ap = workspace.active_projects
+    if ap:
+        return ap[0]
     return "local"
 
 
-def _get_store(obj):
-    if hasattr(obj, 'get_store'):
-        return obj.get_store()
-    return obj
-
-
-def glob_command(obj, ref: str, offset: int = 0,
+def glob_command(workspace, ref: str, offset: int = 0,
                  limit: Optional[int] = None, current_cwd: str = "") -> str:
     """URN 语法查询，翻译为标准 Cypher 执行。
 
     Args:
-        obj: Workspace 或 Store 实例
+        workspace: Workspace 实例
         ref: URN pattern（glob 模式、标签过滤、多跳遍历）
         offset: 起始索引
         limit: 每页最大条数
@@ -276,8 +267,7 @@ def glob_command(obj, ref: str, offset: int = 0,
         limit = page_conf.default_limit
     limit = min(limit, page_conf.max_limit)
 
-    store = _get_store(obj)
-    if hasattr(store, 'pontis_exists') and not store.pontis_exists:
+    if not workspace.pontis_exists:
         return "No .pontis directory found. Run extractor first."
 
     # 解析 URN → Cypher
@@ -285,12 +275,7 @@ def glob_command(obj, ref: str, offset: int = 0,
     cypher, post_filters = _build_cypher(segments)
 
     # 执行 Cypher
-    if hasattr(obj, 'query'):
-        results = obj.query(cypher)
-    else:
-        from storage.cypher import parse_cypher, CypherExecutor
-        executor = CypherExecutor(store)
-        results = executor.execute(parse_cypher(cypher))
+    results = workspace.cypher(cypher)
 
     # 后处理（复杂 glob / label OR）
     if post_filters:
@@ -299,7 +284,7 @@ def glob_command(obj, ref: str, offset: int = 0,
     if not results:
         return "No objects found"
 
-    project_name = _get_project_name(obj)
+    project_name = _get_project_name(workspace)
 
     # 格式化：取最后一个变量的信息作为主结果
     all_items = []
@@ -315,8 +300,9 @@ def glob_command(obj, ref: str, offset: int = 0,
 
         name = main_info.get("name", "?")
         labels = main_info.get("labels", [])
-        meta = (store.get_meta(name, include_props=[]) or {}) if store else {}
-        info_str = get_info(labels, meta)
+        meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": name})
+        meta = meta_rows[0].get("n") if meta_rows else {}
+        info_str = get_info(labels, meta or {})
         label_str = format_labels(labels)
         all_items.append((name, label_str, info_str))
 
@@ -344,9 +330,9 @@ def glob_command(obj, ref: str, offset: int = 0,
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 3:
-        print("Usage: python -m tool.glob.tool <project_path> <ref>")
+        print("Usage: python -m tool.glob.tool <project_name> <ref>")
         sys.exit(1)
 
-    from storage.stores.fs import FSStore
-    store = FSStore(sys.argv[1])
-    print(glob_command(store, sys.argv[2]))
+    from storage.workspace import Workspace
+    ws = Workspace(active_projects=[sys.argv[1]])
+    print(glob_command(ws, sys.argv[2]))

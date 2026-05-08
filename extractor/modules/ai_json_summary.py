@@ -11,14 +11,14 @@
 """
 import os
 import logging
-from storage import Store
+from storage.workspace import Workspace
 from extractor.modules.utils.loader import load_config
 from extractor.modules.utils.ai_utils import generate_detail_and_brief
 
 logger = logging.getLogger(__name__)
 
 
-def generate(store: Store) -> None:
+def generate(workspace: Workspace) -> None:
     logger.info("=== AI: JSON summary ===")
 
     llm = load_config().get_llm()
@@ -26,15 +26,18 @@ def generate(store: Store) -> None:
         logger.warning("LLM not configured, skipping AI summary")
         return
 
-    for path in store.find_nodes("*.json"):
+    json_rows = workspace.cypher("MATCH (n) WHERE n.name ENDS WITH '.json' RETURN n")
+    for row in json_rows:
+        path = row["n"]["name"]
         try:
-            _generate_for_json(path, store, llm)
+            _generate_for_json(path, workspace, llm)
         except Exception as e:
             logger.warning(f"Failed for {path}: {e}")
 
 
-def _generate_for_json(path: str, store: Store, llm) -> bool:
-    meta = store.get_meta(path)
+def _generate_for_json(path: str, workspace: Workspace, llm) -> bool:
+    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": path})
+    meta = meta_rows[0].get("n") if meta_rows else None
     if not meta:
         return False
 
@@ -66,7 +69,7 @@ IMPORTANT rules:
 """
 
     try:
-        detail, brief = generate_detail_and_brief(llm, prompt, max_tokens=100)
+        detail, brief = generate_detail_and_brief(llm, prompt)
         updates = {}
         if detail:
             updates["detail"] = detail
@@ -74,7 +77,7 @@ IMPORTANT rules:
             updates["brief"] = brief
 
         if updates:
-            store.set_meta(path, updates)
+            workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": path, "props": updates})
             logger.info(f"  AI summary: {path}")
             return True
     except Exception as e:

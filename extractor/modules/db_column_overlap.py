@@ -14,13 +14,12 @@
 独立执行：
     python -m extractor.db_column_overlap ./my_data
 """
-import os
 import re
 import logging
 from typing import List, Dict, Set, Optional
 from collections import defaultdict
 from itertools import combinations
-from storage import Store
+from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -30,34 +29,40 @@ COMMON_NOUNS = {'name', 'title', 'description', 'date', 'time', 'value', 'type',
 NLP_STOPWORDS = {'of', 'the', 'and', 'in', 'on', 'at', 'to', 'from', 'a', 'an'}
 ALL_STOPWORDS = STRUCTURE_STOPWORDS | COMMON_NOUNS | NLP_STOPWORDS
 
-DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
 
 
-def generate(store: Store, config=None) -> None:
+def generate(workspace: Workspace, config=None) -> None:
     """为所有数据库检测列值重叠"""
     logger.info("=== Generating column overlaps ===")
 
-    for ext in DB_EXTENSIONS:
-        for path in store.find_nodes(ext):
+    for ext_suffix in [".db", ".sqlite", ".sqlite3", ".duckdb"]:
+        db_rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext_suffix}' RETURN n")
+        for db_row in db_rows:
+            path = db_row["n"]["name"]
             try:
-                _generate_for_database(path, store)
+                _generate_for_database(path, workspace)
             except Exception as e:
                 logger.warning(f"Failed to generate overlaps for {path}: {e}")
 
 
-def _generate_for_database(path: str, store: Store) -> bool:
+def _generate_for_database(path: str, workspace: Workspace) -> bool:
     """为单个数据库检测列值重叠"""
-    db_meta = store.get_meta(path)
+    db_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": path})
+    db_meta = db_meta_rows[0].get("n") if db_meta_rows else None
     db_rel = db_meta.get("path", path) if db_meta else path
-    db_path = os.path.join(store.project_path, db_rel)
-    if not os.path.isfile(db_path):
+    if not workspace.data_exists(db_rel):
         return False
 
     # 收集所有列信息（通过 table → col 遍历）
     columns_info = []
-    for table_ref in store.find_nodes(f"{path}::*:table"):
-        for col_ref in store.find_nodes(f"{path}::{table_ref}::*:col"):
-            col_meta = store.get_meta(col_ref)
+    tbl_rows = workspace.cypher(f'MATCH (d {{name: "{path}"}})--(t:table) RETURN t')
+    for tbl_row in tbl_rows:
+        table_ref = tbl_row["t"]["name"]
+        col_rows = workspace.cypher(f'MATCH (d {{name: "{path}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
+        for col_row in col_rows:
+            col_ref = col_row["c"]["name"]
+            col_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": col_ref})
+            col_meta = col_meta_rows[0].get("n") if col_meta_rows else None
             if not col_meta:
                 continue
             cardinality = col_meta.get("cardinality", 0)
@@ -96,11 +101,11 @@ def _generate_for_database(path: str, store: Store) -> bool:
         cols2 = [c for c in columns_info if c['table'] == table2]
 
         # 检测列对重叠
-        overlaps = _detect_column_overlaps(db_path, cols1, cols2)
+        overlaps = _detect_column_overlaps(db_rel, cols1, cols2, workspace)
 
         # 创建 overlap 实体
         for overlap in overlaps:
-            if _create_overlap_entity(path, overlap, store):
+            if _create_overlap_entity(path, overlap, workspace):
                 created_count += 1
 
     if created_count > 0:
@@ -135,13 +140,13 @@ def _build_table_contexts(columns_info: List[Dict]) -> Dict[str, Set[str]]:
     return contexts
 
 
-def _detect_column_overlaps(db_path: str, cols1: List[Dict], cols2: List[Dict]) -> List[Dict]:
+def _detect_column_overlaps(db_rel: str, cols1: List[Dict], cols2: List[Dict], workspace: Workspace) -> List[Dict]:
     """检测两表列之间的重叠"""
     overlaps = []
 
     for col1 in cols1:
         for col2 in cols2:
-            overlap_result = _calculate_overlap(db_path, col1, col2)
+            overlap_result = _calculate_overlap(db_rel, col1, col2, workspace)
             if not overlap_result or overlap_result['card_overlap'] == 0:
                 continue
 
@@ -184,26 +189,22 @@ def _detect_column_overlaps(db_path: str, cols1: List[Dict], cols2: List[Dict]) 
     return overlaps[:3]
 
 
-def _calculate_overlap(db_path: str, col1: Dict, col2: Dict) -> Optional[Dict]:
+def _calculate_overlap(db_rel: str, col1: Dict, col2: Dict, workspace: Workspace) -> Optional[Dict]:
     """计算两列的值重叠情况"""
     try:
-        import sqlite3
-        conn = sqlite3.connect(db_path)
+        with workspace.open_db(db_rel) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'SELECT DISTINCT "{col1["column"]}" FROM "{col1["table"]}" '
+                f'WHERE "{col1["column"]}" IS NOT NULL'
+            )
+            values1 = {row[0] for row in cursor.fetchall()}
 
-        cursor = conn.cursor()
-        cursor.execute(
-            f'SELECT DISTINCT "{col1["column"]}" FROM "{col1["table"]}" '
-            f'WHERE "{col1["column"]}" IS NOT NULL'
-        )
-        values1 = {row[0] for row in cursor.fetchall()}
-
-        cursor.execute(
-            f'SELECT DISTINCT "{col2["column"]}" FROM "{col2["table"]}" '
-            f'WHERE "{col2["column"]}" IS NOT NULL'
-        )
-        values2 = {row[0] for row in cursor.fetchall()}
-
-        conn.close()
+            cursor.execute(
+                f'SELECT DISTINCT "{col2["column"]}" FROM "{col2["table"]}" '
+                f'WHERE "{col2["column"]}" IS NOT NULL'
+            )
+            values2 = {row[0] for row in cursor.fetchall()}
 
         if values1.isdisjoint(values2):
             return None
@@ -231,7 +232,7 @@ def _calculate_overlap(db_path: str, col1: Dict, col2: Dict) -> Optional[Dict]:
         return None
 
 
-def _create_overlap_entity(path: str, overlap: Dict, store: Store) -> bool:
+def _create_overlap_entity(path: str, overlap: Dict, workspace: Workspace) -> bool:
     """在 _entity/ 下为重叠关系创建实体（labels=["overlap"]）"""
     try:
         from_table = overlap['from_table']
@@ -246,25 +247,22 @@ def _create_overlap_entity(path: str, overlap: Dict, store: Store) -> bool:
         safe_from_col = raw_from_col.replace("/", "_").replace("\\", "_")
         safe_to_col = raw_to_col.replace("/", "_").replace("\\", "_")
 
-        overlap_entity_name = f"{raw_from_table}.{safe_from_col}->{raw_to_table}.{safe_to_col}"
-        reverse_entity_name = f"{raw_to_table}.{safe_to_col}->{raw_from_table}.{safe_from_col}"
+        overlapname = f"{raw_from_table}.{safe_from_col}->{raw_to_table}.{safe_to_col}"
+        reversename = f"{raw_to_table}.{safe_to_col}->{raw_from_table}.{safe_from_col}"
 
-        if store.node_exists(overlap_entity_name) or store.node_exists(reverse_entity_name):
+        if workspace.cypher(f'MATCH (n {{name: "{overlapname}"}}) RETURN n') or \
+           workspace.cypher(f'MATCH (n {{name: "{reversename}"}}) RETURN n'):
             return False
 
-        overlap_meta = {
+        workspace.cypher(f'CREATE (o:overlap {{name: "{overlapname}"}})')
+        workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": overlapname, "props": {
             "stats": overlap['stats'],
-            "detail": f"来源：{overlap['match_type']}。{overlap['reason']}。",
             "created_at": __import__('datetime').datetime.now().isoformat(),
-        }
-
-        store.create_node(overlap_entity_name, meta=overlap_meta, labels=["overlap"])
+        }})
 
         # 添加边: from_table → overlap, to_table → overlap
-        store.add_edges([
-            {"a": from_table, "b": overlap_entity_name},
-            {"a": to_table, "b": overlap_entity_name},
-        ])
+        workspace.cypher(f'MATCH (a {{name: "{from_table}"}}),(o {{name: "{overlapname}"}}) CREATE (a)--(o)')
+        workspace.cypher(f'MATCH (a {{name: "{to_table}"}}),(o {{name: "{overlapname}"}}) CREATE (a)--(o)')
 
         return True
 

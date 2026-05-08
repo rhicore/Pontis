@@ -6,7 +6,7 @@
   - 不自动连边，通过 edges 参数显式指定
 """
 
-from tool.utils import cypher_escape, execute_cypher
+from tool.utils import execute_cypher
 
 
 def _parse_ref(ref: str) -> tuple:
@@ -37,23 +37,18 @@ def _has_wildcards(ref: str) -> bool:
     return any(c in ref for c in '*?[]')
 
 
-def create_entity_command(obj, ref: str, meta: dict = None,
+def create_entity_command(workspace, ref: str, meta: dict = None,
                           edges: list = None) -> str:
     """创建实体节点，构造 Cypher CREATE 语句执行。
 
     Args:
-        obj: Workspace 或 Store 实例
+        workspace: Workspace 实例
         ref: 实体引用，格式 [project::]name[:tag1[:tag2]]
         meta: 元数据
         edges: 边列表 [{"a": "...", "b": "..."}, ...]
     """
-    if hasattr(obj, 'get_store'):
-        store = obj.get_store()
-    else:
-        store = obj
-
-    if hasattr(store, 'pontis_exists') and not store.pontis_exists:
-        return f"Error: .pontis directory not found in {store.project_path}"
+    if not workspace.pontis_exists:
+        return f"Error: .pontis directory not found in {workspace.project_path}"
 
     # 禁止通配符
     if _has_wildcards(ref):
@@ -64,7 +59,7 @@ def create_entity_command(obj, ref: str, meta: dict = None,
     if not name:
         return "错误: 实体名不能为空"
 
-    if store.node_exists(name):
+    if workspace.cypher('MATCH (n {name: $name}) RETURN n', params={"name": name}):
         return f"Entity already exists: {name}"
 
     meta = meta or {}
@@ -75,11 +70,10 @@ def create_entity_command(obj, ref: str, meta: dict = None,
     props["name"] = name
     if project:
         props["project"] = project
-    props_str = ", ".join(f'{k}: "{cypher_escape(v)}"' for k, v in props.items()
-                          if not k.startswith("_"))
-    cypher = f'CREATE (n{labels_str} {{{props_str}}})'
+    prop_values = {k: v for k, v in props.items() if not k.startswith("_")}
+    cypher = f'CREATE (n{labels_str} $props)'
 
-    execute_cypher(obj, cypher)
+    execute_cypher(workspace, cypher, params={"props": prop_values})
 
     # 创建显式 edges
     edge_results = []
@@ -89,14 +83,14 @@ def create_entity_command(obj, ref: str, meta: dict = None,
             b_name = e.get("b", "")
             if not a_name or not b_name:
                 continue
-            if not store.node_exists(a_name):
+            if not workspace.cypher('MATCH (n {name: $name}) RETURN n', params={"name": a_name}):
                 edge_results.append(f"  跳过: 端点不存在 '{a_name}'")
                 continue
-            if not store.node_exists(b_name):
+            if not workspace.cypher('MATCH (n {name: $name}) RETURN n', params={"name": b_name}):
                 edge_results.append(f"  跳过: 端点不存在 '{b_name}'")
                 continue
-            edge_cypher = f'MATCH (a {{name: "{a_name}"}}),(b {{name: "{b_name}"}}) CREATE (a)--(b)'
-            execute_cypher(obj, edge_cypher)
+            edge_cypher = 'MATCH (a {name: $a_name}),(b {name: $b_name}) CREATE (a)--(b)'
+            execute_cypher(workspace, edge_cypher, params={"a_name": a_name, "b_name": b_name})
             edge_results.append(f"  {a_name} ↔ {b_name}")
 
     lines = [f"Created: {name}"]
@@ -113,11 +107,11 @@ if __name__ == "__main__":
     import json
     import sys
     if len(sys.argv) < 3:
-        print("Usage: python -m tool.create_entity.tool <project_path> <ref> [meta_json]")
+        print("Usage: python -m tool.create_entity.tool <project_name> <ref> [meta_json]")
         sys.exit(1)
 
-    from storage.stores.fs import FSStore
-    _store = FSStore(sys.argv[1])
+    from storage.workspace import Workspace
+    ws = Workspace(active_projects=[sys.argv[1]])
     _ref = sys.argv[2]
     _meta = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
-    print(create_entity_command(_store, _ref, _meta))
+    print(create_entity_command(ws, _ref, _meta))

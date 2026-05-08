@@ -45,10 +45,10 @@ class AgentExecutor:
 
         # 按模式选择 prompt
         sub_mode = "readonly" if self._mode == "readonly" else "sub_agent"
-        sub_prompt = build_prompt(AgentSpec(mode=sub_mode, project_path=store.project_path))
+        sub_prompt = build_prompt(AgentSpec(mode=sub_mode, project_path=workspace.project_path))
 
         sub_agent = PontusAgent(
-            store.project_path,
+            workspace.project_path,
             tools=sub_tools,
             system_prompt=sub_prompt,
         )

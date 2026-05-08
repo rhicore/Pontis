@@ -51,7 +51,7 @@ class BridgeTableCheck(Guardrail):
         if not col_pairs:
             return ""
 
-        edge_map = self._build_edge_map(ctx.store)
+        edge_map = self._build_edge_map(ctx.workspace)
         if not edge_map:
             return ""
 
@@ -123,19 +123,23 @@ class BridgeTableCheck(Guardrail):
                 "但建议先读取确认：\n"
                 + body)
 
-    # ──────────────── 邻接图构建（store 缓存）────────────────
+    # ──────────────── 邻接图构建（workspace 缓存）────────────────
 
-    def _build_edge_map(self, store) -> Dict[Tuple[str, str], List[Tuple[str, str]]]:
+    def _build_edge_map(self, workspace) -> Dict[Tuple[str, str], List[Tuple[str, str]]]:
         if self._edge_map is not None:
             return self._edge_map
 
         edge_map: Dict[Tuple[str, str], List[Tuple[str, str]]] = defaultdict(list)
 
-        if store is None:
+        if workspace is None:
             self._edge_map = dict(edge_map)
             return self._edge_map
 
-        for ename, labels in store.list_all():
+        rows = workspace.cypher("MATCH (n) RETURN n")
+        for row in rows:
+            n = row.get("n", {})
+            ename = n.get("name", "")
+            labels = n.get("labels", [])
             # 检查 labels 是否包含 fk/rel/overlap
             rel_type = None
             if "fk" in labels:

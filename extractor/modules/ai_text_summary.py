@@ -9,16 +9,15 @@
 独立执行：
     python -m extractor.ai_text_summary ./my_data
 """
-import os
 import logging
-from storage import Store
+from storage.workspace import Workspace
 from extractor.modules.utils.loader import load_config
 from extractor.modules.utils.ai_utils import generate_detail_and_brief
 
 logger = logging.getLogger(__name__)
 
 
-def generate(store: Store) -> None:
+def generate(workspace: Workspace) -> None:
     logger.info("=== AI: Text file summary ===")
 
     llm = load_config().get_llm()
@@ -28,15 +27,18 @@ def generate(store: Store) -> None:
 
     # 匹配所有文本类型文件
     for ext in ['.md', '.txt', '.log', '.sql']:
-        for path in store.find_nodes(f"*{ext}"):
+        rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext}' RETURN n")
+        for row in rows:
+            path = row["n"]["name"]
             try:
-                _generate_for_text(path, store, llm)
+                _generate_for_text(path, workspace, llm)
             except Exception as e:
                 logger.warning(f"Failed for {path}: {e}")
 
 
-def _generate_for_text(path: str, store: Store, llm) -> bool:
-    meta = store.get_meta(path)
+def _generate_for_text(path: str, workspace: Workspace, llm) -> bool:
+    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": path})
+    meta = meta_rows[0].get("n") if meta_rows else None
     if not meta:
         return False
 
@@ -48,8 +50,8 @@ def _generate_for_text(path: str, store: Store, llm) -> bool:
     if not source_rel:
         return False
 
-    source_path = os.path.join(store.project_path, source_rel)
-    if not os.path.exists(source_path):
+    source_path = workspace.resolve_data_path(source_rel)
+    if not workspace.data_exists(source_rel):
         return False
 
     preview = _read_preview(source_path, max_lines=30)
@@ -59,7 +61,7 @@ def _generate_for_text(path: str, store: Store, llm) -> bool:
     prompt = _build_prompt(path, preview, char_count, line_count)
 
     try:
-        detail, brief = generate_detail_and_brief(llm, prompt, max_tokens=100)
+        detail, brief = generate_detail_and_brief(llm, prompt)
         updates = {}
         if detail:
             updates["detail"] = detail
@@ -67,7 +69,7 @@ def _generate_for_text(path: str, store: Store, llm) -> bool:
             updates["brief"] = brief
 
         if updates:
-            store.set_meta(path, updates)
+            workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": path, "props": updates})
             logger.info(f"  AI summary: {path}")
             return True
     except Exception as e:

@@ -19,7 +19,7 @@ def build_project_context(project_path: str, spec=None) -> str:
     parts = ["## 当前项目"]
 
     for name in active:
-        path = config.resolve_path(name)
+        path = config.resolve_source_path(name)
         if not path:
             continue
         parts.append(f"### {name}")

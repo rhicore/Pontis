@@ -15,7 +15,6 @@ from agent.config import default_spec
 from agent.tools import build_registry
 from agent.prompt import build_prompt
 from agent.guardrail_api import Guardrail, CallVerdict, GuardrailContext
-from utils.llm import build_thinking_kwargs
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -54,7 +53,6 @@ class PontusAgent:
             active_projects = [os.path.basename(os.path.abspath(project_path))]
         self.workspace = Workspace(project_path=project_path,
                                    active_projects=active_projects)
-        self.store = self.workspace.get_store()
         self.config = load_agent_config(project_path)
         self.logger = logging.getLogger(logger_name or __name__)
         self._trace_callback = trace_callback
@@ -83,13 +81,13 @@ class PontusAgent:
             "model": self.config["model"],
             "messages": self.messages,
             "tools": self.tools.get_definitions(),
+            "max_tokens": self.config.get("max_tokens", 8192),
         }
-        kwargs.update(build_thinking_kwargs(
-            self.config.get("thinking", False),
-            self.config.get("thinking_effort", "high"),
-            max_tokens=self.config["max_tokens"],
-            temperature=self.config["temperature"],
-        ))
+        if self.config.get("thinking", False):
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["reasoning_effort"] = self.config.get("thinking_effort", "high")
+        else:
+            kwargs["temperature"] = self.config.get("temperature", 0.3)
         return self.client.chat.completions.create(**kwargs)
 
     def _call_llm_round(self):
@@ -111,7 +109,7 @@ class PontusAgent:
 
     def _execute_tool(self, name: str, arguments: dict, tool_call_id: str) -> str:
         """执行单个工具调用：执行 → 截断 → 记录。"""
-        result = self.tools.execute(name, arguments, self.store, workspace=self.workspace)
+        result = self.tools.execute(name, arguments, self.workspace)
 
         if len(result) > _MAX_TOOL_RESULT:
             result = result[:_MAX_TOOL_RESULT] + "\n... (truncated)"
@@ -241,10 +239,9 @@ class PontusAgent:
             ctx = GuardrailContext(
                 messages=self.messages,
                 tool_history=self._tool_history,
-                store=self.store,
+                workspace=self.workspace,
                 rounds=rounds,
                 pending_calls=pending,
-                workspace=self.workspace,
             )
 
             done = False
@@ -259,6 +256,8 @@ class PontusAgent:
                 return
 
             rounds += 1
+
+        yield {"type": "done", "content": ""}
 
     # ──────────────── 公开接口 ────────────────
 

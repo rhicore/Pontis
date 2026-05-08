@@ -243,7 +243,7 @@ def _sort_by_mtime(files: List[str]) -> List[str]:
 
 
 def grep_command(
-    store,
+    workspace,
     pattern: str = "",
     path: str = "",
     output_mode: str = "files_with_matches",
@@ -258,7 +258,7 @@ def grep_command(
     Search content in files and entities.
 
     Args:
-        store: Store instance
+        workspace: Workspace 实例
         pattern: Regex pattern (ripgrep syntax)
         path: File or directory to search
         output_mode: "content", "files_with_matches", or "count"
@@ -290,7 +290,7 @@ def grep_command(
     )
 
     # Resolve search path
-    search_base = os.path.join(store.project_path, current_cwd) if current_cwd else store.project_path
+    search_base = os.path.join(workspace.project_path, current_cwd) if current_cwd else workspace.project_path
     if params.path:
         search_base = os.path.join(search_base, params.path) if not os.path.isabs(params.path) else params.path
 
@@ -302,18 +302,18 @@ def grep_command(
 
     if params.output_mode == 'content':
         limited, applied_limit = _apply_head_limit(raw_results, params.head_limit, params.offset)
-        limited = _to_relative_paths(limited, store.project_path)
+        limited = _to_relative_paths(limited, workspace.project_path)
         return _format_content_output(limited, applied_limit, params.offset)
 
     elif params.output_mode == 'count':
         limited, applied_limit = _apply_head_limit(raw_results, params.head_limit, params.offset)
-        limited = _to_relative_paths(limited, store.project_path)
+        limited = _to_relative_paths(limited, workspace.project_path)
         return _format_count_output(limited, applied_limit, params.offset)
 
     else:  # files_with_matches (default)
         sorted_results = _sort_by_mtime(raw_results)
         limited, applied_limit = _apply_head_limit(sorted_results, params.head_limit, params.offset)
-        limited = _to_relative_paths(limited, store.project_path)
+        limited = _to_relative_paths(limited, workspace.project_path)
         return _format_files_output(limited, len(limited), applied_limit)
 
 
@@ -321,11 +321,11 @@ if __name__ == "__main__":
     import json
     import sys
     if len(sys.argv) < 3:
-        print("Usage: python -m tool.FS_grep.tool <project_path> <json_params> [cwd]")
+        print("Usage: python -m tool.FS_grep.tool <project_name> <json_params> [cwd]")
         sys.exit(1)
 
-    from storage import Store
-    _store = Store(sys.argv[1])
+    from storage.workspace import Workspace
+    ws = Workspace(active_projects=[sys.argv[1]])
     _params = json.loads(sys.argv[2])
     _cwd = sys.argv[3] if len(sys.argv) > 3 else ""
-    print(grep_command(_store, **_params, current_cwd=_cwd))
+    print(grep_command(ws, **_params, current_cwd=_cwd))

@@ -1,4 +1,4 @@
-"""Store 配置 — project 映射、路由规则、加载逻辑。"""
+"""Store 配置 — 三层结构：项目信息 / 数据源 / 图存储。"""
 import os
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -12,9 +12,26 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ProjectEntry:
-    path: str
-    backend: str = "fs"
+class SourceConfig:
+    """数据源配置 — 决定怎么发现和访问数据。"""
+    type: str = "fs"          # fs | docker | s3 | ...
+    path: str = ""
+
+
+@dataclass
+class GraphConfig:
+    """图存储配置 — 决定图数据库存在哪、用什么引擎。"""
+    type: str = "sqlite"      # sqlite | neo4j | memory
+    path: str = ""            # 空 = 从 source.path 推导
+
+
+@dataclass
+class ProjectConfig:
+    """项目配置 — 一个 project 的完整描述。"""
+    name: str = ""
+    description: str = ""
+    source: SourceConfig = field(default_factory=SourceConfig)
+    graph: GraphConfig = field(default_factory=GraphConfig)
     groups: List[str] = field(default_factory=list)
 
 
@@ -26,25 +43,36 @@ class RoutingRule:
 
 @dataclass
 class StoreConfig:
-    projects: Dict[str, ProjectEntry] = field(default_factory=dict)
+    projects: Dict[str, ProjectConfig] = field(default_factory=dict)
     routing: List[RoutingRule] = field(default_factory=list)
 
     def default_project(self) -> Optional[str]:
         return next(iter(self.projects)) if self.projects else None
 
-    def resolve_path(self, project: str) -> Optional[str]:
+    def resolve_source_path(self, project: str) -> Optional[str]:
         entry = self.projects.get(project)
-        if entry:
-            p = os.path.expanduser(entry.path)
-            # fs backend 做 abspath，其他 backend（s3/db 等）保持原样
-            if entry.backend == "fs" and not os.path.isabs(p):
+        if not entry:
+            return None
+        p = os.path.expanduser(entry.source.path)
+        if entry.source.type == "fs" and not os.path.isabs(p):
+            p = os.path.abspath(p)
+        return p
+
+    def resolve_graph_path(self, project: str) -> Optional[str]:
+        """解析图存储路径。空则从 source.path 推导。"""
+        entry = self.projects.get(project)
+        if not entry:
+            return None
+        if entry.graph.path:
+            p = os.path.expanduser(entry.graph.path)
+            if not os.path.isabs(p):
                 p = os.path.abspath(p)
             return p
+        # 默认：{source.path}/.pontis/store.db
+        src = self.resolve_source_path(project)
+        if src:
+            return os.path.join(src, ".pontis", "store.db")
         return None
-
-    def resolve_backend(self, project: str) -> str:
-        entry = self.projects.get(project)
-        return entry.backend if entry else "fs"
 
     def route_entity(self, entity_name: str) -> Optional[str]:
         for rule in self.routing:
@@ -55,6 +83,33 @@ class StoreConfig:
     def project_groups(self, project: str) -> List[str]:
         entry = self.projects.get(project)
         return entry.groups if entry else []
+
+
+def _parse_project(name: str, pdata) -> ProjectConfig:
+    """从 YAML 数据解析 ProjectConfig。"""
+    if not isinstance(pdata, dict):
+        raise ValueError(f"Project '{name}' config must be a dict with 'source' key, got {type(pdata).__name__}")
+
+    if "source" not in pdata:
+        raise ValueError(f"Project '{name}' missing required 'source' key")
+
+    src = pdata["source"]
+    source_cfg = SourceConfig(
+        type=src.get("type", "fs"),
+        path=src.get("path", ""),
+    )
+    graph = pdata.get("graph", {})
+    graph_cfg = GraphConfig(
+        type=graph.get("type", "sqlite"),
+        path=graph.get("path", ""),
+    )
+    return ProjectConfig(
+        name=name,
+        description=pdata.get("description", ""),
+        source=source_cfg,
+        graph=graph_cfg,
+        groups=pdata.get("groups", []),
+    )
 
 
 def load_config(config_path: str = None, project_path: str = None) -> StoreConfig:
@@ -76,21 +131,14 @@ def load_config(config_path: str = None, project_path: str = None) -> StoreConfi
     if os.path.exists(builtin_cfg):
         sources.append(builtin_cfg)
 
-    merged_projects = {}
-    merged_routing = []
+    merged_projects: Dict[str, ProjectConfig] = {}
+    merged_routing: List[RoutingRule] = []
 
     for src in sources:
         with open(src, "r") as f:
             data = yaml.safe_load(f) or {}
         for name, pdata in data.get("projects", {}).items():
-            if isinstance(pdata, dict):
-                merged_projects[name] = ProjectEntry(
-                    path=pdata["path"],
-                    backend=pdata.get("backend", "fs"),
-                    groups=pdata.get("groups", []),
-                )
-            else:
-                merged_projects[name] = ProjectEntry(path=pdata)
+            merged_projects[name] = _parse_project(name, pdata)
         for rdata in data.get("routing", []):
             merged_routing.append(RoutingRule(
                 pattern=rdata["pattern"],
@@ -98,10 +146,12 @@ def load_config(config_path: str = None, project_path: str = None) -> StoreConfi
             ))
 
     if project_path:
-        # project_path 始终注册（除非配置中已存在同名项目）
         pname = os.path.basename(os.path.abspath(project_path))
         if pname not in merged_projects:
-            merged_projects[pname] = ProjectEntry(path=project_path)
+            merged_projects[pname] = ProjectConfig(
+                name=pname,
+                source=SourceConfig(type="fs", path=project_path),
+            )
             logger.info("Registered project '%s' from project_path", pname)
 
     return StoreConfig(projects=merged_projects, routing=merged_routing)

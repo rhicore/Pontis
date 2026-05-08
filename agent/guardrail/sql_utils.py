@@ -14,11 +14,11 @@ import sqlglot
 #  实体列表格式化（与 glob/search 共用逻辑）
 # ═══════════════════════════════════════════════════════════
 
-def format_entity_list(store, refs: list[str]) -> str:
+def format_entity_list(workspace, refs: list[str]) -> str:
     """格式化实体列表，显示 brief（与 glob/search 一致的展示风格）。
 
     Args:
-        store: Store 实例
+        workspace: Workspace 实例
         refs: 实体 ref 列表（如 "formula_1.sqlite::position.disambig"）
 
     Returns:
@@ -26,12 +26,15 @@ def format_entity_list(store, refs: list[str]) -> str:
     """
     lines = []
     for ref in refs:
-        meta = store.get_meta(ref, include_props=[]) if store else None
+        meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": ref})
+        meta = meta_rows[0].get("n") if meta_rows else None
         if meta and meta.get("brief"):
             lines.append(f"  - {ref} | {meta['brief']}")
         else:
             lines.append(f"  - {ref}")
     return "\n".join(lines)
+
+
 from sqlglot import exp
 
 
@@ -112,35 +115,39 @@ def get_meta_read(tool_history: list) -> frozenset:
 
 
 def has_read(tool_history: list, entity: str) -> bool:
-    """检查实体是否已被 meta 读取。支持前缀匹配。"""
+    """检查实体是否已被 meta 读取。"""
     if "::" in entity:
         entity = entity.split("::", 1)[1]
     read = get_meta_read(tool_history)
-    if entity in read:
-        return True
-    return any(s.startswith(entity + ".") for s in read)
+    return entity in read
 
 
-def resolve_entity_ref(store, table: str, column: str = None) -> str:
-    """从 store 查找实体引用路径，大小写不敏感。
+def resolve_entity_ref(workspace, table: str, column: str = None) -> str:
+    """从 workspace 查找实体引用路径，大小写不敏感。
 
     table="qualifying", column=None → "qualifying"（如果 label 含 table）
     table="qualifying", column="raceId" → 匹配 label 含 col 的实体
     找不到时返回 None。
     """
-    if store is None:
+    if workspace is None:
         return None
+    rows = workspace.cypher("MATCH (n) RETURN n")
     if column is None:
-        for ename, labels in store.list_all():
+        for row in rows:
+            n = row.get("n", {})
+            ename = n.get("name", "")
+            labels = n.get("labels", [])
             if ename.lower() == table.lower() and any(
                 l == "table" or l == "view" for l in labels
             ):
                 return ename
     else:
-        for ename, labels in store.list_all():
+        for row in rows:
+            n = row.get("n", {})
+            ename = n.get("name", "")
+            labels = n.get("labels", [])
             if "col" not in labels:
                 continue
-            # 实体名就是列名（新格式），需要检查邻接确认属于哪个表
             if ename.lower() == column.lower():
                 return ename
     return None

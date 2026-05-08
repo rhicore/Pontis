@@ -4,7 +4,7 @@ from tool.utils import execute_cypher
 from tool.utils.resolve import resolve_entity
 
 
-def add_edge_command(obj, edges: list) -> str:
+def add_edge_command(workspace, edges: list) -> str:
     """通过 Cypher 为已有节点添加无向边。
 
     edges 中 a/b 支持两种模式：
@@ -14,7 +14,6 @@ def add_edge_command(obj, edges: list) -> str:
     if not edges:
         return "错误: edges 不能为空"
 
-    store = obj if not hasattr(obj, 'get_store') else obj.get_store()
     results = []
     valid_edges = []
 
@@ -26,12 +25,12 @@ def add_edge_command(obj, edges: list) -> str:
             results.append(f"跳过: 缺少必填字段 (a={a_ref}, b={b_ref})")
             continue
 
-        a_id, a_err = resolve_entity(obj, a_ref)
+        a_id, a_err = resolve_entity(workspace, a_ref)
         if a_err:
             results.append(f"跳过 a: {a_err}")
             continue
 
-        b_id, b_err = resolve_entity(obj, b_ref)
+        b_id, b_err = resolve_entity(workspace, b_ref)
         if b_err:
             results.append(f"跳过 b: {b_err}")
             continue
@@ -45,8 +44,8 @@ def add_edge_command(obj, edges: list) -> str:
         return "没有有效的边可添加"
 
     for e in valid_edges:
-        cypher = f'MATCH (a {{id: "{e["a_id"]}"}}),(b {{id: "{e["b_id"]}"}}) CREATE (a)--(b)'
-        execute_cypher(obj, cypher)
+        cypher = 'MATCH (a {id: $a_id}),(b {id: $b_id}) CREATE (a)--(b)'
+        execute_cypher(workspace, cypher, params={"a_id": e["a_id"], "b_id": e["b_id"]})
 
     results.insert(0, f"已添加 {len(valid_edges)} 条边:")
     for e in valid_edges:

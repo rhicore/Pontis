@@ -7,33 +7,30 @@
 独立执行：
     python -m extractor.csv_info ./my_data
 """
-import os
 import logging
-from storage import Store
+from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
 
-def generate(store: Store) -> None:
+def generate(workspace: Workspace) -> None:
     """为所有CSV/TSV节点生成信息"""
     logger.info("=== Generating CSV info ===")
 
-    for path in store.find_nodes("*.csv"):
-        try:
-            _generate_for_csv(path, store, delimiter=',')
-        except Exception as e:
-            logger.warning(f"Failed to generate info for {path}: {e}")
-
-    for path in store.find_nodes("*.tsv"):
-        try:
-            _generate_for_csv(path, store, delimiter='\t')
-        except Exception as e:
-            logger.warning(f"Failed to generate info for {path}: {e}")
+    for ext, delim in [('.csv', ','), ('.tsv', '\t')]:
+        rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext}' RETURN n")
+        for row in rows:
+            path = row["n"]["name"]
+            try:
+                _generate_for_csv(path, workspace, delimiter=delim)
+            except Exception as e:
+                logger.warning(f"Failed to generate info for {path}: {e}")
 
 
-def _generate_for_csv(path: str, store: Store, delimiter: str) -> bool:
+def _generate_for_csv(path: str, workspace: Workspace, delimiter: str) -> bool:
     """为单个CSV生成信息"""
-    meta = store.get_meta(path)
+    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": path})
+    meta = meta_rows[0].get("n") if meta_rows else None
     if not meta:
         return False
 
@@ -41,8 +38,8 @@ def _generate_for_csv(path: str, store: Store, delimiter: str) -> bool:
         return False
 
     rel_path = meta.get("path")
-    csv_path = os.path.join(store.project_path, rel_path) if rel_path else None
-    if not csv_path or not os.path.exists(csv_path):
+    csv_path = workspace.resolve_data_path(rel_path) if rel_path else None
+    if not csv_path or not workspace.data_exists(rel_path):
         return False
 
     try:
@@ -57,10 +54,10 @@ def _generate_for_csv(path: str, store: Store, delimiter: str) -> bool:
             # 统计行数
             row_count = sum(1 for _ in reader)
 
-        store.set_meta(path, {
+        workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": path, "props": {
             "row_count": row_count,
             "column_count": column_count,
-        })
+        }})
 
         logger.info(f"  CSV info: {path} ({row_count} rows, {column_count} cols)")
         return True

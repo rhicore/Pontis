@@ -5,35 +5,34 @@ from tool.utils.resolve import resolve_entity
 from tool.config import resolve_rank
 
 
-def _get_entity_rank(ref: str, store) -> int:
-    meta = store._get_stored_meta(ref) or {}
-    labels = meta.get("_labels", [])
+def _get_entity_rank(ref: str, workspace) -> int:
+    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": ref})
+    meta = meta_rows[0].get("n") if meta_rows else None
+    labels = meta.get("labels", []) if meta else []
     return resolve_rank(labels)
 
 
-def _is_more_derived(ref_a: str, ref_b: str, store) -> bool:
-    return _get_entity_rank(ref_a, store) > _get_entity_rank(ref_b, store)
+def _is_more_derived(ref_a: str, ref_b: str, workspace) -> bool:
+    return _get_entity_rank(ref_a, workspace) > _get_entity_rank(ref_b, workspace)
 
 
-def delete_command(obj, ref: str) -> str:
+def delete_command(workspace, ref: str) -> str:
     """通过 Cypher DELETE 删除节点。
 
     ref 支持两种模式：
       - 精确名称 → 直接匹配
       - glob 模式 → 必须匹配唯一实体
     """
-    store = obj if not hasattr(obj, 'get_store') else obj.get_store()
-
-    if hasattr(store, 'pontis_exists') and not store.pontis_exists:
-        return f"错误: 未找到 .pontis 目录 ({store.project_path})"
+    if not workspace.pontis_exists:
+        return f"错误: 未找到 .pontis 目录 ({workspace.project_path})"
 
     # 解析实体引用
-    eid, err = resolve_entity(obj, ref)
+    eid, err = resolve_entity(workspace, ref)
     if err:
         return f"Error: {err}"
 
     # 查找节点名（用于级联）
-    match_r = execute_cypher(obj, f'MATCH (n {{id: "{eid}"}}) RETURN n')
+    match_r = execute_cypher(workspace, 'MATCH (n {id: $eid}) RETURN n', params={"eid": eid})
     if not match_r:
         return f"节点不存在: {ref}"
 
@@ -43,19 +42,27 @@ def delete_command(obj, ref: str) -> str:
         return f"节点不存在: {ref}"
 
     # 级联查找派生实体
+    # 只对已知层级关系级联：file→table, table→col, col→fk/rel/overlap
+    _CASCADE_FROM = {"file", "db", "csv", "table", "view", "col"}
     to_delete = [eid]
-    neighbors = store.find_connected(name, pattern="*")
-    for neighbor_ref in neighbors:
-        if _is_more_derived(neighbor_ref, name, store):
-            if store.node_exists(neighbor_ref):
-                nid = store._name_to_id(neighbor_ref)
-                if nid:
-                    to_delete.append(nid)
+    main_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": name})
+    main_meta = main_meta_rows[0].get("n") if main_meta_rows else None
+    main_labels = set(main_meta.get("labels", [])) if main_meta else set()
+    if main_labels & _CASCADE_FROM:
+        neighbor_rows = workspace.cypher('MATCH (n {name: $name})--(m) RETURN m', params={"name": name})
+        neighbors = [r["m"]["name"] for r in neighbor_rows if r.get("m")]
+        for neighbor_ref in neighbors:
+            if _is_more_derived(neighbor_ref, name, workspace):
+                if workspace.cypher('MATCH (n {name: $name}) RETURN n', params={"name": neighbor_ref}):
+                    nid_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": neighbor_ref})
+                    nid = nid_rows[0].get("n", {}).get("_eid") if nid_rows else None
+                    if nid:
+                        to_delete.append(nid)
 
     # 逐个删除
     deleted = []
     for tid in to_delete:
-        r = execute_cypher(obj, f'MATCH (n {{id: "{tid}"}}) DELETE n')
+        r = execute_cypher(workspace, 'MATCH (n {id: $tid}) DELETE n', params={"tid": tid})
         if r:
             for item in r:
                 for d in item.get("deleted", []):

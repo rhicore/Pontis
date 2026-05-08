@@ -1,37 +1,53 @@
 """Serialized Basic Generator - 序列化文件结构分析
 
 职责：
-1. 通过 store.find_nodes() 发现所有序列化文件（虚节点即可）
+1. 通过 Cypher 发现所有序列化文件
 2. 分析文件结构，写入属性时自动实体化
 """
 import os
 import logging
 from datetime import datetime
-from storage import Store
+from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
 
-def generate(store: Store) -> None:
+def _discover_serialized_files(workspace: Workspace) -> list:
+    """通过统一索引发现所有序列化文件（含虚拟实体）。"""
+    exts = ('.json', '.jsonl', '.yaml', '.yml', '.xml', '.toml', '.hcl')
+    results = []
+    seen = set()
+    rows = workspace.cypher("MATCH (n) RETURN n")
+    for row in rows:
+        props = row.get("n", {})
+        name = props.get("name", "")
+        if not any(name.endswith(ext) for ext in exts):
+            continue
+        rel_path = props.get("path", name)
+        if rel_path not in seen:
+            seen.add(rel_path)
+            results.append(rel_path)
+    return results
+
+
+def generate(workspace: Workspace) -> None:
     """发现所有序列化文件，分析结构并写入属性"""
     logger.info("=== Generating serialized file entities ===")
 
     count = 0
-    for pattern in ["**/*.json", "**/*.jsonl", "**/*.yaml", "**/*.yml", "**/*.xml", "**/*.toml", "**/*.hcl"]:
-        for path in store.find_nodes(pattern):
-            try:
-                _process_serialized(path, store)
-                count += 1
-            except Exception as e:
-                logger.warning(f"Failed to process {path}: {e}")
+    for path in _discover_serialized_files(workspace):
+        try:
+            _process_serialized(path, workspace)
+            count += 1
+        except Exception as e:
+            logger.warning(f"Failed to process {path}: {e}")
 
     logger.info(f"  Processed {count} serialized files")
 
 
-def _process_serialized(rel_path: str, store: Store) -> None:
+def _process_serialized(rel_path: str, workspace: Workspace) -> None:
     """处理单个序列化文件：写入结构属性（自动实体化）"""
-    abs_path = os.path.join(store.project_path, rel_path)
-    if not os.path.exists(abs_path):
+    if not workspace.data_exists(rel_path):
         return
 
     basename = os.path.basename(rel_path)
@@ -44,17 +60,19 @@ def _process_serialized(rel_path: str, store: Store) -> None:
     labels = label_map.get(ext, ["file", "json"])
 
     # 分析结构
-    with open(abs_path, 'r', encoding='utf-8', errors='ignore') as f:
+    abs_path = workspace.resolve_data_path(rel_path)
+    with workspace.open_file(rel_path, 'r', encoding='utf-8', errors='ignore') as f:
         content = f.read()
 
     line_count = len(content.splitlines())
     top_info = _analyze_structure(abs_path, content, rel_path)
 
-    store.set_meta(rel_path, {
+    workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": rel_path, "props": {
         "line_count": line_count,
         "char_count": len(content),
+        "path": rel_path,
         **top_info,
-    })
+    }})
 
     logger.info(f"  Entity: {rel_path} ({top_info.get('structure_type', '?')})")
 

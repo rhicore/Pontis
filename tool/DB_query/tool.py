@@ -16,28 +16,29 @@ _DEFAULT_LIMIT = 100
 _MAX_RESULT_CHARS = 8000
 
 
-def query_command(store, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -> str:
+def query_command(workspace, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -> str:
     """Execute a read-only SQL query on a database file.
 
     Args:
-        store: Store instance
+        workspace: Workspace 实例
         sql: SQL query (SELECT only)
         file: Database file path (relative to project root)
         limit: Max rows to return
     """
-    # 安全校验：只允许 SELECT
+    # 安全校验：只允许 SELECT / PRAGMA
     stripped = sql.strip()
-    if not stripped.upper().startswith("SELECT"):
-        return "错误：只允许 SELECT 查询。不允许 INSERT、UPDATE、DELETE 等写操作。"
+    upper = stripped.upper()
+    if not (upper.startswith("SELECT") or upper.startswith("PRAGMA")):
+        return "错误：只允许 SELECT / PRAGMA 查询。不允许 INSERT、UPDATE、DELETE 等写操作。"
 
     if _WRITE_PATTERN.search(stripped):
         return "错误：SQL 中包含写操作关键词，只允许 SELECT 查询。"
 
-    # 定位数据库文件（支持绝对路径）
+        # 定位数据库文件（支持绝对路径）
     if os.path.isabs(file):
         db_path = file
     else:
-        db_path = os.path.join(store.project_path, file)
+        db_path = workspace.resolve_data_path(file)
     if not os.path.isfile(db_path):
         return f"错误：数据库文件不存在: {file}"
 

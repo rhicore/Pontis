@@ -11,15 +11,14 @@
 import json
 import logging
 from typing import Optional
-from storage import Store
+from storage.workspace import Workspace
 from extractor.modules.utils.loader import Config
 
 logger = logging.getLogger(__name__)
 
-DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
 
 
-def generate(store: Store, config=None) -> None:
+def generate(workspace: Workspace, config=None) -> None:
     """为所有 overlap 实体生成 LLM 关系评分"""
     logger.info("=== Generating column relations (LLM scoring) ===")
 
@@ -28,41 +27,36 @@ def generate(store: Store, config=None) -> None:
         logger.warning("LLM not configured, skipping relation generation")
         return
 
-    # 查找所有 overlap 实体（通过标签或后缀，兼容新旧数据）
+    # 查找所有 overlap 实体（通过标签）
     created_count = 0
-    for ext in DB_EXTENSIONS:
-        for ref in store.find_nodes(f"{ext}::*:overlap"):
-            try:
-                if _generate_for_overlap(ref, store, llm):
-                    created_count += 1
-            except Exception as e:
-                logger.warning(f"Failed to generate relation for {ref}: {e}")
-        # 兼容旧命名（带 .overlap 后缀）
-        for ref in store.find_nodes(f"{ext}::*.overlap"):
-            try:
-                if _generate_for_overlap(ref, store, llm):
-                    created_count += 1
-            except Exception as e:
-                logger.warning(f"Failed to generate relation for {ref}: {e}")
+    overlap_rows = workspace.cypher("MATCH (o:overlap) RETURN o")
+    for overlap_row in overlap_rows:
+        ref = overlap_row["o"]["name"]
+        try:
+            if _generate_for_overlap(ref, workspace, llm):
+                created_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to generate relation for {ref}: {e}")
 
     if created_count > 0:
         logger.info(f"  Total relations created: {created_count}")
 
 
-def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
+def _generate_for_overlap(ref: str, workspace: Workspace, llm) -> bool:
     """为单个 overlap 实体生成 rel 关系"""
     entity_name = ref
-    overlap_meta = store.get_meta(ref)
+    overlap_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": ref})
+    overlap_meta = overlap_meta_rows[0].get("n") if overlap_meta_rows else None
     if not overlap_meta:
         return False
 
     # 查找父 db 文件实体
-    db_parents = store.find_connected(ref, "*.db")
-    db_ref = db_parents[0] if db_parents else ""
+    db_rows = workspace.cypher(f'MATCH (o {{name: "{ref}"}})--(d) WHERE d.name ENDS WITH ".db" RETURN d')
+    db_ref = db_rows[0]["d"]["name"] if db_rows else ""
 
     # rel 实体与 overlap 同名（类型通过 label 区分）
-    rel_entity_name = entity_name
-    if store.node_exists(rel_entity_name):
+    relname = entity_name
+    if workspace.cypher(f'MATCH (n {{name: "{relname}"}}) RETURN n'):
         return False
 
     stats = overlap_meta.get("stats", {})
@@ -110,23 +104,25 @@ def _generate_for_overlap(ref: str, store: Store, llm) -> bool:
     can_join = llm_result.get("can_join", confidence >= 0.5)
     reason = llm_result.get("reason", "")
     rel_meta = {
-        "detail": f"来源：overlap 检测（Jaccard={stats.get('jaccard', 0):.4f}）。"
-                  f"启发式分数={heuristic_score}，LLM置信度={confidence:.2f}。"
-                  f"{'可JOIN' if can_join else '不建议JOIN'}。{reason}",
+        "match_type": match_type,
+        "jaccard": stats.get('jaccard', 0),
+        "heuristic_score": heuristic_score,
+        "confidence": confidence,
+        "can_join": can_join,
+        "detail": reason,
         "created_at": __import__('datetime').datetime.now().isoformat(),
     }
 
-    store.create_node(rel_entity_name, meta=rel_meta, labels=["rel"])
+    workspace.cypher(f'CREATE (r:rel {{name: "{relname}"}})')
+    workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": relname, "props": rel_meta})
 
     # 添加边: source table → rel, target table → rel
-    from_table_ref = f"{db_ref}--{from_table}" if db_ref else from_table
-    to_table_ref = f"{db_ref}--{to_table}" if db_ref else to_table
-    store.add_edges([
-        {"a": from_table_ref, "b": rel_entity_name},
-        {"a": to_table_ref, "b": rel_entity_name},
-    ])
+    from_table_ref = from_table
+    to_table_ref = to_table
+    workspace.cypher(f'MATCH (a {{name: "{from_table_ref}"}}),(r {{name: "{relname}"}}) CREATE (a)--(r)')
+    workspace.cypher(f'MATCH (a {{name: "{to_table_ref}"}}),(r {{name: "{relname}"}}) CREATE (a)--(r)')
 
-    logger.info(f"  Relation: {rel_entity_name} (confidence={confidence:.2f})")
+    logger.info(f"  Relation: {relname} (confidence={confidence:.2f})")
     return True
 
 
@@ -211,7 +207,7 @@ Respond in JSON format:
 }}"""
 
     try:
-        response = llm.complete(prompt, max_tokens=300)
+        response = llm.complete(prompt)
 
         json_start = response.find('{')
         json_end = response.rfind('}') + 1

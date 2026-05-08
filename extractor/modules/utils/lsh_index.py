@@ -67,9 +67,9 @@ def ref_to_index_name(ref: str) -> str:
     return name + '.idx'
 
 
-def index_path(store, col_ref: str) -> str:
+def index_path(workspace, col_ref: str) -> str:
     """返回索引文件的完整路径。"""
-    return os.path.join(store.index_root, ref_to_index_name(col_ref))
+    return os.path.join(workspace.index_root, ref_to_index_name(col_ref))
 
 
 def choose_bucket_count(cardinality: Optional[int] = None) -> int:

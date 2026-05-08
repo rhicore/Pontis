@@ -14,7 +14,7 @@
 import logging
 import os
 
-from storage import Store
+from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +57,8 @@ PROMPT = """\
 如果列 A 是表 T1 的主键/关联键，它通常只应关联一个目标列。\
 如果你已经发现 A ↔ B 是高置信度关系，那 A ↔ C 就需要更强的证据才能创建。
 
-举例：`schools.CDSCode` 已经通过 fk 关联 `frpm.CDSCode` 和 `satscores.cds`，\
-那么 `schools.CDSCode` 不应再关联其他列。
+举例：`CDSCode` 列已经通过 fk 关联 `frpm` 表的 `CDSCode` 列和 `satscores` 表的 `cds` 列，\
+那么 `CDSCode` 不应再关联其他列。
 
 ### 2. 排他性检查
 如果你打算创建 A ↔ B 的 rel，先检查：
@@ -94,7 +94,7 @@ PROMPT = """\
 ## 创建 rel 实体的规范
 
 ### 命名
-- ref: `[数据库]::[表1].[列1]->[表2].[列2]`
+- ref: `[表1].[列1]->[表2].[列2]`
 - labels: `["rel"]`
 - 创建前先 glob 检查是否已存在（含反向）
 
@@ -104,8 +104,8 @@ brief 和 detail 必须遵循以下规范：
 **brief 格式**：
 "[高/中]置信度：简要描述关系"
 示例：
-- "高置信度：satscores.cds 通过 CDSCode 关联 schools，需注意前导零差异"
-- "中置信度：schools.District 与 frpm.District Name 语义相同但格式可能有差异"
+- "高置信度：satscores 表的 cds 列通过 CDSCode 关联 schools 表，需注意前导零差异"
+- "中置信度：schools 表的 District 列与 frpm 表的 District Name 列语义相同但格式可能有差异"
 
 **detail 内容必须包含**：
 1. **推断依据**：基于什么证据判断（Jaccard 值、抽样验证、业务逻辑）
@@ -144,13 +144,13 @@ JOIN 时无需特殊处理。置信度：高（有物理外键佐证）。"
 """
 
 
-def generate(store: Store) -> None:
+def generate(workspace: Workspace) -> None:
     """发现高置信度列关联，创建 rel 实体。"""
     from agent.config import create_agent, AgentSpec
     from agent.guardrail import build_guardrails
     from agent.utils import load_agent_config
 
-    config = load_agent_config(store.project_path)
+    config = load_agent_config(workspace.project_path)
     if not config["api_key"]:
         logger.warning("Agent not configured (no API key), skipping agent join detect")
         return
@@ -158,11 +158,11 @@ def generate(store: Store) -> None:
     logger.info("=== Agent Join Detect (high-confidence only) ===")
 
     spec = AgentSpec(mode="writer")
-    project_name = os.path.basename(os.path.abspath(store.project_path))
+    project_name = os.path.basename(os.path.abspath(workspace.project_path))
     spec.projects = [project_name]
     spec.guardrails = build_guardrails(spec, ["round_limit"])
     spec.guardrails = build_guardrails(spec, ["round_limit"])
-    agent = create_agent(store.project_path, spec)
+    agent = create_agent(workspace.project_path, spec)
 
     agent.chat(PROMPT)
     logger.info("=== Agent Join Detect done ===")

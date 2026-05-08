@@ -18,7 +18,8 @@ DEV_JSON = BIRD_DIR / "dev.json"
 DB_BASE = BIRD_DIR / "dev_databases"
 
 sys.path.insert(0, str(PROJECT_ROOT))
-from storage import Store
+from storage import stores, SourceConfig, ProjectConfig
+from storage.workspace import Workspace
 
 
 def count_tables(sql: str) -> int:
@@ -106,6 +107,28 @@ def normalize_entity(entity_name: str) -> tuple:
     return (*pair[0], *pair[1])
 
 
+def _find_nodes_by_suffix(workspace, prefix: str, suffix: str) -> list:
+    """通过 Cypher 查找 name 以 prefix 开头且以 suffix 结尾的节点。"""
+    rows = workspace.cypher(
+        "MATCH (n) WHERE n.name STARTS WITH $prefix AND n.name ENDS WITH $suffix RETURN n.name AS name",
+        params={"prefix": prefix, "suffix": suffix}
+    )
+    return [r["name"] for r in rows if r.get("name")]
+
+
+def _find_db_nodes(workspace) -> list:
+    """查找数据库根节点。"""
+    for ext in [".db::", ".sqlite::", ".sqlite3::", ".duckdb::"]:
+        rows = workspace.cypher(
+            "MATCH (n) WHERE n.name CONTAINS $ext RETURN n.name AS name",
+            params={"ext": ext}
+        )
+        names = [r["name"] for r in rows if r.get("name")]
+        if names:
+            return names
+    return []
+
+
 def analyze_db(db_id: str):
     db_dir = DB_BASE / db_id
     if not db_dir.exists():
@@ -127,22 +150,20 @@ def analyze_db(db_id: str):
         join_counts[j] += 1
         sql_joins.update(extract_sql_joins(q["SQL"]))
 
-    # Load store
-    store = Store(str(db_dir))
+    # Load workspace
+    ws = Workspace(project_path=str(db_dir))
+    db_nodes = _find_db_nodes(ws)
     db_ref = None
-    for pattern in ["*.db::*", "*.sqlite::*", "*.sqlite3::*", "*.duckdb::*"]:
-        nodes = list(store.find_nodes(pattern))
-        if nodes:
-            db_ref = nodes[0].split("::", 1)[0] + "::"
-            break
+    if db_nodes:
+        db_ref = db_nodes[0].split("::", 1)[0] + "::"
 
     fk_set, rel_set, overlap_set = set(), set(), set()
     if db_ref:
-        for ref in store.find_nodes(f"{db_ref}*.fk"):
+        for ref in _find_nodes_by_suffix(ws, db_ref, ".fk"):
             fk_set.add(normalize_entity(ref.split("::", 1)[1]))
-        for ref in store.find_nodes(f"{db_ref}*.rel"):
+        for ref in _find_nodes_by_suffix(ws, db_ref, ".rel"):
             rel_set.add(normalize_entity(ref.split("::", 1)[1]))
-        for ref in store.find_nodes(f"{db_ref}*.overlap"):
+        for ref in _find_nodes_by_suffix(ws, db_ref, ".overlap"):
             overlap_set.add(normalize_entity(ref.split("::", 1)[1]))
 
     rel_only = rel_set - fk_set

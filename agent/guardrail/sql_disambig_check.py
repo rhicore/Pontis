@@ -46,7 +46,7 @@ class SQLDisambigCheck(Guardrail):
 
     def _check_sql(self, ctx, sql) -> str:
         tables = extract_table_names(sql)
-        cache = self._build_disambig_cache(ctx.store)
+        cache = self._build_disambig_cache(ctx.workspace)
         if not cache:
             return ""
 
@@ -82,10 +82,10 @@ class SQLDisambigCheck(Guardrail):
 
         lines = []
         for table in sorted(table_to_refs.keys()):
-            table_ref = resolve_entity_ref(ctx.store, table)
+            table_ref = resolve_entity_ref(ctx.workspace, table)
             lines.append(f"  - {table_ref or table}")
             refs = table_to_refs[table]
-            items = format_entity_list(ctx.store, refs)
+            items = format_entity_list(ctx.workspace, refs)
             indented = "\n".join("    " + line for line in items.split("\n"))
             lines.append(indented)
 
@@ -94,18 +94,22 @@ class SQLDisambigCheck(Guardrail):
                 + "\n".join(lines)
                 + "\n\n meta读取对应的消歧实体之后，请仔细辨析有歧义的实体之间的关系，仔细考虑当前SQL究竟应该使用哪个实体，很多时候另一条逻辑也能走通，所以需要你仔细辨析，选择最可能的选项。")
 
-    # ──────────────── 消歧缓存（store 缓存）────────────────
+    # ──────────────── 消歧缓存（workspace 缓存）────────────────
 
-    def _build_disambig_cache(self, store) -> List[Tuple[str, str, Set[str]]]:
+    def _build_disambig_cache(self, workspace) -> List[Tuple[str, str, Set[str]]]:
         if self._disambig_cache is not None:
             return self._disambig_cache
 
         cache = []
-        if store is None:
+        if workspace is None:
             self._disambig_cache = cache
             return cache
 
-        for ename, labels in store.list_all():
+        rows = workspace.cypher("MATCH (n) RETURN n")
+        for row in rows:
+            n = row.get("n", {})
+            ename = n.get("name", "")
+            labels = n.get("labels", [])
             if "disambig" not in labels:
                 continue
 
@@ -113,11 +117,21 @@ class SQLDisambigCheck(Guardrail):
             term = ename.replace(".disambig", "")
 
             disambig_tables = set()
-            for neighbor in store.neighbors(ename):
+            neighbor_rows = workspace.cypher(
+                "MATCH (n {name: $name})--(m) RETURN m",
+                params={"name": ename}
+            )
+            for nr in neighbor_rows:
+                neighbor = nr.get("m", {}).get("name", "")
+                if not neighbor:
+                    continue
                 # Check if neighbor is a table via label lookup
-                n_labels = store._get_labels_by_id(
-                    store._name_to_id(neighbor) or ""
-                ) if store._name_to_id(neighbor) else []
+                nmeta_rows = workspace.cypher(
+                    "MATCH (n {name: $name}) RETURN n",
+                    params={"name": neighbor}
+                )
+                nmeta = nmeta_rows[0].get("n") if nmeta_rows else None
+                n_labels = nmeta.get("labels", []) if nmeta else []
                 if "table" in n_labels:
                     disambig_tables.add(neighbor.lower())
 

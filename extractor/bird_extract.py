@@ -23,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-from extractor.engine import run_pipeline, init_store, get_registry
+from extractor.engine import run_pipeline, init_workspace, get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,8 @@ STATIC_PIPELINE = [
 ]
 
 AI_COLUMN_MODULE = "ai_db_column_summary"
+AI_TABLE_MODULE = "ai_db_table_summary"
+AI_DB_MODULE = "ai_db_summary"
 AI_MODULE = "agent_analyze"
 JOIN_DETECT_MODULE = "agent_join_detect"
 DISAMBIGUATE_MODULE = "agent_disambiguate"
@@ -90,11 +92,10 @@ def extract_one(db_dir: str, force: bool = False, no_ai: bool = False,
         shutil.rmtree(pontis_dir)
         logger.info(f"  已删除旧 .pontis: {name}")
 
-    store, config = init_store(str(db_dir))
+    workspace, config = init_workspace(str(db_dir))
 
     # 确保目录结构
     pontis_dir.mkdir(exist_ok=True)
-    (pontis_dir / "nodes").mkdir(exist_ok=True)
 
     # 文件日志
     fh = _setup_file_log(str(pontis_dir / "extract.log"))
@@ -106,7 +107,7 @@ def extract_one(db_dir: str, force: bool = False, no_ai: bool = False,
         # 阶段一：静态
         if not ai_only:
             t0 = time.time()
-            run_pipeline(STATIC_PIPELINE, store, config)
+            run_pipeline(STATIC_PIPELINE, workspace, config)
             dt = time.time() - t0
             result["static"] = dt
             logger.info(f"Static phase done: {dt:.1f}s")
@@ -118,15 +119,31 @@ def extract_one(db_dir: str, force: bool = False, no_ai: bool = False,
             # AI 列总结
             if AI_COLUMN_MODULE in registry:
                 t0 = time.time()
-                registry[AI_COLUMN_MODULE](store, config=config)
+                registry[AI_COLUMN_MODULE](workspace, config=config)
                 dt = time.time() - t0
                 result["ai_columns"] = dt
                 logger.info(f"AI columns phase done: {dt:.1f}s")
 
+            # AI 表总结
+            if AI_TABLE_MODULE in registry:
+                t0 = time.time()
+                registry[AI_TABLE_MODULE](workspace)
+                dt = time.time() - t0
+                result["ai_tables"] = dt
+                logger.info(f"AI tables phase done: {dt:.1f}s")
+
+            # AI 库总结
+            if AI_DB_MODULE in registry:
+                t0 = time.time()
+                registry[AI_DB_MODULE](workspace)
+                dt = time.time() - t0
+                result["ai_db"] = dt
+                logger.info(f"AI db phase done: {dt:.1f}s")
+
             # Agent 分析
             if AI_MODULE in registry:
                 t0 = time.time()
-                registry[AI_MODULE](store)
+                registry[AI_MODULE](workspace)
                 dt = time.time() - t0
                 result["agent"] = dt
                 logger.info(f"Agent phase done: {dt:.1f}s")
@@ -134,7 +151,7 @@ def extract_one(db_dir: str, force: bool = False, no_ai: bool = False,
             # Agent 关系发现
             if JOIN_DETECT_MODULE in registry:
                 t0 = time.time()
-                registry[JOIN_DETECT_MODULE](store)
+                registry[JOIN_DETECT_MODULE](workspace)
                 dt = time.time() - t0
                 result["join_detect"] = dt
                 logger.info(f"Join detect phase done: {dt:.1f}s")
@@ -142,7 +159,7 @@ def extract_one(db_dir: str, force: bool = False, no_ai: bool = False,
             # Agent 语义消歧
             if DISAMBIGUATE_MODULE in registry:
                 t0 = time.time()
-                registry[DISAMBIGUATE_MODULE](store)
+                registry[DISAMBIGUATE_MODULE](workspace)
                 dt = time.time() - t0
                 result["disambiguate"] = dt
                 logger.info(f"Disambiguate phase done: {dt:.1f}s")
@@ -188,7 +205,7 @@ def main():
     print(f"Databases: {len(db_dirs)}\n")
 
     success, failed = [], []
-    total_static = total_ai_col = total_agent = 0.0
+    total_static = total_ai_col = total_ai_tbl = total_ai_db = total_agent = 0.0
 
     for i, db_dir in enumerate(db_dirs, 1):
         name = db_dir.name
@@ -198,13 +215,17 @@ def main():
             r = extract_one(str(db_dir), force=force, no_ai=no_ai,
                             ai_only=ai_only, debug=debug)
             total_static += r["static"]
-            total_ai_col += r["ai_columns"]
-            total_agent += r["agent"]
+            total_ai_col += r.get("ai_columns", 0)
+            total_ai_tbl += r.get("ai_tables", 0)
+            total_ai_db += r.get("ai_db", 0)
+            total_agent += r.get("agent", 0)
 
             parts = []
             if r["static"]: parts.append(f"Static: {r['static']:.1f}s")
-            if r["ai_columns"]: parts.append(f"AI Cols: {r['ai_columns']:.1f}s")
-            if r["agent"]: parts.append(f"Agent: {r['agent']:.1f}s")
+            if r.get("ai_columns"): parts.append(f"AI Cols: {r['ai_columns']:.1f}s")
+            if r.get("ai_tables"): parts.append(f"AI Tables: {r['ai_tables']:.1f}s")
+            if r.get("ai_db"): parts.append(f"AI DB: {r['ai_db']:.1f}s")
+            if r.get("agent"): parts.append(f"Agent: {r['agent']:.1f}s")
             print(f"  {', '.join(parts)}")
 
             success.append(name)
@@ -219,9 +240,10 @@ def main():
     # 汇总
     print("=" * 40)
     print(f"Done: {len(success)} ok, {len(failed)} failed")
+    total_all = total_static + total_ai_col + total_ai_tbl + total_ai_db + total_agent
     print(f"Time: static {total_static:.1f}s, AI cols {total_ai_col:.1f}s, "
-          f"agent {total_agent:.1f}s, "
-          f"total {total_static + total_ai_col + total_agent:.1f}s")
+          f"AI tables {total_ai_tbl:.1f}s, AI db {total_ai_db:.1f}s, "
+          f"agent {total_agent:.1f}s, total {total_all:.1f}s")
     if failed:
         print(f"Failed: {', '.join(failed)}")
 

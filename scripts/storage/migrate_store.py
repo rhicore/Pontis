@@ -106,7 +106,7 @@ def _infer_labels_from_name(entity_name: str, old_namespaces: List[str]) -> List
     return []
 
 
-def _migrate_entity_name(entity_name: str) -> str:
+def _migratename(entity_name: str) -> str:
     """将旧实体名转换为新格式（去除 :: 和类型后缀）。"""
     # 无 :: 的实体（文件路径、知识实体等）
     if "::" not in entity_name:
@@ -193,8 +193,8 @@ def migrate_store(project_path: str, dry_run: bool = False) -> None:
     new_names: Dict[str, List[str]] = {}
     collisions = []
     for ent_id, _, meta in entities:
-        old_name = meta.get("_entity_name", "")
-        new_name = _migrate_entity_name(old_name)
+        old_name = meta.get("name", "")
+        new_name = _migratename(old_name)
         if new_name not in new_names:
             new_names[new_name] = []
         new_names[new_name].append(ent_id)
@@ -209,16 +209,16 @@ def migrate_store(project_path: str, dry_run: bool = False) -> None:
     # 迁移
     migrated = 0
     for ent_id, meta_file, meta in entities:
-        old_name = meta.get("_entity_name", "")
+        old_name = meta.get("name", "")
         old_ns = meta.get("_namespaces", [])
-        new_name = _migrate_entity_name(old_name)
+        new_name = _migratename(old_name)
         new_labels = _infer_labels_from_name(old_name, old_ns)
 
         changed = False
 
         if old_name != new_name:
             logger.debug(f"  Rename: {old_name} → {new_name}")
-            meta["_entity_name"] = new_name
+            meta["name"] = new_name
             changed = True
 
         if old_ns and old_ns != new_labels:

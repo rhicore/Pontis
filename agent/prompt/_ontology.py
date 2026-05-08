@@ -11,7 +11,7 @@ def get_ontology_prompt() -> str:
 | `csv` | CSV 文件 | `schools.csv` |
 | `json` | JSON 文件 | `config.json` |
 | `text` | 文本文件 | `README.md` |
-| `dir` | 目录 | `data` |
+| `directory` | 目录 | `data` |
 | `table` | 数据库表 | `drivers` |
 | `view` | 数据库视图 | `active_users` |
 | `col` | 数据库列 | `driverId` |
@@ -32,7 +32,7 @@ def get_ontology_prompt() -> str:
 
 | 实体类型 | 连接的实体 |
 |---|---|
-| `dir` | 目录的文件和子目录节点 |
+| `directory` | 目录的文件和子目录节点 |
 | `db`, `sqlite`等数据库节点 | 数据库里的表和视图,`table`, `view` |
 | `table` | 与该表相关的 `col`, `fk`, `rel`, `overlap`等实体 |
 | `fk` / `rel` / `overlap` | 连接两张表和对应的两个列, rel在多对多关系中可能连接多个表和多个列 |

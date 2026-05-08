@@ -1,14 +1,15 @@
 """DB Basic Generator - 数据库实体展开
 
 职责：
-1. 通过 store.find_nodes() 发现所有数据库文件（虚节点即可）
+1. 通过 Cypher 发现所有数据库文件
 2. 提取库级属性（table_count/view_count/index_count），写入时自动实体化
 3. 展开表/视图/列实体
 """
 import os
 import logging
 from datetime import datetime
-from storage import Store
+from typing import List
+from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -33,106 +34,107 @@ def _normalize_type(sql_type: str) -> str:
     return "TEXT"
 
 
-def generate(store: Store) -> None:
+def _discover_db_files(workspace: Workspace) -> List[str]:
+    """通过统一索引发现所有数据库文件（含虚拟实体）。"""
+    exts = ('.db', '.sqlite', '.sqlite3', '.duckdb')
+    results = []
+    seen = set()
+    rows = workspace.cypher("MATCH (n) RETURN n")
+    for row in rows:
+        props = row.get("n", {})
+        name = props.get("name", "")
+        if not any(name.endswith(ext) for ext in exts):
+            continue
+        rel_path = props.get("path", name)
+        if rel_path not in seen:
+            seen.add(rel_path)
+            results.append(rel_path)
+    return results
+
+
+def generate(workspace: Workspace) -> None:
     """发现所有数据库文件，写入属性并展开实体"""
     logger.info("=== Generating DB entities ===")
 
-    db_patterns = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb",
-                    "**/*.db", "**/*.sqlite", "**/*.sqlite3", "**/*.duckdb"]
     count = 0
-    for pattern in db_patterns:
-        for path in store.find_nodes(pattern):
-            try:
-                _process_database(path, store)
-                count += 1
-            except Exception as e:
-                logger.warning(f"Failed to process DB {path}: {e}")
+    for path in _discover_db_files(workspace):
+        try:
+            _process_database(path, workspace)
+            count += 1
+        except Exception as e:
+            logger.warning(f"Failed to process DB {path}: {e}")
 
     logger.info(f"  Processed {count} database files")
 
 
-def _process_database(rel_path: str, store: Store) -> None:
+def _process_database(rel_path: str, workspace: Workspace) -> None:
     """处理单个数据库：写入库属性（自动实体化文件节点）+ 展开表/视图/列实体"""
-    abs_path = os.path.join(store.project_path, rel_path)
+    if not workspace.data_exists(rel_path):
+        return
     basename = os.path.basename(rel_path)
 
-    import sqlite3
-    conn = sqlite3.connect(abs_path)
-    cursor = conn.cursor()
+    with workspace.open_db(rel_path) as conn:
+        cursor = conn.cursor()
 
-    # 写入库级属性（自动实体化文件节点）
-    cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-    table_count = cursor.fetchone()[0]
-    cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='view'")
-    view_count = cursor.fetchone()[0]
-    cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='index'")
-    index_count = cursor.fetchone()[0]
-    store.set_meta(basename, {
-        "created_at": datetime.now().isoformat(),
-        "table_count": table_count,
-        "view_count": view_count,
-        "index_count": index_count,
-    })
-    logger.info(f"  DB properties: {basename} ({table_count} tables, {view_count} views)")
+        # 写入库级属性（自动实体化文件节点）
+        cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        table_count = cursor.fetchone()[0]
+        cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='view'")
+        view_count = cursor.fetchone()[0]
+        cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='index'")
+        index_count = cursor.fetchone()[0]
+        workspace.cypher('MATCH (n {name: $name}) SET n += $props',
+                      params={"name": basename, "props": {
+                          "created_at": datetime.now().isoformat(),
+                          "table_count": table_count,
+                          "view_count": view_count,
+                          "index_count": index_count,
+                          "path": rel_path,
+                      }})
+        logger.info(f"  DB properties: {basename} ({table_count} tables, {view_count} views)")
 
-    # 获取表
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-    for (table_name,) in cursor.fetchall():
-        safe_name = table_name.replace("/", "_").replace("\\", "_")
+        # 获取表
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        for (table_name,) in cursor.fetchall():
+            safe_name = table_name.replace("/", "_").replace("\\", "_")
 
-        cursor.execute(f'PRAGMA table_info("{table_name}")')
-        columns = cursor.fetchall()
-        pk_col = next((col[1] for col in columns if col[5] == 1), None)
+            cursor.execute(f'PRAGMA table_info("{table_name}")')
+            columns = cursor.fetchall()
+            pk_col = next((col[1] for col in columns if col[5] == 1), None)
 
-        table_ref = f"{basename}--{safe_name}"
-        store.create_node(table_ref,
-                          meta={"created_at": datetime.now().isoformat(),
-                                "primary_key": pk_col},
-                          labels=["table"])
-        store.add_edges([{"a": basename, "b": table_ref}])
+            ts = datetime.now().isoformat()
+            workspace.cypher(f'CREATE (t:table {{name: "{safe_name}", created_at: "{ts}", primary_key: "{pk_col or ""}"}})')
+            workspace.cypher(f'MATCH (d {{name: "{basename}"}}),(t {{name: "{safe_name}"}}) CREATE (d)--(t)')
 
-        for col in columns:
-            col_name = col[1]
-            col_type = _normalize_type(col[2])
-            safe_col = col_name.replace("/", "_").replace("\\", "_")
-
-            col_ref = f"{table_ref}--{safe_col}"
-            store.create_node(col_ref,
-                              meta={"created_at": datetime.now().isoformat(),
-                                    "col_type": col_type,
-                                    "brief": f"{col_name} ({col_type})"},
-                              labels=["col", col_type])
-            store.add_edges([{"a": table_ref, "b": col_ref}])
-
-        logger.info(f"  Entity: {table_ref}")
-
-    # 获取视图
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='view'")
-    for (view_name,) in cursor.fetchall():
-        safe_name = view_name.replace("/", "_").replace("\\", "_")
-
-        view_ref = f"{basename}--{safe_name}"
-        store.create_node(view_ref,
-                          meta={"created_at": datetime.now().isoformat()},
-                          labels=["view"])
-        store.add_edges([{"a": basename, "b": view_ref}])
-
-        try:
-            cursor.execute(f'PRAGMA table_info("{view_name}")')
-            for col in cursor.fetchall():
+            for col in columns:
                 col_name = col[1]
                 col_type = _normalize_type(col[2])
                 safe_col = col_name.replace("/", "_").replace("\\", "_")
 
-                col_ref = f"{view_ref}--{safe_col}"
-                store.create_node(col_ref,
-                                  meta={"created_at": datetime.now().isoformat(),
-                                        "col_type": col_type, "source_view": view_name},
-                                  labels=["col", col_type])
-                store.add_edges([{"a": view_ref, "b": col_ref}])
-        except Exception:
-            pass
+                workspace.cypher(f'CREATE (c:col:{col_type} {{name: "{safe_col}", created_at: "{ts}", col_type: "{col_type}"}})')
+                workspace.cypher(f'MATCH (t {{name: "{safe_name}"}}),(c {{name: "{safe_col}"}}) CREATE (t)--(c)')
 
-        logger.info(f"  Entity: {view_ref}")
+            logger.info(f"  Entity: {safe_name}")
 
-    conn.close()
+        # 获取视图
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='view'")
+        for (view_name,) in cursor.fetchall():
+            safe_name = view_name.replace("/", "_").replace("\\", "_")
+
+            ts = datetime.now().isoformat()
+            workspace.cypher(f'CREATE (v:view {{name: "{safe_name}", created_at: "{ts}"}})')
+            workspace.cypher(f'MATCH (d {{name: "{basename}"}}),(v {{name: "{safe_name}"}}) CREATE (d)--(v)')
+
+            try:
+                cursor.execute(f'PRAGMA table_info("{view_name}")')
+                for col in cursor.fetchall():
+                    col_name = col[1]
+                    col_type = _normalize_type(col[2])
+                    safe_col = col_name.replace("/", "_").replace("\\", "_")
+
+                    workspace.cypher(f'CREATE (c:col:{col_type} {{name: "{safe_col}", created_at: "{ts}", col_type: "{col_type}", source_view: "{view_name}"}})')
+                    workspace.cypher(f'MATCH (v {{name: "{safe_name}"}}),(c {{name: "{safe_col}"}}) CREATE (v)--(c)')
+            except Exception:
+                pass
+
+            logger.info(f"  Entity: {safe_name}")

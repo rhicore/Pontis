@@ -21,8 +21,8 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from storage import Store
-from extractor.engine import get_registry, CONFIG_MODULES, run_pipeline, init_store
+from storage.workspace import Workspace
+from extractor.engine import get_registry, CONFIG_MODULES, run_pipeline, init_workspace
 
 
 def _run_full(args):
@@ -42,10 +42,10 @@ def _run_modules(args):
             print(f"Available: {', '.join(sorted(registry))}")
             sys.exit(1)
 
-    store, config = init_store(args.target, getattr(args, 'config', None), args.verbose)
+    workspace, config = init_workspace(args.target, getattr(args, 'config', None), args.verbose)
 
     logging.info(f"=== Running modules: {', '.join(names)} ===")
-    run_pipeline(names, store, config)
+    run_pipeline(names, workspace, config)
     print("Done.")
 
 

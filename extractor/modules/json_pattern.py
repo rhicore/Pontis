@@ -13,11 +13,10 @@
   ai_summary:                                                         # AI 总结（预留）
 """
 import json
-import os
 import random
 import re
 import logging
-from storage import Store
+from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -285,21 +284,32 @@ def collect_patterns(data, path: str, patterns: list, max_depth: int = 20, _dept
 
 # ============ 主生成器 ============
 
-def generate(store: Store) -> None:
+def generate(workspace: Workspace) -> None:
     """为所有 JSON 文件生成 .pattern 子实体"""
     logger.info("=== Generating JSON patterns ===")
 
-    for path in store.find_nodes("*.json"):
+    seen = set()
+    # 通过统一索引发现 JSON 文件（含虚拟实体）
+    rows = workspace.cypher("MATCH (n) RETURN n")
+    for row in rows:
+        props = row.get("n", {})
+        name = props.get("name", "")
+        if not name.endswith('.json'):
+            continue
+        rel_path = props.get("path", name)
+        if rel_path in seen:
+            continue
+        seen.add(rel_path)
         try:
-            _generate_for_json(path, store)
+            _generate_for_json(rel_path, workspace)
         except Exception as e:
-            logger.warning(f"Failed to generate patterns for {path}: {e}")
+            logger.warning(f"Failed to generate patterns for {rel_path}: {e}")
 
 
-def _generate_for_json(path: str, store: Store) -> bool:
+def _generate_for_json(path: str, workspace: Workspace) -> bool:
     """为单个 JSON 文件生成 .pattern 子实体"""
     # 读取 JSON 数据
-    data = _load_json(path, store)
+    data = _load_json(path, workspace)
     if data is None:
         return False
 
@@ -312,37 +322,37 @@ def _generate_for_json(path: str, store: Store) -> bool:
 
     # 为每个模式创建 .pattern 子实体
     for pat in patterns:
-        _write_pattern(path, pat, store)
+        _write_pattern(path, pat, workspace)
 
     logger.info(f"  Patterns: {path} ({len(patterns)} entities)")
     return True
 
 
-def _load_json(path: str, store: Store):
+def _load_json(path: str, workspace: Workspace):
     """从源文件加载 JSON 数据"""
-    meta = store.get_meta(path)
+    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": path})
+    meta = meta_rows[0].get("n") if meta_rows else None
     rel_path = meta.get("path") if meta else None
-    file_path = os.path.join(store.project_path, rel_path) if rel_path else None
-    if file_path and os.path.exists(file_path):
+    if rel_path and workspace.data_exists(rel_path):
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with workspace.open_file(rel_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except (json.JSONDecodeError, Exception) as e:
-            logger.debug(f"Failed to load JSON from {file_path}: {e}")
+            logger.debug(f"Failed to load JSON from {rel_path}: {e}")
 
     return None
 
 
-def _write_pattern(file_path: str, pat: dict, store: Store) -> None:
+def _write_pattern(file_path: str, pat: dict, workspace: Workspace) -> None:
     """写入单个 .pattern 实体"""
-    # 实体名称：路径 + .pattern，替换特殊字符
     safe_name = pat["name"].replace("/", "_").replace("\\", "_")
     entity_name = f"{safe_name}.pattern"
 
-    meta = {
+    workspace.cypher(f'CREATE (p:pattern {{name: "{entity_name}"}})')
+    workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": entity_name, "props": {
         "name": pat["name"],
         "type": pat["type"],
         "pattern": pat["pattern"],
         "ai_summary": "",
-    }
-    store.create_node(f"{file_path}::{entity_name}", meta=meta)
+    }})
+    workspace.cypher(f'MATCH (f {{name: "{file_path}"}}),(p {{name: "{entity_name}"}}) CREATE (f)--(p)')

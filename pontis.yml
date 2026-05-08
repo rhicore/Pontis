@@ -1,37 +1,73 @@
 projects:
   global:
-    path: ~/.pontis_global
-    backend: fs
+    source:
+      type: fs
+      path: ~/.pontis_global
+    graph:
+      type: sqlite
   california_schools:
-    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/california_schools
-    backend: fs
+    source:
+      type: fs
+      path: example_data/bird/dev_databases/california_schools
+    graph:
+      type: sqlite
   card_games:
-    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/card_games
-    backend: fs
+    source:
+      type: fs
+      path: example_data/bird/dev_databases/card_games
+    graph:
+      type: sqlite
   codebase_community:
-    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/codebase_community
-    backend: fs
+    source:
+      type: fs
+      path: example_data/bird/dev_databases/codebase_community
+    graph:
+      type: sqlite
   debit_card_specializing:
-    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/debit_card_specializing
-    backend: fs
+    source:
+      type: fs
+      path: example_data/bird/dev_databases/debit_card_specializing
+    graph:
+      type: sqlite
   european_football_2:
-    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/european_football_2
-    backend: fs
+    source:
+      type: fs
+      path: example_data/bird/dev_databases/european_football_2
+    graph:
+      type: sqlite
   financial:
-    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/financial
-    backend: fs
+    source:
+      type: fs
+      path: example_data/bird/dev_databases/financial
+    graph:
+      type: sqlite
   formula_1:
-    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/formula_1
-    backend: fs
+    source:
+      type: fs
+      path: example_data/bird/dev_databases/formula_1
+    graph:
+      type: sqlite
   student_club:
-    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/student_club
-    backend: fs
+    source:
+      type: fs
+      path: example_data/bird/dev_databases/student_club
+    graph:
+      type: sqlite
   superhero:
-    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/superhero
-    backend: fs
+    source:
+      type: fs
+      path: example_data/bird/dev_databases/superhero
+    graph:
+      type: sqlite
   thrombosis_prediction:
-    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/thrombosis_prediction
-    backend: fs
+    source:
+      type: fs
+      path: example_data/bird/dev_databases/thrombosis_prediction
+    graph:
+      type: sqlite
   toxicology:
-    path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/bird/dev_databases/toxicology
-    backend: fs
+    source:
+      type: fs
+      path: example_data/bird/dev_databases/toxicology
+    graph:
+      type: sqlite

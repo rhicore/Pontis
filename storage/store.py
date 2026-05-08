@@ -1,110 +1,144 @@
-"""Store — 图谱存储基类。
+"""Store — 纯图数据库基类。
 
-带边的 KV 存储 + 内存索引。不解析 URN，不路由，不理解 namespace 语义。
-查询和路由由 Finder/Workspace 处理。
+节点有属性（dict），边是无向对。只有 labels 是特殊属性（Cypher 语法级匹配）。
+project 不存储，由 Cypher 引擎实时附加。
 
-子类负责实现持久化、虚实体发现、虚属性计算、文件身份检测。
+持久化由 GraphBackend 处理，Store 基类直接委托。
+子类负责：数据源发现、虚属性计算、名称索引优化等领域逻辑。
 """
 import uuid
 import fnmatch
 import logging
-from abc import ABC, abstractmethod
-from typing import Dict, Iterator, List, Optional, Tuple, Union
+from typing import Dict, Iterator, List, Optional, Tuple
+
+from storage.backends import GraphBackend
+from storage.config import SourceConfig
 
 logger = logging.getLogger(__name__)
 
-_INTERNAL_FIELDS = {"_id", "_inode", "_entity_name"}
+_BASE_INTERNAL_FIELDS = {"_id"}
 
 
 def _gen_id() -> str:
     return f"ent_{uuid.uuid4().hex[:8]}"
 
 
-class Store(ABC):
-    """带边的 KV 存储 + 内存索引（基类）。
+class Store:
+    """纯图数据库基类。
 
-    子类必须实现所有抽象方法。
+    持久化通过注入的 GraphBackend 实现。
+    子类覆写 hook 方法注入领域逻辑（虚属性、名称索引、数据访问等）。
     """
 
-    def __init__(self):
-        # 缓存
-        self._meta_cache: Dict[str, Optional[dict]] = {}
-        self._edges_cache: Optional[List[dict]] = None
-        self._read_timestamps: Dict[str, float] = {}
+    def __init__(self, source_config: SourceConfig, backend: GraphBackend):
+        self._source_config = source_config
+        self._backend = backend
+        self._backend.connect()
 
-        # 索引
-        self._id_index: Dict[str, str] = {}
-        self._inode_index: Dict[int, str] = {}
-        self._name_index: Dict[str, Union[str, List[str]]] = {}
+        self._meta_cache: Dict[str, Optional[dict]] = {}
+
+        # 主索引
+        self._id_index: Dict[str, dict] = {}  # eid → full props
 
         # 边索引
         self._adjacent: Dict[str, set] = {}
 
-        # 延迟构建索引
+        # 跨项目边索引
+        self._cross_adjacent: Dict[str, List[dict]] = {}
+
+        # 虚实体追踪
+        self._virtual_ids: set = set()
+
+        # 并发版本控制
+        self._last_version: int = -1
+
         self._index_built = False
 
-    # ==================== 抽象属性 ====================
+    # ==================== 持久化（委托 backend） ====================
 
-    @property
-    @abstractmethod
-    def project_path(self) -> str:
-        """项目根路径。"""
-
-    @property
-    @abstractmethod
-    def pontis_exists(self) -> bool:
-        """项目存储是否存在。"""
-
-    @property
-    @abstractmethod
-    def index_root(self) -> str:
-        """索引目录路径。"""
-
-    @property
-    def prop_registry(self) -> dict:
-        """label → {prop_name: callable} 注册表。子类覆写。"""
-        return {}
-
-    @property
-    def dir_props(self) -> dict:
-        """目录虚属性组。子类覆写。"""
-        return {}
-
-    @property
-    def common_file_props(self) -> dict:
-        """通用文件虚属性组（fallback）。子类覆写。"""
-        return {}
-
-    # ==================== 抽象方法：持久化 ====================
-
-    @abstractmethod
     def _scan_entities(self) -> List[Tuple[str, dict]]:
-        """扫描存储中所有实体，返回 [(ent_id, raw_meta)]。"""
+        return self._backend.scan_nodes()
 
-    @abstractmethod
     def _read_entity_meta(self, ent_id: str) -> Optional[dict]:
-        """读取单个实体的元数据。"""
+        return self._backend.read_node(ent_id)
 
-    @abstractmethod
     def _write_entity_meta(self, ent_id: str, data: dict):
-        """写入单个实体的元数据。"""
+        self._backend.write_node(ent_id, data)
 
-    @abstractmethod
     def _delete_entity_storage(self, ent_id: str):
-        """删除实体的存储。"""
+        self._backend.delete_node(ent_id)
+        self._backend.remove_edges_for(ent_id)
 
-    @abstractmethod
     def _read_edges_storage(self) -> List[dict]:
-        """读取边数据。"""
+        return self._backend.read_edges()
 
-    @abstractmethod
     def _write_edges_storage(self, edges: List[dict]):
-        """写入边数据。"""
+        self._backend.write_edges(edges)
 
-    # ==================== 抽象方法：虚实体/虚属性 ====================
+    # ==================== 数据访问（可选，子类按需覆写） ====================
 
-    def discover_virtual(self, pattern: str,
-                         label: str = None) -> list:
+    def resolve_data_path(self, rel_path: str) -> str:
+        """将相对路径解析为绝对路径（或 URI）。"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support resolve_data_path. "
+            f"This data source has no file-based path resolution."
+        )
+
+    def open_db(self, rel_path: str):
+        """上下文管理器：打开数据库连接。"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support open_db. "
+            f"This data source has no file-based database access."
+        )
+
+    def open_file(self, rel_path: str, mode='r', **kwargs):
+        """上下文管理器：打开文件。"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support open_file. "
+            f"This data source has no file-based access."
+        )
+
+    def data_exists(self, rel_path: str) -> bool:
+        """检查数据文件是否存在。"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support data_exists. "
+            f"This data source has no file-based existence check."
+        )
+
+    # ==================== 版本控制（委托 backend） ====================
+
+    def _read_version(self) -> int:
+        return self._backend.read_version()
+
+    def _bump_version(self) -> int:
+        return self._backend.bump_version()
+
+    # ==================== 跨项目边（委托 backend） ====================
+
+    def _persist_cross_edge(self, from_id: str, to_project: str, to_entity_id: str):
+        self._backend.add_cross_edge(from_id, to_project, to_entity_id)
+
+    def _delete_cross_edge(self, from_id: str, to_project: str, to_entity_id: str):
+        self._backend.remove_cross_edge(from_id, to_project, to_entity_id)
+
+    def _delete_cross_edges_for(self, from_id: str):
+        self._backend.remove_cross_edges_for(from_id)
+
+    def _update_cross_edge_stale(self, from_id: str, to_project: str,
+                                 to_entity_id: str, *, stale: bool):
+        self._backend.set_cross_edge_stale(from_id, to_project, to_entity_id, stale=stale)
+
+    def _load_cross_edges(self) -> Dict[str, List[dict]]:
+        return self._backend.read_cross_edges()
+
+    # ==================== 子类可覆写 ====================
+
+    @property
+    def internal_fields(self) -> set:
+        """内部字段集合，不暴露给外部。子类可覆写。"""
+        return set(_BASE_INTERNAL_FIELDS)
+
+    def discover_virtual(self, pattern: str, label: str = None) -> list:
         """发现虚实体。基类默认返回空。"""
         return []
 
@@ -116,78 +150,45 @@ class Store(ABC):
         """获取虚实体邻接。基类默认返回空。"""
         return []
 
-    @abstractmethod
     def _materialize_virtual(self, ref: str, vmeta: dict) -> str:
-        """将虚节点实体化为持久化节点，返回 ent_id。
+        """将虚节点实体化为持久化节点。子类覆写。"""
+        raise NotImplementedError
 
-        子类决定哪些虚字段需要持久化（如 FS 的 _inode、S3 的 _etag 等）。
-        """
-
-    @abstractmethod
     def _enrich_meta(self, ent_id: str, meta: dict,
                      include_props=None) -> dict:
-        """补充虚属性。返回补充后的完整 meta。"""
+        """补充虚属性。基类直接返回原始 meta。"""
+        return meta
 
-    # ==================== 抽象方法：文件身份 ====================
+    def _on_before_persist(self, meta: dict, ename: str):
+        """Hook: 实体写入持久化前。基类为空操作。"""
 
-    @abstractmethod
-    def _detect_file_identity(self, meta: dict, ename: str) -> Optional[int]:
-        """检测文件身份（如 inode）。返回身份标识或 None。"""
+    def _on_meta_read(self, ent_id: str):
+        """Hook: 读取实体元数据后。基类为空操作。"""
 
-    # ==================== 抽象方法：时间戳/cache ====================
-
-    @abstractmethod
-    def _record_read_timestamp(self, ent_id: str):
-        """记录读取时间戳。"""
-
-    @abstractmethod
-    def _check_stale(self, ent_id: str) -> Optional[str]:
-        """检查实体是否在读取后被修改。"""
-
-    @abstractmethod
-    def cache_path(self, *parts: str) -> str:
-        """返回缓存文件路径。"""
-
-    @abstractmethod
-    def cache_find(self, pattern: str) -> list:
-        """查找缓存文件。"""
+    def _mark_dirty(self):
+        """写操作后调用：递增版本号 + 更新本地缓存。"""
+        new_ver = self._bump_version()
+        self._last_version = new_ver
 
     # ==================== Index ====================
 
     def _ensure_index(self):
-        if self._index_built:
+        current = self._read_version()
+        if self._index_built and current == self._last_version:
             return
         self._build_index()
+        self._last_version = current
 
     def _build_index(self):
         from storage.labels import normalize_labels
         self._id_index.clear()
-        self._inode_index.clear()
-        self._name_index.clear()
         self._adjacent.clear()
 
         for ent_id, raw in self._scan_entities():
-            # 归一化旧格式标签 "col/INT" → ["col", "INT"]
             if "_labels" in raw:
                 raw["_labels"] = normalize_labels(raw["_labels"])
-                self._meta_cache[ent_id] = raw
-
-            ename = raw.get("_entity_name", "")
-            inode = raw.get("_inode")
-
-            self._id_index[ent_id] = ename
-
-            if ename in self._name_index:
-                existing = self._name_index[ename]
-                if isinstance(existing, list):
-                    existing.append(ent_id)
-                else:
-                    self._name_index[ename] = [existing, ent_id]
-            else:
-                self._name_index[ename] = ent_id
-
-            if inode is not None:
-                self._inode_index[inode] = ent_id
+            self._meta_cache[ent_id] = raw
+            self._register_node(ent_id, raw)
 
         for e in self._read_edges_storage():
             nodes = e.get("nodes", [])
@@ -197,79 +198,39 @@ class Store(ABC):
                         self._adjacent.setdefault(nid, set()).add(other)
 
         self._index_built = True
+        self._cross_adjacent = self._load_cross_edges()
 
-    def _register_node(self, ent_id: str, entity_name: str, inode=None):
-        self._id_index[ent_id] = entity_name
-
-        if entity_name in self._name_index:
-            existing = self._name_index[entity_name]
-            if isinstance(existing, list):
-                if ent_id not in existing:
-                    existing.append(ent_id)
-            else:
-                if ent_id != existing:
-                    self._name_index[entity_name] = [existing, ent_id]
-        else:
-            self._name_index[entity_name] = ent_id
-
-        if inode is not None:
-            self._inode_index[inode] = ent_id
+    def _register_node(self, ent_id: str, props: dict):
+        """注册节点到 _id_index。子类覆写以维护额外索引。"""
+        self._id_index[ent_id] = props
 
     def _unregister_node(self, ent_id: str):
-        ename = self._id_index.pop(ent_id, None)
-        if ename:
-            ent_ids = self._name_index.get(ename)
-            if isinstance(ent_ids, list):
-                ent_ids = [eid for eid in ent_ids if eid != ent_id]
-                if len(ent_ids) == 1:
-                    self._name_index[ename] = ent_ids[0]
-                elif len(ent_ids) == 0:
-                    self._name_index.pop(ename, None)
-            elif ent_ids == ent_id:
-                self._name_index.pop(ename, None)
-
-        to_remove = [inode for inode, eid in self._inode_index.items() if eid == ent_id]
-        for inode in to_remove:
-            del self._inode_index[inode]
+        """从 _id_index 移除节点。子类覆写以清理额外索引。"""
+        self._id_index.pop(ent_id, None)
 
     # ==================== Name/ID Helpers ====================
 
     def _name_to_id(self, entity_name: str) -> Optional[str]:
-        """返回该名称对应的第一个 entity ID（重名时取首个）。"""
-        ent_ids = self._name_index.get(entity_name)
-        if ent_ids is None:
-            return None
-        if isinstance(ent_ids, list):
-            return ent_ids[0]
-        return ent_ids
+        """返回该名称对应的 entity ID。子类必须覆写。"""
+        raise NotImplementedError
 
     def _name_to_ids(self, entity_name: str) -> List[str]:
-        """返回该名称对应的所有 entity ID。"""
-        ent_ids = self._name_index.get(entity_name)
-        if ent_ids is None:
-            return []
-        if isinstance(ent_ids, list):
-            return list(ent_ids)
-        return [ent_ids]
+        """返回该名称对应的所有 entity ID。子类必须覆写。"""
+        raise NotImplementedError
 
     def _resolve_to_id(self, ref: str) -> Optional[str]:
-        eid = self._name_to_id(ref)
-        if eid:
-            return eid
-        if ref.startswith("ent_") and ref in self._id_index:
-            return ref
-        return None
+        """解析 ref 为 ent_id。子类必须覆写。"""
+        raise NotImplementedError
 
     def _get_labels_by_id(self, ent_id: str) -> List[str]:
-        if ent_id in self._meta_cache:
-            cached = self._meta_cache[ent_id]
-            return cached.get("_labels", []) if cached else []
-        raw = self._read_entity_meta(ent_id)
-        return raw.get("_labels", []) if raw else []
+        props = self._id_index.get(ent_id)
+        if props:
+            return props.get("_labels", [])
+        return []
 
     # ==================== Meta Read ====================
 
-    def get_meta(self, ref: str, include_props: Optional[List[str]] = None,
+    def _get_meta(self, ref: str, include_props: Optional[List[str]] = None,
                  *, _visiting: Optional[set] = None) -> Optional[dict]:
         if _visiting is not None and ref in _visiting:
             return self._get_stored_meta(ref)
@@ -291,17 +252,21 @@ class Store(ABC):
             cached = self._meta_cache[ent_id]
             if cached is None:
                 return None
-            return {k: v for k, v in cached.items() if k not in _INTERNAL_FIELDS}
+            return {k: v for k, v in cached.items() if k not in self.internal_fields}
 
         raw = self._read_entity_meta(ent_id)
         if raw is None:
             self._meta_cache[ent_id] = None
             return None
         self._meta_cache[ent_id] = dict(raw)
-        return {k: v for k, v in raw.items() if k not in _INTERNAL_FIELDS}
+        return {k: v for k, v in raw.items() if k not in self.internal_fields}
 
     def _get_meta_internal(self, ref: str, include_props: Optional[List[str]],
                            _visiting: set) -> Optional[dict]:
+        """基类实现：解析 ref，加载 meta，过滤内部字段。
+
+        子类（如 FSStore）可覆写以添加 label 分组、虚属性补充等。
+        """
         self._ensure_index()
         ent_id = self._resolve_to_id(ref)
 
@@ -318,70 +283,67 @@ class Store(ABC):
                     return None
                 result = dict(raw)
                 self._meta_cache[ent_id] = dict(raw)
-                self._record_read_timestamp(ent_id)
+                self._on_meta_read(ent_id)
 
-            result = {k: v for k, v in result.items() if k not in _INTERNAL_FIELDS}
-
-            # 图谱边虚属性：按邻接节点 label 首段自动分组
-            ename = self._id_index.get(ent_id, "")
-            for adj_id in self._adjacent.get(ent_id, set()):
-                adj_name = self._id_index.get(adj_id)
-                if adj_name is None:
-                    continue
-                adj_labels = self._get_labels_by_id(adj_id)
-                group_key = None
-                for lbl in adj_labels:
-                    group_key = lbl
-                    break
-                if group_key is None:
-                    group_key = adj_name.rsplit(".", 1)[-1] if "." in adj_name else adj_name
-                if group_key not in result:
-                    result[group_key] = [adj_name]
-                elif isinstance(result[group_key], list):
-                    result[group_key].append(adj_name)
-
-            # 虚属性补充
-            if include_props is None or len(include_props) > 0:
-                result = self._enrich_meta(ent_id, result, include_props=include_props)
-
+            result = {k: v for k, v in result.items() if k not in self.internal_fields}
             return result
 
-        # 无持久化节点 → 子类可覆写 fallback
-        return self._get_meta_fallback(ref, include_props, _visiting)
-
-    def _get_meta_fallback(self, ref: str, include_props=None,
-                           _visiting=None) -> Optional[dict]:
-        """未找到持久化节点时的 fallback。基类返回 None，子类可覆写。"""
         return None
 
     def _materialize(self, ref: str) -> str:
-        """将虚节点实体化为持久化节点，返回 ent_id。
-
-        若已持久化则直接返回；若为虚节点则用虚信息创建；
-        否则走 create_node 创建全新空节点。
-        """
+        """将虚节点实体化为持久化节点，返回 ent_id。"""
         ent_id = self._resolve_to_id(ref)
         if ent_id:
+            if ent_id in self._virtual_ids:
+                return self._auto_materialize(ent_id)
             return ent_id
 
         vmeta = self.get_virtual_meta(ref)
         if vmeta:
             return self._materialize_virtual(ref, vmeta)
 
-        return self.create_node(ref)
+        return self._create_node(ref)
+
+    def _auto_materialize(self, virtual_id: str) -> str:
+        """将索引中的虚实体转为持久化实体。返回新的 ent_id。"""
+        vmeta = dict(self._meta_cache.get(virtual_id, {}))
+        props = self._id_index.get(virtual_id, {})
+        labels = vmeta.get("_labels", []) or props.get("_labels", [])
+
+        new_id = _gen_id()
+        vmeta["_id"] = new_id
+        vmeta.setdefault("_labels", labels)
+
+        self._write_entity_meta(new_id, vmeta)
+        self._meta_cache[new_id] = dict(vmeta)
+        self._register_node(new_id, vmeta)
+
+        old_adj = self._adjacent.pop(virtual_id, set())
+        self._adjacent[new_id] = old_adj
+        for adj_set in self._adjacent.values():
+            if virtual_id in adj_set:
+                adj_set.discard(virtual_id)
+                adj_set.add(new_id)
+
+        self._virtual_ids.discard(virtual_id)
+        self._meta_cache.pop(virtual_id, None)
+        self._unregister_node(virtual_id)
+        self._mark_dirty()
+
+        return new_id
 
     def _read_raw(self, ent_id: str) -> Optional[dict]:
         return self._read_entity_meta(ent_id)
 
     # ==================== Meta Write ====================
 
-    def set_meta(self, ref: str, data: dict):
+    def _set_meta(self, ref: str, data: dict):
         ent_id = self._resolve_to_id(ref)
 
+        if ent_id and ent_id in self._virtual_ids:
+            ent_id = self._auto_materialize(ent_id)
+
         if ent_id:
-            stale_err = self._check_stale(ent_id)
-            if stale_err:
-                raise RuntimeError(stale_err)
             existing = self._read_raw(ent_id) or {}
             existing.update(data)
         else:
@@ -389,193 +351,71 @@ class Store(ABC):
             existing = self._read_raw(ent_id) or {}
             existing.update(data)
 
-        existing.setdefault("_entity_name", ref)
         existing.setdefault("_labels", [])
 
-        inode = existing.get("_inode")
-        self._register_node(ent_id, ref, inode=inode)
+        self._register_node(ent_id, existing)
 
         self._write_entity_meta(ent_id, existing)
         self._meta_cache[ent_id] = dict(existing)
-        self._record_read_timestamp(ent_id)
+        self._on_meta_read(ent_id)
+        self._mark_dirty()
 
-    def put_meta(self, ref: str, data: dict):
+    def _put_meta(self, ref: str, data: dict):
         ent_id = self._resolve_to_id(ref)
 
         if ent_id:
-            stale_err = self._check_stale(ent_id)
-            if stale_err:
-                raise RuntimeError(stale_err)
+            pass
         else:
             ent_id = self._materialize(ref)
 
         data["_id"] = ent_id
-        data.setdefault("_entity_name", ref)
         data.setdefault("_labels", [])
 
-        inode = data.get("_inode")
-        self._register_node(ent_id, ref, inode=inode)
+        self._register_node(ent_id, data)
 
         self._write_entity_meta(ent_id, data)
         self._meta_cache[ent_id] = dict(data)
-        self._record_read_timestamp(ent_id)
+        self._on_meta_read(ent_id)
+        self._mark_dirty()
 
     def _apply_labels(self, data: dict, labels: Optional[List[str]]) -> dict:
         data["_labels"] = list(labels) if labels is not None else []
         return data
 
-    # ==================== Legacy Compatibility ====================
+    # ==================== Cypher Entry Point ====================
 
-    def find_nodes(self, pattern: str) -> List[str]:
-        """兼容旧 extractor 的 find_nodes。"""
+    def cypher(self, query: str, params: dict = None) -> list:
+        """执行 Cypher 查询。所有图操作的统一入口。"""
+        from storage.cypher import parse_cypher, CypherExecutor
         self._ensure_index()
+        return CypherExecutor(self).execute(parse_cypher(query, params=params))
 
-        segments = []
-        current_buf = []
-        i = 0
-        while i < len(pattern):
-            if pattern[i] == ':' and i + 1 < len(pattern) and pattern[i + 1] == ':':
-                seg_text = "".join(current_buf)
-                if seg_text:
-                    segments.append(seg_text)
-                current_buf = []
-                i += 2
-                continue
-            current_buf.append(pattern[i])
-            i += 1
-        seg_text = "".join(current_buf)
-        if seg_text:
-            segments.append(seg_text)
+    # ==================== Iteration ====================
 
-        if not segments:
-            return []
-
-        if len(segments) == 1:
-            return self._legacy_single_match(segments[0])
-
-        return self._legacy_traverse_match(segments)
-
-    def _legacy_single_match(self, pattern: str) -> List[str]:
-        name_pattern, label_filter = self._split_pattern_label(pattern)
-
-        results = []
-        seen = set()
-        for eid, ename in self._id_index.items():
-            if fnmatch.fnmatch(ename, name_pattern):
-                if label_filter:
-                    labels = self._get_labels_by_id(eid)
-                    if not self._label_matches_legacy(labels, label_filter):
-                        continue
-                if ename not in seen:
-                    seen.add(ename)
-                    results.append(ename)
-        return results
-
-    def _legacy_traverse_match(self, segments: List[str]) -> List[str]:
-        current_ids = set()
-
-        first = segments[0]
-        first_pat, first_lbl = self._split_pattern_label(first)
-        for eid, ename in self._id_index.items():
-            if fnmatch.fnmatch(ename, first_pat):
-                if first_lbl:
-                    labels = self._get_labels_by_id(eid)
-                    if not self._label_matches_legacy(labels, first_lbl):
-                        continue
-                current_ids.add(eid)
-
-        for seg in segments[1:]:
-            seg_pat, seg_lbl = self._split_pattern_label(seg)
-            next_ids = set()
-            for eid in current_ids:
-                for adj_id in self._adjacent.get(eid, set()):
-                    adj_name = self._id_index.get(adj_id, "")
-                    if fnmatch.fnmatch(adj_name, seg_pat):
-                        if seg_lbl:
-                            labels = self._get_labels_by_id(adj_id)
-                            if not self._label_matches_legacy(labels, seg_lbl):
-                                continue
-                        next_ids.add(adj_id)
-            current_ids = next_ids
-
-        return [self._id_index[eid] for eid in current_ids
-                if self._id_index.get(eid)]
-
-    @staticmethod
-    def _split_pattern_label(pattern: str):
-        for sep_idx in range(len(pattern) - 1, 0, -1):
-            if pattern[sep_idx] == ':':
-                candidate = pattern[sep_idx + 1:]
-                if candidate and not any(c in candidate for c in '*?[]:.'):
-                    return pattern[:sep_idx], candidate
-        return pattern, None
-
-    @staticmethod
-    def _label_matches_legacy(entity_labels: List[str], query: str) -> bool:
-        from storage.labels import label_matches
-        return label_matches(entity_labels, query)
-
-    def find_connected(self, ref: str, pattern: str = "*") -> List[str]:
-        return self.neighbors(ref) if pattern == "*" else [
-            n for n in self.neighbors(ref)
-            if fnmatch.fnmatch(n, pattern)
-        ]
-
-    def walk_metas(self) -> Iterator[Tuple[str, dict]]:
+    def _walk_metas(self) -> Iterator[Tuple[str, dict]]:
         self._ensure_index()
-        for ename in self._name_index:
-            meta = self.get_meta(ename)
+        for eid in list(self._id_index.keys()):
+            meta = self._get_meta(eid)
             if meta is not None:
-                yield (ename, meta)
-
-    def resolve_ref(self, ref: str) -> str:
-        if ref.startswith("ent_"):
-            ename = self._id_index.get(ref)
-            if ename is None:
-                raise KeyError(f"Unknown node ID: {ref}")
-            return ename
-
-        if "::" in ref:
-            parts = ref.split("::")
-            current_ids = set()
-            for eid, ename in self._id_index.items():
-                if ename == parts[0]:
-                    current_ids.add(eid)
-            for seg in parts[1:]:
-                next_ids = set()
-                for eid in current_ids:
-                    for adj_id in self._adjacent.get(eid, set()):
-                        adj_name = self._id_index.get(adj_id, "")
-                        if fnmatch.fnmatch(adj_name, seg):
-                            next_ids.add(adj_id)
-                current_ids = next_ids
-            if len(current_ids) == 1:
-                return self._id_index[next(iter(current_ids))]
-            if len(current_ids) == 0:
-                raise KeyError(f"No match: {ref}")
-            raise KeyError(f"Ambiguous: {ref}")
-
-        return ref
+                yield (eid, meta)
 
     # ==================== Node Operations ====================
 
-    def create_node(self, ref: str, *, meta: Optional[dict] = None,
+    def _create_node(self, ref: str, *, meta: Optional[dict] = None,
                     edges: Optional[List[dict]] = None,
                     labels: Optional[List[str]] = None) -> str:
-        # 幂等：已持久化则直接返回
         existing = self._resolve_to_id(ref)
         if existing:
+            if existing in self._virtual_ids:
+                existing = self._auto_materialize(existing)
             return existing
 
         meta = meta or {}
 
-        # 虚节点 → 合并用户的 labels/meta 后实体化
         vmeta = self.get_virtual_meta(ref)
         if vmeta:
             merged = dict(vmeta)
             merged.update(meta)
-            if "_inode" in vmeta and "_inode" not in meta:
-                merged["_inode"] = vmeta["_inode"]
             meta = merged
             if labels is None and "_labels" in vmeta:
                 labels = vmeta["_labels"]
@@ -590,19 +430,15 @@ class Store(ABC):
             ename = ref
             parent_name = None
 
-        inode = self._detect_file_identity(meta, ename)
-        if inode is not None:
-            meta["_inode"] = inode
+        self._on_before_persist(meta, ename)
 
         ent_id = _gen_id()
         meta["_id"] = ent_id
-        meta["_entity_name"] = ename
         meta.setdefault("_labels", [])
 
-        inode = meta.get("_inode")
-        self._register_node(ent_id, ename, inode=inode)
         self._write_entity_meta(ent_id, meta)
         self._meta_cache[ent_id] = dict(meta)
+        self._register_node(ent_id, meta)
 
         if parent_name:
             auto_edge = {"a": parent_name, "b": ename}
@@ -612,36 +448,35 @@ class Store(ABC):
             if "--" in ref and len(parts) > 2:
                 for i in range(len(parts) - 2):
                     all_edges.append({"a": parts[i], "b": parts[i + 1]})
-            self.add_edges(all_edges)
+            self._add_edges(all_edges)
         elif edges:
-            self.add_edges(edges)
+            self._add_edges(edges)
 
+        self._mark_dirty()
         return ent_id
 
-    def node_exists(self, ref: str) -> bool:
-        return self._resolve_to_id(ref) is not None
+    # ==================== Primitive Queries ====================
 
-    # ==================== Primitive Queries (for Finder) ====================
-
-    def list_all(self) -> List[Tuple[str, List[str]]]:
+    def _list_all(self) -> List[Tuple[str, List[str]]]:
+        """返回所有节点的 (ent_id, labels) 列表。子类可覆写返回名字。"""
         self._ensure_index()
         results = []
-        for eid, ename in self._id_index.items():
-            labels = self._get_labels_by_id(eid)
-            results.append((ename, labels))
+        for eid, props in self._id_index.items():
+            results.append((eid, props.get("_labels", [])))
         return results
 
-    def neighbors(self, ref: str) -> List[str]:
+    def _neighbors(self, ref: str) -> List[str]:
+        """返回邻居的 ent_id 列表。子类可覆写返回名字。"""
         self._ensure_index()
         ent_id = self._resolve_to_id(ref)
         if not ent_id:
             return []
-        return [self._id_index.get(aid) for aid in self._adjacent.get(ent_id, set())
+        return [aid for aid in self._adjacent.get(ent_id, set())
                 if self._id_index.get(aid)]
 
     # ==================== Edges ====================
 
-    def get_edges(self, node_ref: str = None) -> List[dict]:
+    def _get_edges(self, node_ref: str = None) -> List[dict]:
         self._ensure_index()
         raw_edges = self._read_edges_storage()
 
@@ -654,13 +489,13 @@ class Store(ABC):
                 continue
 
             edge_dict = {
-                "nodes": [self._id_index.get(nid, nid) for nid in nodes],
+                "nodes": list(nodes),
             }
             result.append(edge_dict)
 
         return result
 
-    def add_edges(self, edges: List[dict]):
+    def _add_edges(self, edges: List[dict]):
         self._ensure_index()
         raw = self._read_edges_storage()
         existing_pairs = {frozenset(e.get("nodes", [])) for e in raw}
@@ -689,21 +524,33 @@ class Store(ABC):
             self._adjacent.setdefault(b_id, set()).add(a_id)
 
         self._write_edges_storage(raw)
+        self._mark_dirty()
 
-    def clear_edges(self):
+    def _clear_edges(self):
         self._write_edges_storage([])
         self._adjacent.clear()
+        self._mark_dirty()
 
     # ==================== Delete ====================
 
-    def delete_node(self, ref: str) -> str:
+    def _delete_node(self, ref: str) -> str:
         self._ensure_index()
 
         ent_id = self._resolve_to_id(ref)
-        if not ent_id or not ent_id.startswith("ent_"):
+        if not ent_id:
             return ""
 
-        ename = self._id_index.get(ent_id, "")
+        if ent_id in self._virtual_ids:
+            self._unregister_node(ent_id)
+            self._meta_cache.pop(ent_id, None)
+            self._virtual_ids.discard(ent_id)
+            self._adjacent.pop(ent_id, None)
+            for adj_set in self._adjacent.values():
+                adj_set.discard(ent_id)
+            return ent_id
+
+        if not ent_id.startswith("ent_"):
+            return ""
 
         raw = self._read_edges_storage()
         new_raw = [e for e in raw if ent_id not in e.get("nodes", [])]
@@ -716,5 +563,56 @@ class Store(ABC):
         self._delete_entity_storage(ent_id)
         self._unregister_node(ent_id)
         self._meta_cache.pop(ent_id, None)
+        self._remove_cross_edges(ent_id)
+        self._mark_dirty()
 
-        return ename
+        return ent_id
+
+    # ==================== Cross Edges ====================
+
+    def _add_cross_edge(self, from_id: str, to_project: str, to_entity_id: str):
+        ref = {"to_project": to_project, "to_entity_id": to_entity_id, "stale": False}
+        self._cross_adjacent.setdefault(from_id, []).append(ref)
+        self._persist_cross_edge(from_id, to_project, to_entity_id)
+        self._mark_dirty()
+
+    def _remove_cross_edge(self, from_id: str, to_project: str, to_entity_id: str):
+        refs = self._cross_adjacent.get(from_id, [])
+        self._cross_adjacent[from_id] = [
+            r for r in refs
+            if not (r["to_project"] == to_project and r["to_entity_id"] == to_entity_id)
+        ]
+        if not self._cross_adjacent[from_id]:
+            self._cross_adjacent.pop(from_id, None)
+        self._delete_cross_edge(from_id, to_project, to_entity_id)
+        self._mark_dirty()
+
+    def _remove_cross_edges(self, from_id: str):
+        self._cross_adjacent.pop(from_id, None)
+        self._delete_cross_edges_for(from_id)
+
+    def _mark_cross_edge_stale(self, from_id: str, to_project: str,
+                                to_entity_id: str):
+        refs = self._cross_adjacent.get(from_id, [])
+        for r in refs:
+            if r["to_project"] == to_project and r["to_entity_id"] == to_entity_id:
+                r["stale"] = True
+                break
+        self._update_cross_edge_stale(from_id, to_project, to_entity_id, stale=True)
+
+    def get_cross_refs(self, ref: str = None) -> List[dict]:
+        self._ensure_index()
+        results = []
+        target_id = self._resolve_to_id(ref) if ref else None
+        for from_id, refs in self._cross_adjacent.items():
+            if target_id and from_id != target_id:
+                continue
+            from_name = from_id
+            for r in refs:
+                results.append({
+                    "from": from_name,
+                    "to_project": r["to_project"],
+                    "to_entity_id": r["to_entity_id"],
+                    "stale": r.get("stale", False),
+                })
+        return results

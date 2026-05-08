@@ -1,22 +1,18 @@
 """Cypher 查询工具 — 标准 Cypher 的透传封装。"""
 
 
-def cypher_command(obj, query: str, offset: int = 0,
-                   limit: int = 100) -> str:
-    """执行标准 Cypher 查询，直接透传给 storage 层。
+def cypher_command(workspace, query: str, offset: int = 0,
+                   limit: int = 100, params: dict = None) -> str:
+    """执行标准 Cypher 查询，直接透传给 workspace。
 
     Args:
-        obj: Workspace 或 Store 实例
+        workspace: Workspace 实例
         query: 标准 Cypher 查询语句
         offset: 起始偏移
         limit: 最大返回条数
+        params: 参数化查询参数
     """
-    if hasattr(obj, 'query'):
-        results = obj.query(query)
-    else:
-        from storage.cypher import parse_cypher, CypherExecutor
-        executor = CypherExecutor(obj)
-        results = executor.execute(parse_cypher(query))
+    results = workspace.cypher(query, params=params)
 
     if not results:
         return "(无结果)"
@@ -47,9 +43,9 @@ def cypher_command(obj, query: str, offset: int = 0,
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 3:
-        print("Usage: python -m tool.cypher.tool <project_path> <cypher_query>")
+        print("Usage: python -m tool.cypher.tool <project_name> <cypher_query>")
         sys.exit(1)
 
-    from storage.stores.fs import FSStore
-    store = FSStore(sys.argv[1])
-    print(cypher_command(store, sys.argv[2]))
+    from storage.workspace import Workspace
+    ws = Workspace(active_projects=[sys.argv[1]])
+    print(cypher_command(ws, sys.argv[2]))

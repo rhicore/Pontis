@@ -1,22 +1,20 @@
 """Update meta tool — 通过 Cypher SET 更新实体元数据。"""
 
-from tool.utils import cypher_escape, execute_cypher
+from tool.utils import execute_cypher
 from tool.utils.resolve import resolve_entity
 
 _ALLOWED_FIELDS = {"brief", "detail"}
 
 
-def update_meta_command(obj, ref: str, fields: dict) -> str:
+def update_meta_command(workspace, ref: str, fields: dict) -> str:
     """通过 Cypher SET 更新实体元数据。
 
     ref 支持两种模式：
       - 精确名称 → 直接匹配
       - glob 模式 → 必须匹配唯一实体
     """
-    store = obj if not hasattr(obj, 'get_store') else obj.get_store()
-
-    if hasattr(store, 'pontis_exists') and not store.pontis_exists:
-        return f"Error: .pontis directory not found in {store.project_path}"
+    if not workspace.pontis_exists:
+        return f"Error: .pontis directory not found in {workspace.project_path}"
 
     invalid = set(fields.keys()) - _ALLOWED_FIELDS
     if invalid:
@@ -27,16 +25,14 @@ def update_meta_command(obj, ref: str, fields: dict) -> str:
         return "错误: 没有有效的字段可更新"
 
     # 解析实体引用
-    eid, err = resolve_entity(obj, ref)
+    eid, err = resolve_entity(workspace, ref)
     if err:
         return f"Error: {err}"
 
     # 构造 Cypher
-    set_parts = [f'n.{k} = "{cypher_escape(v)}"' for k, v in safe_fields.items()]
-    set_clause = ", ".join(set_parts)
-    cypher = f'MATCH (n {{id: "{eid}"}}) SET {set_clause}'
+    cypher = 'MATCH (n {id: $eid}) SET n += $props'
 
-    results = execute_cypher(obj, cypher)
+    results = execute_cypher(workspace, cypher, params={"eid": eid, "props": safe_fields})
 
     if not results:
         return f"Error: update failed (ref={ref})"

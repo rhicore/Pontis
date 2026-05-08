@@ -14,18 +14,8 @@ logger = logging.getLogger(__name__)
 MAX_BRIEF_CHARS = 50
 
 
-def generate_detail_and_brief(llm, prompt: str, max_tokens: int = 300) -> tuple:
-    """分两次调用 LLM 生成 detail 和 brief（单 prompt 接口）。
-
-    Args:
-        llm: LLM 客户端
-        prompt: 用户的分析 prompt（数据描述部分）
-        max_tokens: detail 调用的 max_tokens
-
-    Returns:
-        (detail, brief)
-    """
-    # 第一次调用：生成 detail
+def generate_detail_and_brief(llm, prompt: str) -> tuple:
+    """分两次调用 LLM 生成 detail 和 brief（单 prompt 接口）。"""
     detail_prompt = prompt + """
 
 Generate a comprehensive description. Be as detailed as possible — no word limit, no character limit.
@@ -34,7 +24,7 @@ Output ONLY the description text, no labels, no markdown formatting."""
 
     detail = ""
     try:
-        raw = llm.complete(detail_prompt, max_tokens=max_tokens)
+        raw = llm.complete(detail_prompt)
         if raw:
             detail = _clean(raw)
     except Exception as e:
@@ -44,24 +34,12 @@ Output ONLY the description text, no labels, no markdown formatting."""
     if not detail:
         return "", ""
 
-    # 第二次调用：基于 detail 生成 brief
     brief = _generate_brief(llm, detail)
-
     return detail, brief
 
 
-def generate_with_prefix(llm, prefix_messages: list, max_tokens: int = 300) -> tuple:
-    """分两次调用 LLM 生成 detail 和 brief（messages 接口，支持 prompt caching）。
-
-    Args:
-        llm: LLM 客户端（需要有 complete_messages 方法）
-        prefix_messages: 共享前缀消息列表（system + table context）
-        max_tokens: detail 调用的 max_tokens
-
-    Returns:
-        (detail, brief)
-    """
-    # 第一次调用：生成 detail
+def generate_with_prefix(llm, prefix_messages: list) -> tuple:
+    """分两次调用 LLM 生成 detail 和 brief（messages 接口，支持 prompt caching）。"""
     detail_messages = prefix_messages + [{
         "role": "user",
         "content": "Generate a comprehensive description. Be as detailed as possible — "
@@ -72,7 +50,7 @@ def generate_with_prefix(llm, prefix_messages: list, max_tokens: int = 300) -> t
 
     detail = ""
     try:
-        raw = llm.complete_messages(detail_messages, max_tokens=max_tokens)
+        raw = llm.complete_messages(detail_messages)
         if raw:
             detail = _clean(raw)
     except Exception as e:
@@ -82,9 +60,7 @@ def generate_with_prefix(llm, prefix_messages: list, max_tokens: int = 300) -> t
     if not detail:
         return "", ""
 
-    # 第二次调用：基于 detail 生成 brief（复用前缀）
     brief = _generate_brief_from_messages(llm, prefix_messages, detail)
-
     return detail, brief
 
 
@@ -98,7 +74,7 @@ Text:
 {detail}"""
 
     try:
-        raw = llm.complete(brief_prompt, max_tokens=80)
+        raw = llm.complete(brief_prompt)
         if raw:
             brief = _clean(raw)
             if len(brief) > MAX_BRIEF_CHARS:
@@ -120,7 +96,7 @@ def _generate_brief_from_messages(llm, prefix_messages: list, detail: str) -> st
     ]
 
     try:
-        raw = llm.complete_messages(messages, max_tokens=80)
+        raw = llm.complete_messages(messages)
         if raw:
             brief = _clean(raw)
             if len(brief) > MAX_BRIEF_CHARS:
@@ -135,7 +111,7 @@ def _clean(text: str) -> str:
     """清理文本：去除 markdown 残留、多余空白。"""
     text = text.strip()
     # 去掉 markdown 前缀（**detail:**, **Detail:**, # Detail 等）
-    text = re.sub(r'\*+\s*(detail|brief)\s*:?\s*\**\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\*+\s*(detail|brief)\s*:?\s*\*\*\s*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'^#+\s*(detail|brief)\s*\n*', '', text, flags=re.IGNORECASE)
     # 去掉开头的 label
     text = re.sub(r'^(detail|brief)\s*:\s*', '', text, flags=re.IGNORECASE)

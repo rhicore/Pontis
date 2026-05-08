@@ -11,16 +11,15 @@
 """
 import logging
 from typing import List
-from storage import Store
+from storage.workspace import Workspace
 from extractor.modules.utils.loader import load_config
 from extractor.modules.utils.ai_utils import generate_detail_and_brief
 
 logger = logging.getLogger(__name__)
 
-DB_EXTENSIONS = ["*.db", "*.sqlite", "*.sqlite3", "*.duckdb"]
 
 
-def generate(store: Store) -> None:
+def generate(workspace: Workspace) -> None:
     """为所有表节点生成 AI 总结"""
     logger.info("=== AI: DB table summary ===")
 
@@ -29,17 +28,22 @@ def generate(store: Store) -> None:
         logger.warning("LLM not configured, skipping AI summary")
         return
 
-    for ext in DB_EXTENSIONS:
-        for db_ref in store.find_nodes(ext):
-            for table_ref in store.find_nodes(f"{db_ref}::*:table"):
+    for ext_suffix in [".db", ".sqlite", ".sqlite3", ".duckdb"]:
+        db_rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext_suffix}' RETURN n")
+        for db_row in db_rows:
+            db_ref = db_row["n"]["name"]
+            tbl_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t:table) RETURN t')
+            for tbl_row in tbl_rows:
+                table_ref = tbl_row["t"]["name"]
                 try:
-                    _generate_for_table(table_ref, db_ref, store, llm)
+                    _generate_for_table(table_ref, db_ref, workspace, llm)
                 except Exception as e:
                     logger.warning(f"Failed for {table_ref}: {e}")
 
 
-def _generate_for_table(table_ref: str, db_ref: str, store: Store, llm) -> bool:
-    meta = store.get_meta(table_ref)
+def _generate_for_table(table_ref: str, db_ref: str, workspace: Workspace, llm) -> bool:
+    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": table_ref})
+    meta = meta_rows[0].get("n") if meta_rows else None
     if not meta:
         return False
 
@@ -47,11 +51,11 @@ def _generate_for_table(table_ref: str, db_ref: str, store: Store, llm) -> bool:
         return False
 
     table_name = table_ref
-    columns = _get_column_info(db_ref, table_ref, store)
+    columns = _get_column_info(db_ref, table_ref, workspace)
     prompt = _build_prompt(table_name, columns)
 
     try:
-        detail, brief = generate_detail_and_brief(llm, prompt, max_tokens=200)
+        detail, brief = generate_detail_and_brief(llm, prompt)
         updates = {}
         if detail:
             updates["detail"] = detail
@@ -59,7 +63,7 @@ def _generate_for_table(table_ref: str, db_ref: str, store: Store, llm) -> bool:
             updates["brief"] = brief
 
         if updates:
-            store.set_meta(table_ref, updates)
+            workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": table_ref, "props": updates})
             logger.info(f"  AI summary: {table_ref}")
             return True
     except Exception as e:
@@ -68,10 +72,13 @@ def _generate_for_table(table_ref: str, db_ref: str, store: Store, llm) -> bool:
     return False
 
 
-def _get_column_info(db_ref: str, table_ref: str, store: Store) -> List[dict]:
+def _get_column_info(db_ref: str, table_ref: str, workspace: Workspace) -> List[dict]:
     columns = []
-    for col_ref in store.find_nodes(f"{db_ref}::{table_ref}::*:col"):
-        col_meta = store.get_meta(col_ref)
+    col_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
+    for col_row in col_rows:
+        col_ref = col_row["c"]["name"]
+        col_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": col_ref})
+        col_meta = col_meta_rows[0].get("n") if col_meta_rows else None
         if col_meta:
             columns.append({
                 "name": col_ref,

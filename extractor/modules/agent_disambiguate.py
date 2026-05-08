@@ -9,7 +9,7 @@
 import logging
 import os
 
-from storage import Store
+from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +23,8 @@ PROMPT = """\
 ## 什么是语义歧义
 
 以下情况会产生歧义，需要消歧：
-- **同名列不同语义**：多个表有同名的列，但含义不同。如 `points` 在 results 表是单场比赛积分，\
-  在 driverStandings 表是赛季累计积分
+- **同名列不同语义**：多个表有同名的列，但含义不同。如 `points` 在 `results` 表是单场比赛积分，\
+  在 `driverStandings` 表是赛季累计积分
 - **近名列不同语义**：列名相似但不完全相同，容易混淆。如 `position` 和 `positionText`
 - **同名/近名表不同用途**：名称相近的表可能服务于不同场景
 - **同义不同名**：指向同一概念但列名不同。如 `School` / `School Name` / `sname`
@@ -44,8 +44,9 @@ d. 查看已有的 fk、overlap、rel、disambig 实体
 收集所有列名，找出出现在多个表中的同名列：
 - 用 glob `**/*.col` 获取所有列
 - 按列名分组，找出出现在 >= 2 个表中的列名
-- 对每个同名列，meta 查看它在不同表中的统计数据
+- 对每个同名列，直接用列名做 meta（如 `meta("type")`），结果会显示该列属于哪些表
 - read 或 lookup 查看实际数据，判断语义是否真的不同
+- **注意**：meta 的 ref 就是节点名，列节点名不带表前缀，不要用 `table.column` 格式
 - **重要**：如果同名列在不同表中含义完全相同（都是外键指向同一目标），不需要消歧
 
 ### 4. 扫描表级歧义
@@ -65,7 +66,7 @@ ref: `[你概括的共同模式]:disambig`
 - `position` 和 `positionText` 容易混淆 → `position:disambig`
 - SOC、SOCType、EILCode 都涉及学校类型分类 → `school_type:disambig`
 - results 和 constructorResults 名称相近 → `results_table:disambig`
-- schools.School、frpm.School Name、satscores.sname 指向同一概念 → `school_name:disambig`
+- `School`、`School Name`、`sname` 指向同一概念 → `school_name:disambig`
 - rtype='S'/'D' 和 cds 的前导零问题涉及 satscores 的编码体系 → `cds_encoding:disambig`
 
 meta:
@@ -123,13 +124,13 @@ points 在不同表中的含义：
 """
 
 
-def generate(store: Store) -> None:
+def generate(workspace: Workspace) -> None:
     """发现语义歧义，创建 disambig 实体。"""
     from agent.config import create_agent, AgentSpec
     from agent.guardrail import build_guardrails
     from agent.utils import load_agent_config
 
-    config = load_agent_config(store.project_path)
+    config = load_agent_config(workspace.project_path)
     if not config["api_key"]:
         logger.warning("Agent not configured (no API key), skipping agent disambiguate")
         return
@@ -137,10 +138,10 @@ def generate(store: Store) -> None:
     logger.info("=== Agent Disambiguate ===")
 
     spec = AgentSpec(mode="writer")
-    project_name = os.path.basename(os.path.abspath(store.project_path))
+    project_name = os.path.basename(os.path.abspath(workspace.project_path))
     spec.projects = [project_name]
     spec.guardrails = build_guardrails(spec, ["round_limit"])
-    agent = create_agent(store.project_path, spec)
+    agent = create_agent(workspace.project_path, spec)
 
     agent.chat(PROMPT)
     logger.info("=== Agent Disambiguate done ===")

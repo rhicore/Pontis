@@ -4,7 +4,7 @@
 """
 
 
-def resolve_entity(obj, ref: str) -> tuple:
+def resolve_entity(workspace, ref: str) -> tuple:
     """将实体引用解析为唯一 ent_id。
 
     匹配逻辑：
@@ -15,19 +15,17 @@ def resolve_entity(obj, ref: str) -> tuple:
         (ent_id, error_msg)
         成功时 error_msg 为 None，失败时 ent_id 为 None
     """
-    store = obj if not hasattr(obj, 'get_store') else obj.get_store()
-
-    # 精确名称快速路径（无通配符）
+        # 精确名称快速路径（无通配符）
     has_wildcards = any(c in ref for c in '*?[]')
 
     if not has_wildcards:
-        ent_id = store._name_to_id(ref)
+        ent_id = (lambda r: (workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": ref}) or [{}])[0].get("n", {}).get("_eid"))(ref)
         if ent_id:
             return (ent_id, None)
 
     # glob/URN 模式匹配（含 / 路径名、: 标签过滤、* 通配符）
     from tool.glob.tool import glob_command
-    output = glob_command(obj, ref)
+    output = glob_command(workspace, ref)
 
     if output.startswith("No objects"):
         return (None, f"未找到匹配的实体: {ref}")
@@ -38,7 +36,7 @@ def resolve_entity(obj, ref: str) -> tuple:
     for line in lines:
         parts = line.split("\t")
         if parts:
-            eid = store._name_to_id(parts[0])
+            eid = (lambda r: (workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": parts[0]}) or [{}])[0].get("n", {}).get("_eid"))(parts[0])
             if eid:
                 matched.append((eid, parts[0]))
 

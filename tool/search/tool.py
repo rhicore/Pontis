@@ -1,22 +1,31 @@
-"""Search tool — BM25 检索实体的 brief 和 detail 字段。"""
+"""Search tool — BM25 语义检索。
+
+基于 brief/detail 的 BM25 评分，支持自然语言查询。
+"""
 import math
 import re
-import os
 from collections import Counter
 from typing import List, Optional
 
-from tool.utils.formatters import format_labels, get_info
 from tool.config import TOOL_PAGINATION
+from tool.utils.formatters import format_labels, get_info
 
+
+# ========== Tokenizer ==========
 
 def _tokenize(text: str) -> List[str]:
-    """中英文分词：英文按空白拆分，中文按字符拆分，过滤短词。"""
+    """简单的中文/英文分词器。"""
     tokens = []
     for part in re.split(r'[\s,，。.!！?？;；:：、/\\|()\[\]{}]+', text.lower()):
         if not part:
             continue
         if re.match(r'^[a-z0-9_]+$', part):
-            if len(part) > 1:
+            # 按下划线拆分复合词（district_id → district + id）
+            for sub in part.split('_'):
+                if len(sub) > 1:
+                    tokens.append(sub)
+            # 保留完整复合词作为额外 token
+            if '_' in part and len(part) > 1:
                 tokens.append(part)
         else:
             chars = [c for c in part if c.strip()]
@@ -27,25 +36,14 @@ def _tokenize(text: str) -> List[str]:
     return tokens
 
 
-def _get_store(obj):
-    """从 workspace 获取 store，或直接返回 store。"""
-    if hasattr(obj, 'get_store'):
-        return obj.get_store()
-    return obj
-
-
-def _get_project_name(obj) -> str:
-    """从 workspace 或 store 获取项目名。"""
-    if hasattr(obj, 'config'):
-        dp = obj.config.default_project()
-        if dp:
-            return dp
-    if hasattr(obj, 'project_path'):
-        return os.path.basename(obj.project_path)
+def _get_project_name(workspace) -> str:
+    ap = workspace.active_projects
+    if ap:
+        return ap[0]
     return "local"
 
 
-def _bm25_search(store, query: str, ref: str = "",
+def _bm25_search(workspace, query: str, ref: str = "",
                  k1: float = 1.5, b: float = 0.75) -> List[tuple]:
     """BM25 检索，只搜索 brief 和 detail 字段。"""
     query_tokens = _tokenize(query)
@@ -53,14 +51,19 @@ def _bm25_search(store, query: str, ref: str = "",
         return []
 
     docs = []
-    for name, meta in store.walk_metas():
+    rows = workspace.cypher("MATCH (n) RETURN n")
+    for row in rows:
+        n = row.get("n", {})
+        name = n.get("name", "")
+        if not name:
+            continue
         if ref and ref.strip() not in ("", "*"):
             import fnmatch
             if not fnmatch.fnmatch(name.lower(), ref.lower()):
                 continue
 
-        brief = meta.get("brief", "") or ""
-        detail = meta.get("detail", "") or ""
+        brief = n.get("brief", "") or ""
+        detail = n.get("detail", "") or ""
         doc_text = f"{brief} {detail}"
         if not doc_text.strip():
             continue
@@ -69,8 +72,8 @@ def _bm25_search(store, query: str, ref: str = "",
         if not tokens:
             continue
 
-        labels = meta.get("_labels", [])
-        info = get_info(labels, meta)
+        labels = n.get("labels", [])
+        info = get_info(labels, n)
 
         docs.append((name, tokens, info, labels))
 
@@ -92,7 +95,7 @@ def _bm25_search(store, query: str, ref: str = "",
         idf[t] = math.log((N - df.get(t, 0) + 0.5) / (df.get(t, 0) + 0.5) + 1)
 
     results = []
-    for ref, tokens, info, labels in docs:
+    for ref_name, tokens, info, labels in docs:
         tf = Counter(tokens)
         dl = len(tokens)
         score = 0.0
@@ -104,14 +107,14 @@ def _bm25_search(store, query: str, ref: str = "",
             denominator = tf_val + k1 * (1 - b + b * dl / avgdl)
             score += idf.get(t, 0) * numerator / denominator
         if score > 0:
-            results.append((score, ref, info, labels))
+            results.append((score, ref_name, info, labels))
 
     results.sort(key=lambda x: -x[0])
     return results
 
 
 def search_command(
-    obj,  # Workspace or Store
+    workspace,
     ref: str,
     query: str,
     offset: int = 0,
@@ -119,16 +122,15 @@ def search_command(
     current_cwd: str = ""
 ) -> str:
     """BM25 语义检索，搜索实体的 brief 和 detail。"""
-    store = _get_store(obj)
-    if hasattr(store, 'pontis_exists') and not store.pontis_exists:
-        return f"Error: .pontis directory not found in {store.project_path}"
+    if not workspace.pontis_exists:
+        return f"Error: .pontis directory not found in {workspace.project_path}"
 
     page_conf = TOOL_PAGINATION["search"]
     if limit is None:
         limit = page_conf.default_limit
     limit = min(limit, page_conf.max_limit)
 
-    results = _bm25_search(store, query, ref)
+    results = _bm25_search(workspace, query, ref)
 
     if not results:
         return "No objects found"
@@ -139,12 +141,12 @@ def search_command(
     if not page:
         return f"No results at offset {offset}. Total results: {total}"
 
-    project_name = _get_project_name(obj)
+    project_name = _get_project_name(workspace)
 
     lines = []
-    for score, ref, info, labels in page:
+    for score, ref_name, info, labels in page:
         label_str = format_labels(labels)
-        lines.append(f"{project_name}::\t{ref}\t{label_str}\t{info}")
+        lines.append(f"{project_name}::\t{ref_name}\t{label_str}\t{info}")
     output = '\n'.join(lines)
 
     end = offset + len(page)

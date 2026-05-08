@@ -43,13 +43,13 @@ class ToolRegistry:
         """返回 OpenAI tool calling schema 列表。"""
         return [schema for schema, _ in self._tools.values()]
 
-    def execute(self, name: str, arguments: dict, store, workspace=None) -> str:
-        """执行工具调用。传入 workspace 供新式工具使用。"""
+    def execute(self, name: str, arguments: dict, workspace) -> str:
+        """执行工具调用。"""
         if name not in self._tools:
             return f"Unknown tool: {name}"
         _, executor = self._tools[name]
         try:
-            return executor(store, arguments, workspace=workspace)
+            return executor(workspace, arguments)
         except Exception as e:
             return f"Tool error ({name}): {type(e).__name__}: {e}"
 
@@ -394,19 +394,19 @@ def _build_agent_schema() -> dict:
 
 # ==================== Tool Executors ====================
 
-def _exec_glob(store, arguments: dict, *, workspace=None) -> str:
+def _exec_glob(workspace, arguments: dict) -> str:
     from tool.glob.tool import glob_command
     return glob_command(
-        workspace or store, arguments["ref"],
+        workspace, arguments["ref"],
         offset=arguments.get("offset", 0),
         limit=arguments.get("limit"),
     )
 
 
-def _exec_grep(store, arguments: dict, *, workspace=None) -> str:
+def _exec_grep(workspace, arguments: dict) -> str:
     from tool.FS_grep.tool import grep_command
     return grep_command(
-        store,
+        workspace,
         pattern=arguments["pattern"],
         path=arguments.get("path", ""),
         output_mode=arguments.get("output_mode", "files_with_matches"),
@@ -417,20 +417,20 @@ def _exec_grep(store, arguments: dict, *, workspace=None) -> str:
     )
 
 
-def _exec_meta(store, arguments: dict, *, workspace=None) -> str:
+def _exec_meta(workspace, arguments: dict) -> str:
     from tool.meta.tool import meta_command
     return meta_command(
-        workspace or store,
+        workspace,
         ref=arguments["ref"],
         all=arguments.get("all", False),
         property=arguments.get("property"),
     )
 
 
-def _exec_search(store, arguments: dict, *, workspace=None) -> str:
+def _exec_search(workspace, arguments: dict) -> str:
     from tool.search.tool import search_command
     return search_command(
-        workspace or store,
+        workspace,
         ref=arguments["ref"],
         query=arguments["query"],
         offset=arguments.get("offset", 0),
@@ -438,62 +438,62 @@ def _exec_search(store, arguments: dict, *, workspace=None) -> str:
     )
 
 
-def _exec_bash(store, arguments: dict, *, workspace=None) -> str:
+def _exec_bash(workspace, arguments: dict) -> str:
     from tool.SH_bash.tool import bash_command
     return bash_command(
         command=arguments["command"],
-        cwd=store.project_path,
+        cwd=workspace.project_path,
         timeout_ms=arguments.get("timeout", 120) * 1000,
     )
 
 
-def _exec_query(store, arguments: dict, *, workspace=None) -> str:
+def _exec_query(workspace, arguments: dict) -> str:
     from tool.DB_query.tool import query_command
     return query_command(
-        store,
+        workspace,
         sql=arguments["sql"],
         file=arguments["file"],
         limit=arguments.get("limit", 100),
     )
 
 
-def _exec_cypher(store, arguments: dict, *, workspace=None) -> str:
+def _exec_cypher(workspace, arguments: dict) -> str:
     from tool.cypher.tool import cypher_command
     return cypher_command(
-        workspace or store,
+        workspace,
         query=arguments["query"],
         offset=arguments.get("offset", 0),
         limit=arguments.get("limit", 100),
     )
 
 
-def _exec_create_entity(store, arguments: dict, *, workspace=None) -> str:
+def _exec_create_entity(workspace, arguments: dict) -> str:
     from tool.create_entity.tool import create_entity_command
     return create_entity_command(
-        workspace or store,
+        workspace,
         ref=arguments["ref"],
         meta=arguments.get("meta"),
         edges=arguments.get("edges"),
     )
 
 
-def _exec_update_meta(store, arguments: dict, *, workspace=None) -> str:
+def _exec_update_meta(workspace, arguments: dict) -> str:
     from tool.update_meta.tool import update_meta_command
     return update_meta_command(
-        workspace or store,
+        workspace,
         ref=arguments["ref"],
         fields=arguments["fields"],
     )
 
 
-def _exec_add_edge(store, arguments: dict, *, workspace=None) -> str:
+def _exec_add_edge(workspace, arguments: dict) -> str:
     from tool.add_edge.tool import add_edge_command
-    return add_edge_command(workspace or store, edges=arguments["edges"])
+    return add_edge_command(workspace, edges=arguments["edges"])
 
 
-def _exec_delete(store, arguments: dict, *, workspace=None) -> str:
+def _exec_delete(workspace, arguments: dict) -> str:
     from tool.delete.tool import delete_command
-    return delete_command(workspace or store, ref=arguments["ref"])
+    return delete_command(workspace, ref=arguments["ref"])
 
 
 # ==================== Schema & Executor Tables ====================
@@ -590,10 +590,10 @@ def build_writer_registry() -> ToolRegistry:
 
 # ==================== 向后兼容 ====================
 
-def execute_tool(name: str, arguments: dict, store, workspace=None) -> str:
+def execute_tool(name: str, arguments: dict, workspace) -> str:
     """执行工具（向后兼容）。"""
     from agent.config import AgentSpec, resolve_mode
     spec = AgentSpec()
     resolve_mode(spec)
     registry = build_registry(spec)
-    return registry.execute(name, arguments, store, workspace=workspace)
+    return registry.execute(name, arguments, workspace)

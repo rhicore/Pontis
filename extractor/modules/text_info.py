@@ -10,7 +10,7 @@
 import os
 import logging
 from typing import Optional, Dict, Any, Set
-from storage import Store
+from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -128,38 +128,34 @@ def is_text_file(filename: str) -> bool:
     return False
 
 
-def generate(store: Store) -> None:
+def generate(workspace: Workspace) -> None:
     """为所有文本文件节点生成信息"""
     logger.info("=== Generating Text info ===")
 
-    # 查找所有可能的文本文件
     processed = set()
 
-    for pattern in ['*.txt', '*.md', '*.sql', '*.py', '*.js', '*.json', '*.yaml', '*.xml']:
-        for path in store.find_nodes(pattern):
-            if path not in processed:
-                processed.add(path)
-                try:
-                    _generate_for_text(path, store)
-                except Exception as e:
-                    logger.warning(f"Failed to generate info for {path}: {e}")
-
-    # 还要检查其他后缀
-    for path in store.find_nodes("*"):
-        if path in processed:
+    # 通过统一索引发现文本文件（含虚拟实体）
+    rows = workspace.cypher("MATCH (n) RETURN n")
+    for row in rows:
+        props = row.get("n", {})
+        name = props.get("name", "")
+        basename = os.path.basename(name)
+        if not is_text_file(basename):
             continue
-        basename = os.path.basename(path)
-        if is_text_file(basename):
-            processed.add(path)
-            try:
-                _generate_for_text(path, store)
-            except Exception as e:
-                logger.warning(f"Failed to generate info for {path}: {e}")
+        rel_path = props.get("path", name)
+        if rel_path in processed:
+            continue
+        processed.add(rel_path)
+        try:
+            _generate_for_text(rel_path, workspace)
+        except Exception as e:
+            logger.warning(f"Failed to generate info for {rel_path}: {e}")
 
 
-def _generate_for_text(path: str, store: Store) -> bool:
+def _generate_for_text(path: str, workspace: Workspace) -> bool:
     """为单个文本文件生成通用元信息"""
-    meta = store.get_meta(path)
+    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": path})
+    meta = meta_rows[0].get("n") if meta_rows else None
     if not meta:
         return False
 
@@ -168,16 +164,16 @@ def _generate_for_text(path: str, store: Store) -> bool:
         return False
 
     rel_path = meta.get("path")
-    file_path = os.path.join(store.project_path, rel_path) if rel_path else None
-    if not file_path or not os.path.exists(file_path):
+    if not rel_path or not workspace.data_exists(rel_path):
         return False
 
     try:
         # 检测编码
+        file_path = workspace.resolve_data_path(rel_path)
         encoding = _detect_encoding(file_path)
 
         # 读取内容
-        with open(file_path, 'r', encoding=encoding, errors='ignore') as f:
+        with workspace.open_file(rel_path, 'r', encoding=encoding, errors='ignore') as f:
             content = f.read()
 
         # 基础文本统计
@@ -196,7 +192,7 @@ def _generate_for_text(path: str, store: Store) -> bool:
         char_stats = _analyze_characters(content)
 
         # 更新meta
-        store.set_meta(path, {
+        workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": path, "props": {
             "encoding": encoding,
             "char_count": char_count,
             "line_count": line_count,
@@ -205,7 +201,7 @@ def _generate_for_text(path: str, store: Store) -> bool:
             "avg_line_length": avg_line_length,
             "max_line_length": max_line_length,
             **char_stats,
-        })
+        }})
 
         logger.info(f"  Text info: {path} ({line_count} lines, {char_count} chars)")
         return True

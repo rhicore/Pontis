@@ -8,37 +8,35 @@
 独立执行：
     python -m extractor.csv_column_stats ./my_data
 """
-import os
 import logging
 from typing import Optional, Dict, Any
-from storage import Store
+from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
 
-def generate(store: Store) -> None:
+def generate(workspace: Workspace) -> None:
     """为所有CSV/TSV文件的列生成统计"""
     logger.info("=== Generating CSV column statistics ===")
 
-    for csv_ref in store.find_nodes("*.csv"):
-        for col_ref in store.find_nodes(f"{csv_ref}::*:col"):
-            try:
-                _generate_for_column(col_ref, csv_ref, store, delimiter=',')
-            except Exception as e:
-                logger.warning(f"Failed to generate stats for {col_ref}: {e}")
-
-    for tsv_ref in store.find_nodes("*.tsv"):
-        for col_ref in store.find_nodes(f"{tsv_ref}::*:col"):
-            try:
-                _generate_for_column(col_ref, tsv_ref, store, delimiter='\t')
-            except Exception as e:
-                logger.warning(f"Failed to generate stats for {col_ref}: {e}")
+    for ext, delim in [('.csv', ','), ('.tsv', '\t')]:
+        csv_rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext}' RETURN n")
+        for csv_row in csv_rows:
+            csv_ref = csv_row["n"]["name"]
+            col_rows = workspace.cypher(f'MATCH (f {{name: "{csv_ref}"}})--(c:col) RETURN c')
+            for col_row in col_rows:
+                col_ref = col_row["c"]["name"]
+                try:
+                    _generate_for_column(col_ref, csv_ref, workspace, delimiter=delim)
+                except Exception as e:
+                    logger.warning(f"Failed to generate stats for {col_ref}: {e}")
 
 
-def _generate_for_column(col_ref: str, csv_ref: str, store: Store,
+def _generate_for_column(col_ref: str, csv_ref: str, workspace: Workspace,
                          delimiter: str) -> bool:
     """为单个CSV列生成统计"""
-    meta = store.get_meta(col_ref)
+    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": col_ref})
+    meta = meta_rows[0].get("n") if meta_rows else None
     if not meta:
         return False
 
@@ -46,17 +44,18 @@ def _generate_for_column(col_ref: str, csv_ref: str, store: Store,
         return False
 
     col_name = col_ref
-    csv_meta = store.get_meta(csv_ref) or {}
+    csv_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": csv_ref})
+    csv_meta = csv_meta_rows[0].get("n") if csv_meta_rows else None or {}
     csv_rel_path = csv_meta.get("path", csv_ref)
-    csv_path = os.path.join(store.project_path, csv_rel_path)
-    if not csv_path or not os.path.exists(csv_path):
+    csv_path = workspace.resolve_data_path(csv_rel_path)
+    if not csv_path or not workspace.data_exists(csv_rel_path):
         return False
 
     stats = _calculate_stats(csv_path, col_name, delimiter)
     if stats is None:
         return False
 
-    store.set_meta(col_ref, stats)
+    workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": col_ref, "props": stats})
     logger.info(f"  Stats generated: {col_ref}")
     return True
 

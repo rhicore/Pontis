@@ -41,6 +41,7 @@ class MetaTypeConfig:
     max_detail_lines: Optional[int] = 15
     folded_keys: Set[str] = field(default_factory=set)
     untruncated_keys: Set[str] = field(default_factory=lambda: {"detail", "brief"})
+    adjacency_keys: Set[str] = field(default_factory=set)  # 默认显示的邻接类型
 
 
 # ========== 辅助函数 ==========
@@ -71,7 +72,7 @@ def _c(d, suffix):
 
 INFO_TYPE_CONFIG = {
     # 文件段
-    "file":     InfoTypeConfig(info_fn=lambda m: {"size": _v(m, "file_size")}),
+    "file":     InfoTypeConfig(info_fn=lambda m: {"path": _v(m, "path"), "size": _v(m, "file_size")}),
     "db":       InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'table_count')} tables, {_v(m,'view_count')} views"}),
     "csv":      InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'row_count')} rows, {_v(m,'column_count')} cols"}),
     "tsv":      InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'row_count')} rows, {_v(m,'column_count')} cols"}),
@@ -104,7 +105,7 @@ INFO_TYPE_CONFIG = {
     "example":     InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     # 其他
     "chunk":    InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m, 'char_count')} chars"}),
-    "directory": InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m, 'file_count')} files, {_v(m, 'subdir_count')} dirs"}),
+    "directory": InfoTypeConfig(info_fn=lambda m: {"path": _v(m, "path"), "stats": f"{_v(m, 'file_count')} files, {_v(m, 'subdir_count')} dirs"}),
 }
 
 
@@ -130,10 +131,11 @@ def resolve_info(entity_labels: List[str], meta: dict) -> str:
 META_TYPE_CONFIG = {
     # 文件段
     "file": MetaTypeConfig(
-        default_keys=["file_size", "brief", "detail"],
+        default_keys=["path", "file_size", "brief", "detail"],
     ),
     "db": MetaTypeConfig(
         default_keys=["table_count", "view_count", "index_count", "file_size", "brief", "detail"],
+        adjacency_keys={"table", "view"},
     ),
     "csv": MetaTypeConfig(
         default_keys=["row_count", "column_count", "delimiter", "line_count", "char_count", "file_size"],
@@ -158,9 +160,11 @@ META_TYPE_CONFIG = {
     # 结构段
     "table": MetaTypeConfig(
         default_keys=["row_count", "column_count", "primary_key", "fk", "rel", "disambig", "brief", "detail"],
+        adjacency_keys={"col", "fk", "rel"},
     ),
     "view": MetaTypeConfig(
         default_keys=["row_count", "column_count", "brief", "detail"],
+        adjacency_keys={"col", "fk"},
     ),
     "col": MetaTypeConfig(
         default_keys=["cardinality", "null_count", "null_percentage",
@@ -169,6 +173,7 @@ META_TYPE_CONFIG = {
                        "min_length", "max_length", "avg_length",
                        "fk", "disambig", "brief", "detail"],
         folded_keys={"topk"},
+        adjacency_keys={"fk", "rel", "disambig", "table"},
     ),
     # 关系段
     "fk": MetaTypeConfig(
@@ -205,7 +210,7 @@ META_TYPE_CONFIG = {
         default_keys=["char_count"],
     ),
     "directory": MetaTypeConfig(
-        default_keys=["child_count", "file_count", "subdir_count"],
+        default_keys=["path", "child_count", "file_count", "subdir_count"],
     ),
     # 兜底
     "default": MetaTypeConfig(
@@ -222,6 +227,7 @@ def resolve_meta_config(entity_labels: List[str]) -> MetaTypeConfig:
     """
     merged_keys = []
     merged_folded: Set[str] = set()
+    merged_adjacency: Set[str] = set()
     seen_keys: Set[str] = set()
 
     for segment in entity_labels:
@@ -232,6 +238,7 @@ def resolve_meta_config(entity_labels: List[str]) -> MetaTypeConfig:
                         merged_keys.append(k)
                         seen_keys.add(k)
                 merged_folded.update(cfg.folded_keys)
+                merged_adjacency.update(cfg.adjacency_keys)
 
     if not merged_keys:
         return META_TYPE_CONFIG["default"]
@@ -239,6 +246,7 @@ def resolve_meta_config(entity_labels: List[str]) -> MetaTypeConfig:
     return MetaTypeConfig(
         default_keys=merged_keys,
         folded_keys=merged_folded,
+        adjacency_keys=merged_adjacency,
     )
 
 

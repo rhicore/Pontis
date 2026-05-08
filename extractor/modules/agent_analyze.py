@@ -10,7 +10,7 @@
 """
 import logging
 
-from storage import Store
+from storage.workspace import Workspace
 import os
 
 logger = logging.getLogger(__name__)
@@ -78,13 +78,13 @@ COORDINATOR_PROMPT = """\
 """
 
 
-def generate(store: Store) -> None:
+def generate(workspace: Workspace) -> None:
     """为所有实体生成 AI 总结。"""
     from agent.config import create_agent, AgentSpec
     from agent.guardrail import build_guardrails
     from agent.utils import load_agent_config
 
-    config = load_agent_config(store.project_path)
+    config = load_agent_config(workspace.project_path)
     if not config["api_key"]:
         logger.warning("Agent not configured (no API key), skipping agent analyze")
         return
@@ -92,10 +92,10 @@ def generate(store: Store) -> None:
     logger.info("=== Agent Analyze (summaries only) ===")
 
     spec = AgentSpec(mode="writer")
-    project_name = os.path.basename(os.path.abspath(store.project_path))
+    project_name = os.path.basename(os.path.abspath(workspace.project_path))
     spec.projects = [project_name]
     spec.guardrails = build_guardrails(spec, ["round_limit"])
-    agent = create_agent(store.project_path, spec)
+    agent = create_agent(workspace.project_path, spec)
 
     agent.chat(COORDINATOR_PROMPT)
     logger.info("=== Agent Analyze done ===")

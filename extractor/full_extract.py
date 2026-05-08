@@ -12,7 +12,7 @@ Usage:
 import logging
 from typing import List
 
-from extractor.engine import run_pipeline, init_store
+from extractor.engine import run_pipeline, init_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +59,11 @@ PIPELINE: List[str] = [
 
 def extract(target: str, config_path: str = None, verbose: bool = False) -> None:
     """全量提取入口"""
-    store, config = init_store(target, config_path, verbose)
+    workspace, config = init_workspace(target, config_path, verbose)
 
-    logger.info(f"=== Pontis Extractor: {store.project_path} ===")
+    logger.info(f"=== Pontis Extractor: {workspace.project_path} ===")
     logger.info(f"Pipeline: {len(PIPELINE)} modules\n")
 
-    run_pipeline(PIPELINE, store, config)
+    run_pipeline(PIPELINE, workspace, config)
 
     logger.info("\n=== Extraction complete ===")
