@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Tuple
 
 from tool.config import TOOL_PAGINATION
 from tool.utils.formatters import format_labels, get_info
+from tool.utils.entity_refs import row_display_ref, path_ref_to_internal
 
 
 # ═══════════════════════════════════════════════════════════
@@ -285,23 +286,29 @@ def glob_command(workspace, ref: str, offset: int = 0,
         return "No objects found"
 
     project_name = _get_project_name(workspace)
+    store = workspace._get_store(project)
 
     # 格式化：取最后一个变量的信息作为主结果
     all_items = []
     for row in results:
         main_info = None
+        main_var = None
         for var_key in reversed(list(row.keys())):
             info = row.get(var_key)
             if info and isinstance(info, dict):
                 main_info = info
+                main_var = var_key
                 break
         if not main_info:
             continue
 
-        name = main_info.get("name", "?")
+        name = row_display_ref(store, row, main_var, main_info) if store else main_info.get("name", "?")
         labels = main_info.get("labels", [])
-        meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": name})
-        meta = meta_rows[0].get("n") if meta_rows else {}
+        meta = {}
+        if store:
+            eid = store._resolve_to_id(path_ref_to_internal(name))
+            if eid:
+                meta = store._get_meta(eid) or {}
         info_str = get_info(labels, meta or {})
         label_str = format_labels(labels)
         all_items.append((name, label_str, info_str))

@@ -1,6 +1,5 @@
-"""Update meta tool — 通过 Cypher SET 更新实体元数据。"""
+"""Update meta tool — 更新实体元数据。"""
 
-from tool.utils import execute_cypher
 from tool.utils.resolve import resolve_entity
 
 _ALLOWED_FIELDS = {"brief", "detail"}
@@ -29,19 +28,16 @@ def update_meta_command(workspace, ref: str, fields: dict) -> str:
     if err:
         return f"Error: {err}"
 
-    # 构造 Cypher
-    cypher = 'MATCH (n {id: $eid}) SET n += $props'
+    project = ref.split("::", 1)[0] if "::" in ref else None
+    store = workspace._get_store(project)
+    if store is None:
+        return "Error: no active store"
 
-    results = execute_cypher(workspace, cypher, params={"eid": eid, "props": safe_fields})
+    if eid not in store._id_index:
+        return f"Error: entity disappeared before update (ref={ref})"
 
-    if not results:
-        return f"Error: update failed (ref={ref})"
-
-    updated = results[0].get("updated", [])
-    if not updated:
-        return f"Error: update failed (ref={ref})"
-
-    name = updated[0].get("name", "?")
+    store._set_meta(eid, safe_fields)
+    name = store._id_index.get(eid, {}).get("name", ref)
     written = []
     for k, v in safe_fields.items():
         if k == "detail":

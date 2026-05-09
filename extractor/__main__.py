@@ -2,11 +2,6 @@
 """Pontis extractor CLI
 
 Usage:
-    # 运行完整 pipeline
-    python -m extractor ./my_data
-    python -m extractor ./my_data -v
-
-    # 运行单个模块
     python -m extractor run db_column_stats ./my_data
     python -m extractor run db_column_stats,db_table_relations ./my_data -v
 
@@ -21,15 +16,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from storage.workspace import Workspace
-from extractor.engine import get_registry, CONFIG_MODULES, run_pipeline, init_workspace
-
-
-def _run_full(args):
-    """运行完整 pipeline。"""
-    from extractor.full_extract import extract
-    extract(args.target, getattr(args, 'config', None), args.verbose)
-
+from extractor.engine import get_registry, run_pipeline, init_workspace
 
 def _run_modules(args):
     """运行指定的模块（逗号分隔）。"""
@@ -58,27 +45,21 @@ def _list_modules(args):
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] in ('run', 'list'):
-        parser = argparse.ArgumentParser(description="Pontis extractor")
-        subparsers = parser.add_subparsers(dest='command')
-        subparsers.add_parser('list', help='List available modules')
-        run_parser = subparsers.add_parser('run', help='Run specified modules')
-        run_parser.add_argument('modules', help='Module name(s), comma-separated')
-        run_parser.add_argument('target', help='Directory to scan')
-        run_parser.add_argument('-c', '--config', help='Config file path')
-        run_parser.add_argument('-v', '--verbose', action='store_true')
-        args = parser.parse_args()
-        if args.command == 'list':
-            _list_modules(args)
-        elif args.command == 'run':
-            _run_modules(args)
-    else:
-        # 完整 pipeline（兼容旧用法 python -m extractor ./my_data）
-        parser = argparse.ArgumentParser(description="Pontis extractor")
-        parser.add_argument('target', help='Directory to scan')
-        parser.add_argument('-c', '--config', help='Config file path')
-        parser.add_argument('-v', '--verbose', action='store_true')
-        _run_full(parser.parse_args())
+    parser = argparse.ArgumentParser(description="Pontis extractor")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("list", help="List available modules")
+    run_parser = subparsers.add_parser("run", help="Run specified modules")
+    run_parser.add_argument("modules", help="Module name(s), comma-separated")
+    run_parser.add_argument("target", help="Directory to scan")
+    run_parser.add_argument("-c", "--config", help="Config file path")
+    run_parser.add_argument("-v", "--verbose", action="store_true")
+
+    args = parser.parse_args()
+    if args.command == "list":
+        _list_modules(args)
+    elif args.command == "run":
+        _run_modules(args)
 
 
 if __name__ == '__main__':

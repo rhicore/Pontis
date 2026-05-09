@@ -196,9 +196,39 @@ class FSStore(Store):
             return eid
         if ref in self._id_index:
             return ref
-        # -- 分隔路径回退
         if "--" in ref:
-            bare = ref.rsplit("--", 1)[-1]
+            parts = ref.split("--")
+            current_ids = self._name_to_ids(parts[0])
+            matched_prefix = bool(current_ids)
+            for seg in parts[1:]:
+                if not current_ids:
+                    break
+                next_ids = []
+                for current_id in current_ids:
+                    for adj_id in self._adjacent.get(current_id, set()):
+                        adj_props = self._id_index.get(adj_id, {})
+                        if adj_props.get("name") == seg:
+                            next_ids.append(adj_id)
+                current_ids = next_ids
+                if current_ids:
+                    matched_prefix = True
+            if len(current_ids) == 1:
+                return current_ids[0]
+            if len(current_ids) > 1:
+                best_labeled = None
+                for candidate in current_ids:
+                    labels = self._get_labels_by_id(candidate)
+                    if labels:
+                        if self._adjacent.get(candidate):
+                            return candidate
+                        if best_labeled is None:
+                            best_labeled = candidate
+                if best_labeled:
+                    return best_labeled
+                return current_ids[0]
+            if matched_prefix:
+                return None
+            bare = parts[-1]
             eid = self._name_to_id(bare)
             if eid:
                 return eid

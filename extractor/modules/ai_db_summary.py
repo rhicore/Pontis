@@ -15,6 +15,7 @@ from typing import List
 from storage.workspace import Workspace
 from extractor.modules.utils.loader import load_config
 from extractor.modules.utils.ai_utils import generate_detail_and_brief
+from extractor.modules.utils.refs import db_column_ref, db_table_ref, db_view_ref, get_entity_meta
 
 logger = logging.getLogger(__name__)
 
@@ -82,18 +83,17 @@ def _get_table_info(db_ref: str, workspace: Workspace) -> List[dict]:
     tbl_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t:table) RETURN t')
     for tbl_row in tbl_rows:
         table_ref = tbl_row["t"]["name"]
-        table_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": table_ref})
-        table_meta = table_meta_rows[0].get("n") if table_meta_rows else None
+        table_meta = get_entity_meta(workspace, db_table_ref(db_ref, table_ref))
         if table_meta:
             columns = []
             col_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
             for col_row in col_rows:
-                col_ref = col_row["c"]["name"]
-                col_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": col_ref})
-                col_meta = col_meta_rows[0].get("n") if col_meta_rows else None
+                col_name = col_row["c"]["name"]
+                col_ref = db_column_ref(db_ref, table_ref, col_name)
+                col_meta = get_entity_meta(workspace, col_ref)
                 if col_meta:
                     columns.append({
-                        "name": col_ref,
+                        "name": col_meta.get("name", col_name),
                         "type": col_meta.get("col_type", "?"),
                         "detail": col_meta.get("detail", ""),
                     })
@@ -115,8 +115,7 @@ def _get_view_info(db_ref: str, workspace: Workspace) -> List[dict]:
     view_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(v:view) RETURN v')
     for view_row in view_rows:
         view_ref = view_row["v"]["name"]
-        view_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": view_ref})
-        view_meta = view_meta_rows[0].get("n") if view_meta_rows else None
+        view_meta = get_entity_meta(workspace, db_view_ref(db_ref, view_ref))
         if view_meta:
             views.append({
                 "name": view_ref,

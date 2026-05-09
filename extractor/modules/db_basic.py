@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 from typing import List
 from storage.workspace import Workspace
+from extractor.modules.utils.refs import db_column_ref, db_table_ref, db_view_ref
 
 logger = logging.getLogger(__name__)
 
@@ -103,16 +104,19 @@ def _process_database(rel_path: str, workspace: Workspace) -> None:
             pk_col = next((col[1] for col in columns if col[5] == 1), None)
 
             ts = datetime.now().isoformat()
-            workspace.cypher(f'CREATE (t:table {{name: "{safe_name}", created_at: "{ts}", primary_key: "{pk_col or ""}"}})')
-            workspace.cypher(f'MATCH (d {{name: "{basename}"}}),(t {{name: "{safe_name}"}}) CREATE (d)--(t)')
+            table_ref = db_table_ref(basename, safe_name)
+            workspace.cypher(
+                f'CREATE (t:table {{ref: "{table_ref}", created_at: "{ts}", primary_key: "{pk_col or ""}"}})'
+            )
 
             for col in columns:
                 col_name = col[1]
                 col_type = _normalize_type(col[2])
                 safe_col = col_name.replace("/", "_").replace("\\", "_")
-
-                workspace.cypher(f'CREATE (c:col:{col_type} {{name: "{safe_col}", created_at: "{ts}", col_type: "{col_type}"}})')
-                workspace.cypher(f'MATCH (t {{name: "{safe_name}"}}),(c {{name: "{safe_col}"}}) CREATE (t)--(c)')
+                col_ref = db_column_ref(basename, safe_name, safe_col)
+                workspace.cypher(
+                    f'CREATE (c:col:{col_type} {{ref: "{col_ref}", created_at: "{ts}", col_type: "{col_type}"}})'
+                )
 
             logger.info(f"  Entity: {safe_name}")
 
@@ -122,8 +126,8 @@ def _process_database(rel_path: str, workspace: Workspace) -> None:
             safe_name = view_name.replace("/", "_").replace("\\", "_")
 
             ts = datetime.now().isoformat()
-            workspace.cypher(f'CREATE (v:view {{name: "{safe_name}", created_at: "{ts}"}})')
-            workspace.cypher(f'MATCH (d {{name: "{basename}"}}),(v {{name: "{safe_name}"}}) CREATE (d)--(v)')
+            view_ref = db_view_ref(basename, safe_name)
+            workspace.cypher(f'CREATE (v:view {{ref: "{view_ref}", created_at: "{ts}"}})')
 
             try:
                 cursor.execute(f'PRAGMA table_info("{view_name}")')
@@ -131,9 +135,10 @@ def _process_database(rel_path: str, workspace: Workspace) -> None:
                     col_name = col[1]
                     col_type = _normalize_type(col[2])
                     safe_col = col_name.replace("/", "_").replace("\\", "_")
-
-                    workspace.cypher(f'CREATE (c:col:{col_type} {{name: "{safe_col}", created_at: "{ts}", col_type: "{col_type}", source_view: "{view_name}"}})')
-                    workspace.cypher(f'MATCH (v {{name: "{safe_name}"}}),(c {{name: "{safe_col}"}}) CREATE (v)--(c)')
+                    col_ref = db_column_ref(basename, safe_name, safe_col)
+                    workspace.cypher(
+                        f'CREATE (c:col:{col_type} {{ref: "{col_ref}", created_at: "{ts}", col_type: "{col_type}", source_view: "{view_name}"}})'
+                    )
             except Exception:
                 pass
 

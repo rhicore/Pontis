@@ -1,10 +1,6 @@
-"""Pontis metadata extractor
+"""Pontis metadata extractor engine."""
 
-Usage:
-    from extractor import extract
-    extract("./my_data")
-"""
-from extractor.full_extract import extract
+from extractor.engine import RunOptions, get_registry, init_workspace, run_modules
 from extractor.modules.utils.loader import Config
 
-__all__ = ['extract', 'Config']
+__all__ = ["RunOptions", "get_registry", "init_workspace", "run_modules", "Config"]

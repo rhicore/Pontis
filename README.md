@@ -62,11 +62,8 @@ PONTIS_EXTRACTOR_API_KEY=sk-xxxx
 ### 提取数据
 
 ```bash
-# 对任意项目文件夹进行数据提取
-python -m extractor ./my_project
-
-# 强制重新提取
-python -m extractor ./my_project --force
+# 显式指定要运行的模块
+python -m extractor run db_basic,csv_basic,db_column_stats ./my_project
 ```
 
 ### 启动 CLI 交互
@@ -90,7 +87,7 @@ python -m scripts.front-end
 │                      用户项目文件夹                            │
 │         event.db, expense.csv, config.json, report.md        │
 └────────────────────────┬─────────────────────────────────────┘
-                         │  python -m extractor ./
+                         │  python -m extractor run <modules> ./
                          ▼
 ┌──────────────────────────────────────────────────────────────┐
 │              Extractor 管线 (9 Phase)                         │
@@ -261,7 +258,6 @@ Pontis/
 │   └── prompt/         # Prompt 组装层
 ├── extractor/          # 数据提取管线
 │   ├── engine.py       # 提取引擎主入口
-│   ├── full_extract.py # 全量提取
 │   ├── bird_extract.py # BIRD 数据集专用提取
 │   └── modules/        # 各阶段提取模块
 ├── storage/            # 存储抽象层

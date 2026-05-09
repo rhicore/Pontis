@@ -10,6 +10,7 @@
 import logging
 from typing import Optional, List, Any
 from storage.workspace import Workspace
+from extractor.modules.utils.refs import db_column_ref, get_entity_meta, set_entity_meta
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,8 @@ def generate(workspace: Workspace, sample_size: int = 10) -> None:
                 table_ref = tbl_row["t"]["name"]
                 col_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
                 for col_row in col_rows:
-                    col_ref = col_row["c"]["name"]
+                    col_name = col_row["c"]["name"]
+                    col_ref = db_column_ref(db_ref, table_ref, col_name)
                     try:
                         _generate_for_column(col_ref, db_ref, table_ref, workspace, sample_size)
                     except Exception as e:
@@ -38,15 +40,14 @@ def generate(workspace: Workspace, sample_size: int = 10) -> None:
 def _generate_for_column(col_ref: str, db_ref: str, table_ref: str,
                          workspace: Workspace, sample_size: int) -> bool:
     """为单个列生成sample数据并存入meta根级别"""
-    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": col_ref})
-    meta = meta_rows[0].get("n") if meta_rows else None
+    meta = get_entity_meta(workspace, col_ref)
     if not meta:
         return False
 
     if "sample" in meta:
         return False
 
-    col_name = col_ref
+    col_name = meta.get("name", col_ref)
     table_name = table_ref
     db_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": db_ref})
     db_meta = db_meta_rows[0].get("n") if db_meta_rows else None
@@ -58,8 +59,7 @@ def _generate_for_column(col_ref: str, db_ref: str, table_ref: str,
     if samples is None:
         return False
 
-    workspace.cypher('MATCH (n {name: $name}) SET n += $props',
-                  params={"name": col_ref, "props": {"sample": samples}})
+    set_entity_meta(workspace, col_ref, {"sample": samples})
     logger.info(f"  Sample added: {col_ref} ({len(samples)} items)")
     return True
 

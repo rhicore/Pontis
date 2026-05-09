@@ -401,7 +401,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
     # Phase 1: 提取
     if not args.skip_extract:
         tracker.start_extract(db_id)
-        from extractor.bird_extract import extract_one
+        from scripts.BIRD.extract import extract_one
         t0 = time.time()
         r = extract_one(str(db_dir), force=args.force_extract)
         parts = []

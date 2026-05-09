@@ -14,6 +14,7 @@ from typing import List
 from storage.workspace import Workspace
 from extractor.modules.utils.loader import load_config
 from extractor.modules.utils.ai_utils import generate_detail_and_brief
+from extractor.modules.utils.refs import db_column_ref, db_table_ref, get_entity_meta, set_entity_meta
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +43,8 @@ def generate(workspace: Workspace) -> None:
 
 
 def _generate_for_table(table_ref: str, db_ref: str, workspace: Workspace, llm) -> bool:
-    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": table_ref})
-    meta = meta_rows[0].get("n") if meta_rows else None
+    table_node_ref = db_table_ref(db_ref, table_ref)
+    meta = get_entity_meta(workspace, table_node_ref)
     if not meta:
         return False
 
@@ -63,7 +64,7 @@ def _generate_for_table(table_ref: str, db_ref: str, workspace: Workspace, llm) 
             updates["brief"] = brief
 
         if updates:
-            workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": table_ref, "props": updates})
+            set_entity_meta(workspace, table_node_ref, updates)
             logger.info(f"  AI summary: {table_ref}")
             return True
     except Exception as e:
@@ -76,12 +77,12 @@ def _get_column_info(db_ref: str, table_ref: str, workspace: Workspace) -> List[
     columns = []
     col_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
     for col_row in col_rows:
-        col_ref = col_row["c"]["name"]
-        col_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": col_ref})
-        col_meta = col_meta_rows[0].get("n") if col_meta_rows else None
+        col_name = col_row["c"]["name"]
+        col_ref = db_column_ref(db_ref, table_ref, col_name)
+        col_meta = get_entity_meta(workspace, col_ref)
         if col_meta:
             columns.append({
-                "name": col_ref,
+                "name": col_meta.get("name", col_name),
                 "type": col_meta.get("col_type", "?"),
                 "detail": col_meta.get("detail", ""),
             })

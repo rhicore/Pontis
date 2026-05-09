@@ -86,6 +86,7 @@ file, db, csv, json, table, view, col, fk, rel, overlap, dir, knowledge, chunk, 
 - 结果截断时末尾提示总数，用 offset 翻页
 - 纯 glob（无 : 标签且无 / 遍历）按文件名匹配
 - 名称 pattern 支持 *、?、[] 三种 glob 通配符
+- 不要用 `glob("*")` 做起手式全图枚举；优先使用 `*.sqlite`、`*:file:db/*:table`、`<db>/*:table`、`<table>/*:col` 这类定向查询
 """
 
 

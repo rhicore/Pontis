@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from storage.workspace import Workspace
 from extractor.modules.utils.loader import Config
 from extractor.modules.utils.ai_utils import generate_with_prefix
+from extractor.modules.utils.refs import db_column_ref, db_table_ref, get_entity_meta, set_entity_meta
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ def _process_database(db_ref: str, workspace: Workspace, llm) -> None:
         table_ref = tbl_row["t"]["name"]
         col_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
         for col_row in col_rows:
-            col_ref = col_row["c"]["name"]
+            col_ref = db_column_ref(db_ref, table_ref, col_row["c"]["name"])
             table_groups[table_ref].append(col_ref)
 
     if not table_groups:
@@ -81,8 +82,7 @@ def _process_table(db_ref: str, table_ref: str, col_refs: list,
     """处理一张表：构建共享前缀，并行处理各列。"""
     pending = []
     for ref in col_refs:
-        meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": ref})
-        meta = meta_rows[0].get("n") if meta_rows else None
+        meta = get_entity_meta(workspace, ref)
         if meta and not (meta.get("brief") and meta.get("detail")):
             pending.append((ref, meta))
 
@@ -133,7 +133,7 @@ def _process_column(col_ref: str, col_block: str,
         updates["brief"] = brief
 
     if updates:
-        workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": col_ref, "props": updates})
+        set_entity_meta(workspace, col_ref, updates)
         return True
     return False
 
@@ -142,8 +142,7 @@ def _build_table_info(db_ref: str, table_ref: str, workspace: Workspace) -> str:
     """构建表级信息（同表所有列共用的 prompt 前缀）。"""
     parts = [f"数据库: {db_ref}", f"表: {table_ref}"]
 
-    table_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": table_ref})
-    table_meta = table_meta_rows[0].get("n") if table_meta_rows else None or {}
+    table_meta = get_entity_meta(workspace, db_table_ref(db_ref, table_ref)) or {}
     if table_meta.get("row_count") is not None:
         parts.append(f"行数: {table_meta['row_count']}")
     if table_meta.get("brief"):
@@ -153,11 +152,11 @@ def _build_table_info(db_ref: str, table_ref: str, workspace: Workspace) -> str:
     col_lines = []
     col_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
     for col_row in col_rows:
-        col_ref = col_row["c"]["name"]
-        col_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": col_ref})
-        col_meta = col_meta_rows[0].get("n") if col_meta_rows else None
+        col_name = col_row["c"]["name"]
+        col_ref = db_column_ref(db_ref, table_ref, col_name)
+        col_meta = get_entity_meta(workspace, col_ref)
         dtype = col_meta.get("col_type", "?") if col_meta else "?"
-        col_lines.append(f"  {col_ref} ({dtype})")
+        col_lines.append(f"  {col_name} ({dtype})")
     if col_lines:
         parts.append("所有列:\n" + "\n".join(col_lines))
 
@@ -180,9 +179,10 @@ def _build_table_info(db_ref: str, table_ref: str, workspace: Workspace) -> str:
 
 def _build_column_block(col_name: str, meta: dict) -> str:
     """构建单列的统计信息 prompt。"""
+    display_name = meta.get("name", col_name)
     dtype = meta.get("col_type", "?")
     parts = [
-        f"列: {col_name}",
+        f"列: {display_name}",
         f"类型: {dtype}",
     ]
 

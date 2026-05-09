@@ -20,6 +20,7 @@ from typing import List, Dict, Set, Optional
 from collections import defaultdict
 from itertools import combinations
 from storage.workspace import Workspace
+from extractor.modules.utils.refs import db_column_ref, get_entity_meta
 
 logger = logging.getLogger(__name__)
 
@@ -60,18 +61,18 @@ def _generate_for_database(path: str, workspace: Workspace) -> bool:
         table_ref = tbl_row["t"]["name"]
         col_rows = workspace.cypher(f'MATCH (d {{name: "{path}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
         for col_row in col_rows:
-            col_ref = col_row["c"]["name"]
-            col_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": col_ref})
-            col_meta = col_meta_rows[0].get("n") if col_meta_rows else None
+            col_name = col_row["c"]["name"]
+            col_ref = db_column_ref(path, table_ref, col_name)
+            col_meta = get_entity_meta(workspace, col_ref)
             if not col_meta:
                 continue
             cardinality = col_meta.get("cardinality", 0)
-            raw_tokens = _tokenize(col_ref, strict=False)
-            strict_tokens = _tokenize(col_ref, strict=True)
+            raw_tokens = _tokenize(col_name, strict=False)
+            strict_tokens = _tokenize(col_name, strict=True)
             columns_info.append({
                 'entity_name': col_ref,
                 'table': table_ref,
-                'column': col_ref,
+                'column': col_name,
                 'data_type': col_meta.get("col_type", ""),
                 'cardinality': cardinality,
                 'raw_tokens': raw_tokens,

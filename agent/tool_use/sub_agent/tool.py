@@ -20,7 +20,7 @@ class AgentExecutor:
         self._parent_registry = parent_registry
         self._mode = mode
 
-    def __call__(self, store, arguments: dict, **kwargs) -> str:
+    def __call__(self, workspace, arguments: dict, **kwargs) -> str:
         from agent.agent import PontusAgent
         from agent.config import AgentSpec
         from agent.tools import ToolRegistry

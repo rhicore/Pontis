@@ -3,7 +3,10 @@
 供全量提取、部分执行等脚本共用的基础设施。
 """
 import logging
-from typing import Dict, List
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Dict, Iterator, List, Optional
 
 from storage.workspace import Workspace
 
@@ -13,6 +16,38 @@ logger = logging.getLogger(__name__)
 CONFIG_MODULES = {"db_column_overlap", "ai_db_column_summary"}
 
 _REGISTRY = None
+
+_DEFAULT_FILE_FMT = "%(asctime)s %(levelname)-5s %(name)s | %(message)s"
+_DEFAULT_LOG_DATE = "%H:%M:%S"
+
+
+@dataclass
+class RunOptions:
+    """模块执行选项。"""
+
+    continue_on_error: bool = True
+    collect_timing: bool = False
+
+
+@contextmanager
+def file_log_handler(
+    log_path: str,
+    *,
+    level: int = logging.DEBUG,
+    fmt: str = _DEFAULT_FILE_FMT,
+    datefmt: str = _DEFAULT_LOG_DATE,
+) -> Iterator[logging.FileHandler]:
+    """临时挂载文件日志 handler。"""
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(level)
+    fh.setFormatter(logging.Formatter(fmt, datefmt))
+    root = logging.getLogger()
+    root.addHandler(fh)
+    try:
+        yield fh
+    finally:
+        root.removeHandler(fh)
+        fh.close()
 
 
 def get_registry() -> Dict[str, object]:
@@ -57,17 +92,17 @@ def get_registry() -> Dict[str, object]:
         "ai_db_column_summary": ai_db_column_summary,
     }
 
-    # Agent 模块（需要 agent API key）
+    # Explorer 模块（需要 agent API key）
     try:
-        from extractor.modules.agent_analyze import generate as agent_analyze
+        from explorer.analyze import generate as agent_analyze
         _REGISTRY["agent_analyze"] = agent_analyze
     except ImportError:
         pass
 
-    # Agent 模块 — 独立版（可单独调用）
+    # Explorer 模块 — 独立版（可单独调用）
     try:
-        from extractor.modules.agent_join_detect import generate as agent_join_detect
-        from extractor.modules.agent_disambiguate import generate as agent_disambiguate
+        from explorer.join_detect import generate as agent_join_detect
+        from explorer.disambiguate import generate as agent_disambiguate
         _REGISTRY["agent_join_detect"] = agent_join_detect
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
     except ImportError:
@@ -95,11 +130,19 @@ def get_registry() -> Dict[str, object]:
     return _REGISTRY
 
 
-def run_pipeline(pipeline: List[str], workspace: Workspace, config=None) -> None:
-    """按 pipeline 列表顺序执行模块。"""
+def run_modules(
+    module_names: List[str],
+    workspace: Workspace,
+    config=None,
+    *,
+    options: Optional[RunOptions] = None,
+) -> Dict[str, float]:
+    """按顺序执行模块，返回每个成功模块的耗时。"""
     registry = get_registry()
+    options = options or RunOptions()
+    timings: Dict[str, float] = {}
 
-    for name in pipeline:
+    for name in module_names:
         if name not in registry:
             logger.warning(f"Unknown module: {name}, skipping")
             continue
@@ -108,12 +151,24 @@ def run_pipeline(pipeline: List[str], workspace: Workspace, config=None) -> None
         logger.info(f"  [{name}]")
 
         try:
+            t0 = time.time()
             if name in CONFIG_MODULES:
                 func(workspace, config=config)
             else:
                 func(workspace)
+            if options.collect_timing:
+                timings[name] = time.time() - t0
         except Exception as e:
             logger.warning(f"Module {name} failed: {e}")
+            if not options.continue_on_error:
+                raise
+
+    return timings
+
+
+def run_pipeline(pipeline: List[str], workspace: Workspace, config=None) -> None:
+    """按 pipeline 列表顺序执行模块。"""
+    run_modules(pipeline, workspace, config=config)
 
 
 def init_workspace(target: str, config_path: str = None, verbose: bool = False) -> tuple:

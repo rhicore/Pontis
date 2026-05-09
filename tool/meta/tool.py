@@ -7,6 +7,8 @@ from typing import List, Optional, Union
 
 from tool.utils.formatters import format_labels, get_info, format_meta_output
 from tool.config import resolve_meta_config
+from tool.utils.entity_refs import entity_display_ref
+from tool.utils.resolve import resolve_entity
 
 _ADJACENCY_KEYS = {"fk", "rel", "disambig", "col", "overlap", "table", "view"}
 
@@ -18,42 +20,16 @@ def _get_project_name(workspace) -> str:
     return "local"
 
 
-def _resolve_adjacency(meta: dict, workspace, labels: List[str]) -> dict:
-    """将邻接 ref 列表解析为 'entity_name | info' 格式的多行字符串。"""
-    resolved = dict(meta)
-    for key in _ADJACENCY_KEYS:
-        refs = meta.get(key)
-        if not isinstance(refs, list) or not refs:
-            continue
-
-        lines = []
-        for ref in refs:
-            adj_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": ref})
-            adj_meta = adj_meta_rows[0].get("n") if adj_meta_rows else None
-            adj_labels = adj_meta.get("labels", []) if adj_meta else []
-            info = get_info(adj_labels, adj_meta or {})
-            label_str = format_labels(adj_labels)
-            lines.append(f"  {ref}\t{label_str}\t{info}")
-
-        if lines:
-            resolved[key] = "\n".join(lines)
-
-    return resolved
-
-
-def _find_neighbors_by_label(workspace, ref: str, neighbor_label: str) -> List[tuple]:
+def _find_neighbors_by_label(store, ent_id: str, neighbor_label: str) -> List[tuple]:
     """找所有标签匹配 neighbor_label 的邻居。"""
-    neighbor_rows = workspace.cypher("MATCH (n {name: $name})--(m) RETURN m", params={"name": ref})
-    neighbors = [r["m"]["name"] for r in neighbor_rows if r.get("m")]
     results = []
-    for n in neighbors:
-        n_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": n})
-        n_meta = n_meta_rows[0].get("n") if n_meta_rows else None
+    for neighbor_id in store._adjacent.get(ent_id, set()):
+        n_meta = store._get_meta(neighbor_id)
         if not n_meta:
             continue
-        n_labels = n_meta.get("labels", [])
+        n_labels = n_meta.get("_labels", n_meta.get("labels", []))
         if _label_matches(n_labels, neighbor_label):
-            results.append((n, n_labels, n_meta))
+            results.append((entity_display_ref(store, neighbor_id), n_labels, n_meta))
     return results
 
 
@@ -96,24 +72,29 @@ def meta_command(
         neighbor_label: 邻居标签过滤
     """
     project_name = _get_project_name(workspace)
+    store = workspace._get_store()
 
     if not workspace.pontis_exists:
         return f"Error: .pontis directory not found in {workspace.project_path}"
 
-    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": ref})
-    meta = meta_rows[0].get("n") if meta_rows else None
-
-    if meta is None:
+    eid, err = resolve_entity(workspace, ref)
+    if err:
+        return f"Error: {err}"
+    if not store or not eid:
         return f"No metadata found for '{ref}'"
 
+    meta = store._get_meta(eid)
+    if meta is None:
+        return f"No metadata found for '{ref}'"
     if not meta:
         return f"Empty metadata for '{ref}'"
 
-    labels = meta.get("labels", [])
+    labels = meta.get("_labels", meta.get("labels", []))
+    display_ref = entity_display_ref(store, eid)
 
     # 模式2：邻居标签过滤
     if neighbor_label:
-        neighbors = _find_neighbors_by_label(workspace, ref, neighbor_label)
+        neighbors = _find_neighbors_by_label(store, eid, neighbor_label)
         return _format_neighbor_list(project_name, neighbors)
 
     # 模式1：自身 meta + related 分组
@@ -121,20 +102,22 @@ def meta_command(
     adjacency = {}
     plain_meta = dict(meta)
     for key in _ADJACENCY_KEYS:
-        refs = plain_meta.pop(key, None)
-        if isinstance(refs, list) and refs:
-            lines = []
-            for r in refs:
-                adj_meta_rows = workspace.cypher(
-                    "MATCH (n {name: $name}) RETURN n", params={"name": r}
-                )
-                adj_meta = adj_meta_rows[0].get("n") if adj_meta_rows else None
-                adj_labels = adj_meta.get("labels", []) if adj_meta else []
-                info = get_info(adj_labels, adj_meta or {})
-                label_str = format_labels(adj_labels)
-                lines.append(f"  {r}\t{label_str}\t{info}")
-            if lines:
-                adjacency[key] = lines
+        plain_meta.pop(key, None)
+
+    for adj_id in store._adjacent.get(eid, set()):
+        adj_meta = store._get_meta(adj_id)
+        if not adj_meta:
+            continue
+        adj_labels = adj_meta.get("_labels", adj_meta.get("labels", []))
+        if not adj_labels:
+            continue
+        group_key = adj_labels[0]
+        if group_key not in _ADJACENCY_KEYS:
+            continue
+        info = get_info(adj_labels, adj_meta or {})
+        label_str = format_labels(adj_labels)
+        disp = entity_display_ref(store, adj_id)
+        adjacency.setdefault(group_key, []).append(f"  {disp}\t{label_str}\t{info}")
 
     # Normalize property to list
     props = None
@@ -163,7 +146,7 @@ def meta_command(
         return "\n".join(lines)
 
     # Header
-    header_line = f"{ref}\t{format_labels(labels)}\nproject: {project_name}"
+    header_line = f"{display_ref}\t{format_labels(labels)}\nproject: {project_name}"
     config = resolve_meta_config(labels)
 
     # Format plain meta output

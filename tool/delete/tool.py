@@ -1,6 +1,5 @@
-"""Delete tool — 通过 Cypher DELETE 删除节点，支持级联删除。"""
+"""Delete tool — 删除节点，支持级联删除。"""
 
-from tool.utils import execute_cypher
 from tool.utils.resolve import resolve_entity
 from tool.config import resolve_rank
 
@@ -31,13 +30,12 @@ def delete_command(workspace, ref: str) -> str:
     if err:
         return f"Error: {err}"
 
-    # 查找节点名（用于级联）
-    match_r = execute_cypher(workspace, 'MATCH (n {id: $eid}) RETURN n', params={"eid": eid})
-    if not match_r:
-        return f"节点不存在: {ref}"
+    project = ref.split("::", 1)[0] if "::" in ref else None
+    store = workspace._get_store(project)
+    if store is None:
+        return "错误: 当前没有可用的项目 store"
 
-    main_info = match_r[0].get("n", {})
-    name = main_info.get("name", "")
+    name = store._id_index.get(eid, {}).get("name", "")
     if not name:
         return f"节点不存在: {ref}"
 
@@ -54,19 +52,17 @@ def delete_command(workspace, ref: str) -> str:
         for neighbor_ref in neighbors:
             if _is_more_derived(neighbor_ref, name, workspace):
                 if workspace.cypher('MATCH (n {name: $name}) RETURN n', params={"name": neighbor_ref}):
-                    nid_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": neighbor_ref})
-                    nid = nid_rows[0].get("n", {}).get("_eid") if nid_rows else None
+                    nid = store._resolve_to_id(neighbor_ref)
                     if nid:
                         to_delete.append(nid)
 
     # 逐个删除
     deleted = []
     for tid in to_delete:
-        r = execute_cypher(workspace, 'MATCH (n {id: $tid}) DELETE n', params={"tid": tid})
-        if r:
-            for item in r:
-                for d in item.get("deleted", []):
-                    deleted.append(d["name"])
+        deleted_name = store._id_index.get(tid, {}).get("name", "")
+        removed = store._delete_node(tid)
+        if removed:
+            deleted.append(deleted_name or removed)
 
     if not deleted:
         return f"删除失败: {ref}"

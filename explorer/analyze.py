@@ -1,12 +1,12 @@
 """Agent Analyze — 为所有实体生成 AI 总结（brief/detail）。
 
 唯一职责：深入理解数据，为表、列、关系、文件等所有实体撰写高质量总结。
-不负责发现关系（rel）或消歧（disambig），这些由专门的脚本处理。
+不负责发现关系（rel）或消歧（disambig），这些由专门的 explorer 脚本处理。
 
 子智能体用于处理具体的单表/单任务，降低单次对话的复杂度。
 
 独立执行:
-    python -m extractor.agent_analyze ./my_data
+    python -m explorer.analyze ./my_data
 """
 import logging
 
@@ -29,6 +29,7 @@ COORDINATOR_PROMPT = """\
 - **用中文** — brief 和 detail 用中文撰写
 - **不要提及内部概念** — 回答中不要出现 Pontis、知识图谱、.pontis 等
 - **不要输出纯文本总结** — 任务完成后直接停止，不要输出"我已完成…"等总结性文字
+- **路径式引用** — 表和列优先使用路径 ref：表如 `financial.sqlite/account`，列如 `financial.sqlite/account/account_id`；不要使用 `table.column`
 
 ## 总结质量要求
 
@@ -66,6 +67,7 @@ COORDINATOR_PROMPT = """\
 - 这张表的基本信息和你的理解
 - 与其他表的关系（已发现的 rel / fk）
 - 如果这张表依赖枢纽表，告诉子智能体枢纽表的 summary
+- 给子智能体的实体 ref 也使用同样的路径形式，不要传 `table.column`
 
 ## 处理范围
 

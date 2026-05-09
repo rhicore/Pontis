@@ -1,15 +1,10 @@
 """Agent Join Detect — 发现高置信度的列间关联，创建 rel 实体。
 
 唯一职责：基于数据库全局结构，发现真正高概率的列关联关系。
-不负责写总结（由 agent_analyze 处理）或消歧（由 agent_disambiguate 处理）。
-
-核心原则：
-- 宁缺毋滥：只创建高置信度的关系，宁可遗漏也不要误报
-- 全局一致性：每个列在同一角色下只应关联一个目标列
-- 明确标注不确定性：所有 rel 都是 AI 推断，不是确定事实
+不负责写总结（由 analyze 处理）或消歧（由 disambiguate 处理）。
 
 独立执行:
-    python -m extractor.agent_join_detect ./my_data
+    python -m explorer.join_detect ./my_data
 """
 import logging
 import os
@@ -57,9 +52,6 @@ PROMPT = """\
 如果列 A 是表 T1 的主键/关联键，它通常只应关联一个目标列。\
 如果你已经发现 A ↔ B 是高置信度关系，那 A ↔ C 就需要更强的证据才能创建。
 
-举例：`CDSCode` 列已经通过 fk 关联 `frpm` 表的 `CDSCode` 列和 `satscores` 表的 `cds` 列，\
-那么 `CDSCode` 不应再关联其他列。
-
 ### 2. 排他性检查
 如果你打算创建 A ↔ B 的 rel，先检查：
 - A 是否已有 fk 指向其他列？如果有，B 是否只是同一关联路径上的不同表达？
@@ -77,11 +69,18 @@ PROMPT = """\
 - **读取所有 fk 实体**，建立确定的外键关系图
 - 读取所有 overlap 实体，作为候选线索
 
+### 实体引用规范
+- 数据库文件使用路径 ref：`financial.sqlite`
+- 表使用路径 ref：`financial.sqlite/account`
+- 列使用路径 ref：`financial.sqlite/account/account_id`
+- 不要使用 `table.column` 或裸列名做写入或精确读取；只有在列名全局唯一时才可临时读取裸列名
+- 当你从 overlap / fk 的名字里看到 `table.column` 形式时，这只是名字展示；真正去 `meta` / `update_meta` / `add_edge` 时，必须改用路径 ref
+
 ### 2. 逐一评估 overlap 线索
 对每个 overlap 候选：
 - meta 查看统计（Jaccard、coverage、cardinality）
 - 检查是否已有 fk 覆盖 → 已覆盖则跳过
-- 检查两端列的实际数据（read 或 lookup）
+- 检查两端列的实际数据（用列路径 ref 读取 meta，必要时再查样本/统计）
 - 评估全局一致性：这两列是否应该关联？是否有矛盾？
 - 只有高置信度才创建 rel
 
@@ -103,9 +102,6 @@ brief 和 detail 必须遵循以下规范：
 
 **brief 格式**：
 "[高/中]置信度：简要描述关系"
-示例：
-- "高置信度：satscores 表的 cds 列通过 CDSCode 关联 schools 表，需注意前导零差异"
-- "中置信度：schools 表的 District 列与 frpm 表的 District Name 列语义相同但格式可能有差异"
 
 **detail 内容必须包含**：
 1. **推断依据**：基于什么证据判断（Jaccard 值、抽样验证、业务逻辑）
@@ -113,27 +109,14 @@ brief 和 detail 必须遵循以下规范：
 3. **不确定性声明**：明确说明这是 AI 推断的关系
 4. **置信度理由**：为什么给这个置信度
 
-**detail 示例**：
-"AI 推断关系（非物理外键）。基于 overlap 检测（Jaccard=0.39）和抽样验证确认两端值格式一致（14位 CDSCode）。\
-schools 以 CDSCode 为主键，frpm 通过 CDSCode 外键关联 schools（已有 fk 实体），本 rel 是 fk 的反向视角。\
-JOIN 时无需特殊处理。置信度：高（有物理外键佐证）。"
-
 ### edges
 必须连接列所属的表到 rel，需要两条边：
 - {"a": "[table1]", "b": "[rel_entity]"}
 - {"a": "[table2]", "b": "[rel_entity]"}
 
-## 语气规范
-
-**必须做到**：
-- 用"推断"、"可能"、"建议"等谨慎措辞
-- 明确标注"AI 推断关系（非物理外键）"
-- 区分置信度（高/中），低置信度直接不创建
-
-**禁止做到**：
-- 不要用"完全匹配"、"可直接 JOIN"、"同一概念"等断言式表述
-- 不要暗示 rel 和 fk 有同等可靠性
-- 不要省略不确定性声明
+其中 `[table1]` / `[table2]` 也必须使用表路径 ref，例如：
+- `financial.sqlite/account`
+- `financial.sqlite/trans`
 
 ## 注意
 
@@ -160,7 +143,6 @@ def generate(workspace: Workspace) -> None:
     spec = AgentSpec(mode="writer")
     project_name = os.path.basename(os.path.abspath(workspace.project_path))
     spec.projects = [project_name]
-    spec.guardrails = build_guardrails(spec, ["round_limit"])
     spec.guardrails = build_guardrails(spec, ["round_limit"])
     agent = create_agent(workspace.project_path, spec)
 

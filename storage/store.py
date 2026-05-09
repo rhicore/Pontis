@@ -427,6 +427,7 @@ class Store:
             ename = parts[-1]
             parent_name = parts[-2]
         else:
+            parts = [ref]
             ename = ref
             parent_name = None
 
@@ -441,13 +442,16 @@ class Store:
         self._register_node(ent_id, meta)
 
         if parent_name:
-            auto_edge = {"a": parent_name, "b": ename}
-            all_edges = [auto_edge]
+            all_edges = []
+            if "--" in ref:
+                for i in range(1, len(parts)):
+                    parent_ref = "--".join(parts[:i])
+                    child_ref = ent_id if i == len(parts) - 1 else "--".join(parts[:i + 1])
+                    all_edges.append({"a": parent_ref, "b": child_ref})
+            else:
+                all_edges.append({"a": parent_name, "b": ename})
             if edges:
                 all_edges.extend(edges)
-            if "--" in ref and len(parts) > 2:
-                for i in range(len(parts) - 2):
-                    all_edges.append({"a": parts[i], "b": parts[i + 1]})
             self._add_edges(all_edges)
         elif edges:
             self._add_edges(edges)

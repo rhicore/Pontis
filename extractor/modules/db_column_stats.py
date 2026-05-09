@@ -11,6 +11,7 @@
 import logging
 from typing import Optional
 from storage.workspace import Workspace
+from extractor.modules.utils.refs import db_column_ref, get_entity_meta, set_entity_meta
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,8 @@ def generate(workspace: Workspace) -> None:
                 table_ref = tbl_row["t"]["name"]
                 col_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
                 for col_row in col_rows:
-                    col_ref = col_row["c"]["name"]
+                    col_name = col_row["c"]["name"]
+                    col_ref = db_column_ref(db_ref, table_ref, col_name)
                     try:
                         _generate_for_column(col_ref, db_ref, table_ref, workspace)
                     except Exception as e:
@@ -39,15 +41,14 @@ def generate(workspace: Workspace) -> None:
 def _generate_for_column(col_ref: str, db_ref: str, table_ref: str,
                          workspace: Workspace) -> bool:
     """为单个列生成统计"""
-    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": col_ref})
-    meta = meta_rows[0].get("n") if meta_rows else None
+    meta = get_entity_meta(workspace, col_ref)
     if not meta:
         return False
 
     if "cardinality" in meta:
         return False
 
-    col_name = col_ref
+    col_name = meta.get("name", col_ref)
     table_name = table_ref
     data_type = meta.get("col_type", "")
     db_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": db_ref})
@@ -60,8 +61,7 @@ def _generate_for_column(col_ref: str, db_ref: str, table_ref: str,
     if not stats:
         return False
 
-    workspace.cypher('MATCH (n {name: $name}) SET n += $props',
-                  params={"name": col_ref, "props": stats})
+    set_entity_meta(workspace, col_ref, stats)
     logger.info(f"  Stats generated: {col_ref} (cardinality={stats.get('cardinality')})")
     return True
 

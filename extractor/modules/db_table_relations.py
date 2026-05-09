@@ -11,6 +11,8 @@
 import logging
 from typing import List, Dict
 from storage.workspace import Workspace
+from extractor.modules.utils.refs import db_column_ref, db_table_ref
+from extractor.modules.utils.refs import get_entity_meta
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +37,8 @@ def generate(workspace: Workspace) -> None:
 
 def _generate_for_table(table_ref: str, db_ref: str, workspace: Workspace) -> bool:
     """为单个表分析关系，创建 fk 实体"""
-    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": table_ref})
-    meta = meta_rows[0].get("n") if meta_rows else None
+    table_node_ref = db_table_ref(db_ref, table_ref)
+    meta = get_entity_meta(workspace, table_node_ref)
     if not meta:
         return False
 
@@ -185,14 +187,19 @@ def _create_relation_entity(table_ref: str, db_ref: str, from_table: str,
         workspace.cypher(f'CREATE (f:fk {{name: "{fkname}", created_at: "{ts}"}})')
 
         # 边: from_table → fk, to_table → fk
-        workspace.cypher(f'MATCH (a {{name: "{from_table}"}}),(f {{name: "{fkname}"}}) CREATE (a)--(f)')
-        workspace.cypher(f'MATCH (a {{name: "{safe_to_table}"}}),(f {{name: "{fkname}"}}) CREATE (a)--(f)')
+        store = workspace._get_store()
+        from_table_ref = db_table_ref(db_ref, raw_from_table)
+        to_table_ref = db_table_ref(db_ref, safe_to_table)
+        store._add_edges([{"a": from_table_ref, "b": fkname}, {"a": to_table_ref, "b": fkname}])
 
         # 查找列实体并连接
-        if workspace.cypher(f'MATCH (n {{name: "{safe_from_col}"}}) RETURN n'):
-            workspace.cypher(f'MATCH (c {{name: "{safe_from_col}"}}),(f {{name: "{fkname}"}}) CREATE (c)--(f)')
-        if workspace.cypher(f'MATCH (n {{name: "{safe_to_col}"}}) RETURN n'):
-            workspace.cypher(f'MATCH (c {{name: "{safe_to_col}"}}),(f {{name: "{fkname}"}}) CREATE (c)--(f)')
+        from_col_ref = db_column_ref(db_ref, raw_from_table, safe_from_col)
+        to_col_ref = db_column_ref(db_ref, safe_to_table, safe_to_col)
+
+        if store._resolve_to_id(from_col_ref):
+            store._add_edges([{"a": from_col_ref, "b": fkname}])
+        if store._resolve_to_id(to_col_ref):
+            store._add_edges([{"a": to_col_ref, "b": fkname}])
 
         return True
 
