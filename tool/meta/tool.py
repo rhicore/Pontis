@@ -11,6 +11,7 @@ from tool.utils.entity_refs import entity_display_ref
 from tool.utils.resolve import resolve_entity
 
 _ADJACENCY_KEYS = {"fk", "rel", "disambig", "col", "overlap", "table", "view"}
+_DB_FILE_SUFFIXES = (".sqlite", ".db", ".sqlite3", ".duckdb")
 
 
 def _get_project_name(workspace) -> str:
@@ -18,6 +19,13 @@ def _get_project_name(workspace) -> str:
     if ap:
         return ap[0]
     return "local"
+
+
+def _split_project_ref(ref: str) -> tuple[str | None, str]:
+    if "::" not in ref:
+        return None, ref
+    project, local_ref = ref.split("::", 1)
+    return project, local_ref
 
 
 def _find_neighbors_by_label(store, ent_id: str, neighbor_label: str) -> List[tuple]:
@@ -71,10 +79,17 @@ def meta_command(
         property: 指定字段
         neighbor_label: 邻居标签过滤
     """
-    project_name = _get_project_name(workspace)
-    store = workspace._get_store()
+    explicit_project, _ = _split_project_ref(ref)
+    if explicit_project and explicit_project.lower().endswith(_DB_FILE_SUFFIXES):
+        return (
+            "Error: 你把数据库文件名误写成了项目名前缀。"
+            f"请把 `{explicit_project}::...` 改成 `{explicit_project}/...`，"
+            "只有真正的项目名才使用 `project::ref` 语法。"
+        )
+    project_name = explicit_project or _get_project_name(workspace)
+    store = workspace._get_store(explicit_project)
 
-    if not workspace.pontis_exists:
+    if not store or not store.pontis_exists:
         return f"Error: .pontis directory not found in {workspace.project_path}"
 
     eid, err = resolve_entity(workspace, ref)

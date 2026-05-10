@@ -8,6 +8,8 @@ from tool.utils.entity_refs import (
     path_ref_to_internal,
 )
 
+_DB_FILE_SUFFIXES = (".sqlite", ".db", ".sqlite3", ".duckdb")
+
 
 def _split_project_ref(ref: str) -> tuple[str | None, str]:
     if "::" not in ref:
@@ -28,6 +30,13 @@ def resolve_entity(workspace, ref: str) -> tuple:
         成功时 error_msg 为 None，失败时 ent_id 为 None
     """
     project, local_ref = _split_project_ref(ref)
+    if project and project.lower().endswith(_DB_FILE_SUFFIXES):
+        return (
+            None,
+            "你把数据库文件名误写成了项目名前缀。"
+            f"请把 `{project}::...` 改成 `{project}/...`，"
+            "只有真正的项目名才使用 `project::ref` 语法。"
+        )
     store = workspace._get_store(project)
     if store is None:
         if project:

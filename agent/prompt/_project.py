@@ -20,13 +20,17 @@ def build_project_context(project_path: str, spec=None) -> str:
 
     for name in active:
         path = config.resolve_source_path(name)
-        if not path:
-            continue
         parts.append(f"### {name}")
-        parts.append(f"- 路径: {path}")
-        overview = _get_project_overview(path)
-        if overview:
-            parts.append(overview)
+        if path:
+            parts.append(f"- 路径: {path}")
+            overview = _get_project_overview(path)
+            if overview:
+                parts.append(overview)
+        else:
+            graph_path = config.resolve_graph_path(name)
+            parts.append("- 类型: graph-only project")
+            if graph_path:
+                parts.append(f"- 图存储: {graph_path}")
 
     return "\n".join(parts)
 

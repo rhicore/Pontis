@@ -10,6 +10,7 @@ def build_guardrails(spec, builder_names: list = None) -> list:
     from agent.guardrail.round_limit import RoundLimit
     from agent.guardrail.tool_abuse import ToolAbuse
     from agent.guardrail.exploration_check import ExplorationCheck
+    from agent.guardrail.readme_check import READMEReadCheck
     from agent.guardrail.sql_check import SQLEntityCheck
     from agent.guardrail.sql_join_check import BridgeTableCheck
     from agent.guardrail.sql_disambig_check import SQLDisambigCheck
@@ -21,6 +22,7 @@ def build_guardrails(spec, builder_names: list = None) -> list:
         ),
         "query_abuse": lambda: ToolAbuse("query", total_limit=5, consecutive_limit=3),
         "exploration_check": lambda: ExplorationCheck(),
+        "readme_check": lambda: READMEReadCheck(),
         "sql_check": lambda: SQLEntityCheck(),
         "bridge_check": lambda: BridgeTableCheck(),
         "disambig_check": lambda: SQLDisambigCheck(),
@@ -30,5 +32,7 @@ def build_guardrails(spec, builder_names: list = None) -> list:
     for name in (builder_names or []):
         builder = _builders.get(name)
         if builder:
-            guardrails.append(builder())
+            guardrail = builder()
+            setattr(guardrail, "builder_name", name)
+            guardrails.append(guardrail)
     return guardrails

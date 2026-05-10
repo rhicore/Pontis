@@ -29,30 +29,30 @@ _MODE_PRESETS = {
     "readonly": ModeConfig(
         tools=["glob", "grep", "meta", "search", "bash", "query", "agent"],
         prompts=["base", "tool", "ontology", "meta", "sql", "guardrail", "readonly", "project"],
-        guardrail_builders=["round_limit", "exploration_check", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
+        guardrail_builders=["round_limit", "readme_check", "exploration_check", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
     ),
     "writer": ModeConfig(
         tools=["glob", "grep", "meta", "search", "bash", "query", "agent",
                "create_entity", "update_meta", "add_edge", "delete"],
         prompts=["base", "tool", "ontology", "meta", "sql", "guardrail", "writer", "project"],
-        guardrail_builders=["round_limit", "exploration_check", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
+        guardrail_builders=["round_limit", "readme_check", "exploration_check", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
     ),
     "sub_agent": ModeConfig(
         tools=["glob", "grep", "meta", "search", "bash", "query",
                "create_entity", "update_meta", "add_edge", "delete"],
         prompts=["base", "tool", "ontology", "meta", "sql", "guardrail", "writer", "sub_agent"],
-        guardrail_builders=["round_limit", "exploration_check", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
+        guardrail_builders=["round_limit", "readme_check", "exploration_check", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
     ),
     "benchmark": ModeConfig(
         tools=["glob", "grep", "meta", "search", "bash", "query"],
-        prompts=["base", "tool", "ontology", "meta", "sql", "guardrail", "benchmark", "project"],
-        guardrail_builders=["round_limit", "exploration_check", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
+        prompts=["base", "tool", "ontology", "meta", "sql", "guardrail", "project"],
+        guardrail_builders=["round_limit", "readme_check", "exploration_check", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
     ),
     "reflection": ModeConfig(
         tools=["glob", "grep", "meta", "search", "bash", "query",
                "create_entity", "update_meta", "add_edge", "delete"],
         prompts=["base", "tool", "ontology", "meta", "reflection"],
-        guardrail_builders=["round_limit"],
+        guardrail_builders=["round_limit", "readme_check"],
     ),
 }
 

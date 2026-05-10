@@ -1,73 +1,71 @@
 projects:
-  global:
-    source:
-      type: fs
-      path: ~/.pontis_global
+  bird:
     graph:
       type: sqlite
+      path: example_data/bird_global/store.db
   california_schools:
     source:
       type: fs
-      path: example_data/bird/dev_databases/california_schools
+      path: example_data/bird_dev/dev_databases/california_schools
     graph:
       type: sqlite
   card_games:
     source:
       type: fs
-      path: example_data/bird/dev_databases/card_games
+      path: example_data/bird_dev/dev_databases/card_games
     graph:
       type: sqlite
   codebase_community:
     source:
       type: fs
-      path: example_data/bird/dev_databases/codebase_community
+      path: example_data/bird_dev/dev_databases/codebase_community
     graph:
       type: sqlite
   debit_card_specializing:
     source:
       type: fs
-      path: example_data/bird/dev_databases/debit_card_specializing
+      path: example_data/bird_dev/dev_databases/debit_card_specializing
     graph:
       type: sqlite
   european_football_2:
     source:
       type: fs
-      path: example_data/bird/dev_databases/european_football_2
+      path: example_data/bird_dev/dev_databases/european_football_2
     graph:
       type: sqlite
   financial:
     source:
       type: fs
-      path: example_data/bird/dev_databases/financial
+      path: example_data/bird_dev/dev_databases/financial
     graph:
       type: sqlite
   formula_1:
     source:
       type: fs
-      path: example_data/bird/dev_databases/formula_1
+      path: example_data/bird_dev/dev_databases/formula_1
     graph:
       type: sqlite
   student_club:
     source:
       type: fs
-      path: example_data/bird/dev_databases/student_club
+      path: example_data/bird_dev/dev_databases/student_club
     graph:
       type: sqlite
   superhero:
     source:
       type: fs
-      path: example_data/bird/dev_databases/superhero
+      path: example_data/bird_dev/dev_databases/superhero
     graph:
       type: sqlite
   thrombosis_prediction:
     source:
       type: fs
-      path: example_data/bird/dev_databases/thrombosis_prediction
+      path: example_data/bird_dev/dev_databases/thrombosis_prediction
     graph:
       type: sqlite
   toxicology:
     source:
       type: fs
-      path: example_data/bird/dev_databases/toxicology
+      path: example_data/bird_dev/dev_databases/toxicology
     graph:
       type: sqlite

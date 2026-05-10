@@ -276,7 +276,7 @@ def glob_command(workspace, ref: str, offset: int = 0,
     cypher, post_filters = _build_cypher(segments)
 
     # 执行 Cypher
-    results = workspace.cypher(cypher)
+    results = workspace.cypher(cypher, project=project)
 
     # 后处理（复杂 glob / label OR）
     if post_filters:
@@ -285,7 +285,6 @@ def glob_command(workspace, ref: str, offset: int = 0,
     if not results:
         return "No objects found"
 
-    project_name = _get_project_name(workspace)
     store = workspace._get_store(project)
 
     # 格式化：取最后一个变量的信息作为主结果

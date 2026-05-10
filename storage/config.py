@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SourceConfig:
     """数据源配置 — 决定怎么发现和访问数据。"""
-    type: str = "fs"          # fs | docker | s3 | ...
+    type: str = ""            # fs | docker | s3 | ...
     path: str = ""
 
 
@@ -88,14 +88,11 @@ class StoreConfig:
 def _parse_project(name: str, pdata) -> ProjectConfig:
     """从 YAML 数据解析 ProjectConfig。"""
     if not isinstance(pdata, dict):
-        raise ValueError(f"Project '{name}' config must be a dict with 'source' key, got {type(pdata).__name__}")
+        raise ValueError(f"Project '{name}' config must be a dict, got {type(pdata).__name__}")
 
-    if "source" not in pdata:
-        raise ValueError(f"Project '{name}' missing required 'source' key")
-
-    src = pdata["source"]
+    src = pdata.get("source", {})
     source_cfg = SourceConfig(
-        type=src.get("type", "fs"),
+        type=src.get("type", ""),
         path=src.get("path", ""),
     )
     graph = pdata.get("graph", {})

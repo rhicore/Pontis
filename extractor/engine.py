@@ -103,8 +103,10 @@ def get_registry() -> Dict[str, object]:
     try:
         from explorer.join_detect import generate as agent_join_detect
         from explorer.disambiguate import generate as agent_disambiguate
+        from explorer.readme import generate as agent_readme
         _REGISTRY["agent_join_detect"] = agent_join_detect
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
+        _REGISTRY["agent_readme"] = agent_readme
     except ImportError:
         pass
 

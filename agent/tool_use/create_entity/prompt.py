@@ -23,14 +23,16 @@ meta: {brief: "points 列歧义", detail: "results.points 是单场得分，driv
 edges: [{a: "results.points", b: "points:disambig"}]
 
 ### 知识实体
-ref: 'no_concat:convention'
+ref: 'bird::no_concat:knowledge:convention'
 meta: {brief: "避免字符串拼接", detail: "不要用 || 拼接..."}
-ref: 'count_with_group_by:pattern'
+ref: 'bird::count_with_group_by:knowledge:pattern'
 meta: {brief: "分组计数模式", detail: "..."}
 
 ## 注意
 - 如果实体已存在会报错，如需更新请使用 update_meta
 - name 必须是精确名称，不允许通配符
+- 对知识实体，优先使用 `<project>::<name>:knowledge:<type>` 的完整形式
+- edges 里的两端引用应尽量直接复用 glob/meta 已返回的精确 ref
 """
 
 

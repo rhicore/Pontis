@@ -23,11 +23,9 @@ DETAIL = """\
 遍历规则：
 - 多段遍历返回路径末端段匹配的实体
 - 中间段仅用于过滤路径，不体现在结果中
-- 不支持 ()--() 语法，遍历一律用 / 分隔段
 
-## 按场景查表
+## 标签过滤示例
 
-### 按标签查实体
 | 查询 | 含义 |
 |---|---|
 | `*:table` | 所有表 |
@@ -40,7 +38,8 @@ DETAIL = """\
 | `*:file|knowledge` | file 或 knowledge（OR） |
 | `*:disambig` | 所有消歧实体 |
 
-### 按名称匹配
+## 名称匹配示例
+
 | 查询 | 含义 |
 |---|---|
 | `*.db` | 所有 .db 后缀的文件 |
@@ -48,45 +47,23 @@ DETAIL = """\
 | `*Id` | 名称以 Id 结尾 |
 | `*amount*` | 名称包含 amount |
 
-### 指定文件/表查下属
+## 多段路径示例
+
 | 查询 | 含义 |
 |---|---|
 | `financial.sqlite/*:table` | financial.sqlite 的所有表 |
 | `financial.sqlite/account/*:col` | account 表的所有列 |
 | `financial.sqlite/*:table/*:col` | 所有表的所有列 |
 | `financial.sqlite/*:table/*:col:INT` | 所有表的 INT 列 |
+| `financial.sqlite/*:table/*:fk` | 该数据库中所有表挂接到的 FK 实体 |
 
-### 多跳遍历
-| 查询 | 含义 |
-|---|---|
-| `*:file:db/*:table` | 数据库文件下的表 |
-| `*:file:db/*:table/*:col` | 数据库文件→表→列 |
-| `*:table/*:col/*:fk` | 表→列→外键（三跳） |
-| `*:fk/*:table` | 外键指向的表（反向遍历） |
-| `*:col/*:col` | 有 overlap/关联关系的列对 |
+## 项目路由示例
 
-### 项目路由
 | 查询 | 含义 |
 |---|---|
 | `financial::*:table` | financial 项目的所有表 |
-| `global::*:knowledge` | 全局知识库的知识实体 |
+| `bird::*:knowledge` | BIRD 跨库经验库中的知识实体 |
 
-### 目录结构
-| 查询 | 含义 |
-|---|---|
-| `./*:file` | 根目录下的文件 |
-| `./*:dir` | 根目录下的子目录 |
-| `data/*:file:csv` | data 目录下的 CSV 文件 |
-
-## 完整标签列表
-
-file, db, csv, json, table, view, col, fk, rel, overlap, dir, knowledge, chunk, disambig
-
-## 注意
-- 结果截断时末尾提示总数，用 offset 翻页
-- 纯 glob（无 : 标签且无 / 遍历）按文件名匹配
-- 名称 pattern 支持 *、?、[] 三种 glob 通配符
-- 不要用 `glob("*")` 做起手式全图枚举；优先使用 `*.sqlite`、`*:file:db/*:table`、`<db>/*:table`、`<table>/*:col` 这类定向查询
 """
 
 

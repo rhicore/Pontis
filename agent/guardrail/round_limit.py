@@ -20,6 +20,8 @@ class RoundLimit(Guardrail):
         self.stop_template = stop_template or _STOP_TEMPLATE
 
     def check(self, ctx: GuardrailContext) -> dict:
+        if self.max_rounds <= 0:
+            return {}
         if ctx.rounds < self.max_rounds:
             return {}
         msg = self.stop_template.format(max_rounds=self.max_rounds)

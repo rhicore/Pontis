@@ -1,0 +1,142 @@
+"""Agent README Writer — 基于已有 AI/agent 标注为项目生成库级 README 节点。
+
+唯一职责：读取当前项目已经生成的数据库/表/列/fk 摘要，补充必要探索，
+然后将结果写入项目图谱中的 `README` 节点。
+
+独立执行:
+    python -m explorer.readme ./my_data
+"""
+import logging
+import os
+
+from storage.workspace import Workspace
+
+logger = logging.getLogger(__name__)
+
+PROMPT = """\
+你的任务是为当前项目生成一个高质量的库级 `README` 节点。
+
+## 目标
+
+基于当前项目中**已经存在的 AI/agent 标注**（数据库文件、表、列、外键、说明文件的 brief/detail），
+必要时补充少量探索，然后写出一个供后续 agent 和人类阅读的项目 README。
+
+README 的目标不是营销文案，而是：
+- 快速说明这个数据库/项目是什么
+- 概括主要数据对象和关系
+- 标出关键数据质量风险与命名陷阱
+- 帮后续 agent 更快进入正确的探索路径
+
+## 必须遵守
+
+- **优先复用现有摘要**：先读已经存在的 brief/detail，不要重复劳动
+- **只在必要时补充探索**：如果已有信息足够，就不要过度查询
+- **用中文写 README**
+- **不要提及内部实现概念**：不要出现 Pontis、知识图谱、.pontis、实体节点、tool contract 等内部术语
+- **路径式引用**：读表/列时使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`
+- **最终必须写入图谱节点**：将内容写入名为 `README` 的节点
+- **写完要自检**：写入后用 `meta("README")` 确认 `detail` 中已有正文
+
+## 推荐读取顺序
+
+1. 找到数据库文件（`*.sqlite` / `*:file:db`）
+2. 读取数据库文件本身的 meta
+3. 读取主要表的 meta
+4. 读取 fk / rel / disambig（如果有）
+5. 查看 `database_description/*.csv` 或其他说明文件（如果存在）
+
+## README 应包含的结构
+
+使用下面这套结构，必要时可略微调整标题，但不要太花：
+
+1. `# <项目名>`
+2. `## 概览`
+   - 数据库/项目用途
+   - 核心对象
+   - 适合回答的问题类型
+3. `## 主要数据对象`
+   - 每个核心表 1 小段，说明其职责
+4. `## 关系结构`
+   - 关键外键 / 主从关系 / 枢纽表
+5. `## 数据质量与注意事项`
+   - 空值、同名列、尾部空格、代码列、描述文件缺口等
+6. `## 建议探索路径`
+   - 后续 agent 第一次使用时应该先看什么
+
+## 内容要求
+
+- 不要写精确行数、精确列数、精确基数，避免 README 很快过时
+- 可以写稳定的定性描述，如“数千条记录”“少量空值”“高基数名称字段”
+- 如果存在明显易混淆列或字段语义陷阱，要明确写出来
+- 如果有数据库说明 CSV，可以吸收其价值，但不要逐列抄表
+- `建议探索路径` 要实际可执行，例如：
+  - 先看数据库文件摘要
+  - 再看核心枢纽表
+  - 再看关键外键与高风险列
+
+## 写入方式
+
+当你已经整理好 README 内容后：
+
+1. 先检查是否已存在 `README` 节点
+2. 若存在，优先 `update_meta`
+3. 若不存在，再 `create_entity`
+
+推荐写法：
+
+```text
+create_entity({"ref": "README:knowledge"})
+update_meta({"ref": "README", "fields": {"brief": "...", "detail": "..."}})
+```
+
+如果 `README` 已存在，就不要重复创建，只更新 `brief/detail`。
+
+写完后再用：
+
+```text
+meta({"ref": "README"})
+```
+
+确认 `detail` 已写入。
+
+## 完成条件
+
+- `README` 节点已成功写入项目图谱
+- 内容结构完整
+- 已验证 `meta("README")` 可读
+- 完成后直接停止，不要输出额外总结
+"""
+
+
+def generate(workspace: Workspace) -> None:
+    """调用 agent 生成项目 README 节点。"""
+    from agent.config import create_agent, AgentSpec
+    from agent.guardrail import build_guardrails
+    from agent.utils import load_agent_config
+
+    config = load_agent_config(workspace.project_path)
+    if not config["api_key"]:
+        logger.warning("Agent not configured (no API key), skipping README generation")
+        return
+
+    logger.info("=== Agent README Writer ===")
+
+    spec = AgentSpec(mode="writer")
+    project_name = os.path.basename(os.path.abspath(workspace.project_path))
+    spec.projects = [project_name]
+    spec.guardrails = build_guardrails(spec, ["round_limit"])
+    agent = create_agent(workspace.project_path, spec)
+
+    agent.chat(PROMPT)
+    logger.info("=== Agent README Writer done ===")
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: python -m explorer.readme <project_path>")
+        raise SystemExit(1)
+
+    ws = Workspace(project_path=sys.argv[1])
+    generate(ws)

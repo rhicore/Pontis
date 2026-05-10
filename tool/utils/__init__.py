@@ -1,9 +1,9 @@
 """Shared utilities for Pontis tool layer."""
 
 
-def execute_cypher(workspace, cypher: str, params: dict = None):
+def execute_cypher(workspace, cypher: str, params: dict = None, project: str = None):
     """Execute a Cypher query via workspace.cypher()."""
-    return workspace.cypher(cypher, params=params)
+    return workspace.cypher(cypher, params=params, project=project)
 
 
 def get_project_name(workspace) -> str:

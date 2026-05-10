@@ -5,9 +5,11 @@ from dataclasses import replace
 from storage.config import ProjectConfig
 from storage.backends import create_backend
 from storage.stores.fs import FSStore
+from storage.stores.graph import GraphStore
 
 _STORE_REGISTRY = {
     "fs": FSStore,
+    "graph": GraphStore,
 }
 
 
@@ -34,11 +36,16 @@ def create_store(config: ProjectConfig):
     backend = create_backend(config.graph.type, graph_path)
 
     # 创建 Store 子类
-    store_cls = _STORE_REGISTRY.get(config.source.type)
+    source_type = config.source.type or "graph"
+    store_cls = _STORE_REGISTRY.get(source_type)
     if not store_cls:
-        raise ValueError(f"Unknown source type: {config.source.type!r}")
+        raise ValueError(f"Unknown source type: {source_type!r}")
 
-    return store_cls(config.source, backend)
+    source_cfg = replace(
+        config.source,
+        path=os.path.abspath(os.path.expanduser(config.source.path)) if config.source.path else "",
+    )
+    return store_cls(source_cfg, backend)
 
 
 def register_backend(name: str, store_cls):

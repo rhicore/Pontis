@@ -10,7 +10,7 @@ def get_ontology_prompt() -> str:
 | `db` | 数据库文件 | `formula_1.db` |
 | `csv` | CSV 文件 | `schools.csv` |
 | `json` | JSON 文件 | `config.json` |
-| `text` | 文本文件 | `README.md` |
+| `knowledge` | 知识节点 | `README`,其他类型的知识比如lesson,term等 |
 | `directory` | 目录 | `data` |
 | `table` | 数据库表 | `drivers` |
 | `view` | 数据库视图 | `active_users` |
@@ -46,4 +46,10 @@ def get_ontology_prompt() -> str:
 - fk/rel/overlap ：如果数据库中有人工命名，优先采用人工命名，否则会采用`table1.col1->table2.col2`，用 `->` 连接源和目标，类型通过标签区分
 - **知识实体**（convention/pattern/term/lesson/example）：简短英文语义标识，如 `no_concat`、`ranking_top_n`
 - **消歧实体**（disambig）：歧义词或语义不清的概念
+
+### 项目特定约束
+
+- 本体层只定义“可以存在的标签类型”，不代表任何项目都允许使用全部类型
+- 例如 `bird` 项目的 reflection memory 只允许 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:example`
+- `term` 可以作为通用图谱类型存在，但不属于 `bird` 的 reflection 产物
 """

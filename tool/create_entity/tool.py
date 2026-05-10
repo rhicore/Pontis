@@ -1,13 +1,10 @@
-"""Create entity tool — 统一创建入口，通过 Cypher 执行。
+"""Create entity tool — 统一创建入口。
 
 创建规则（类似 mkdir）：
   - ref 必须是精确名称，不允许通配符 (*, ?, [])
   - labels 从 ref 中的 :tag 语法提取
   - 不自动连边，通过 edges 参数显式指定
 """
-
-from tool.utils import execute_cypher
-
 
 def _parse_ref(ref: str) -> tuple:
     """从 ref 中提取实体名和标签。
@@ -39,7 +36,7 @@ def _has_wildcards(ref: str) -> bool:
 
 def create_entity_command(workspace, ref: str, meta: dict = None,
                           edges: list = None) -> str:
-    """创建实体节点，构造 Cypher CREATE 语句执行。
+    """创建实体节点。
 
     Args:
         workspace: Workspace 实例
@@ -59,39 +56,65 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
     if not name:
         return "错误: 实体名不能为空"
 
-    if workspace.cypher('MATCH (n {name: $name}) RETURN n', params={"name": name}):
+    target_store = workspace._get_store(project)
+    if not target_store:
+        return f"Error: project not available: {project or '(default)'}"
+
+    if workspace.cypher(
+        'MATCH (n {name: $name}) RETURN n',
+        params={"name": name},
+        project=project,
+    ):
         return f"Entity already exists: {name}"
 
     meta = meta or {}
-
-    # 构造 Cypher CREATE
-    labels_str = "".join(f":{l}" for l in labels)
     props = dict(meta)
     props["name"] = name
     if project:
         props["project"] = project
     prop_values = {k: v for k, v in props.items() if not k.startswith("_")}
-    cypher = f'CREATE (n{labels_str} $props)'
 
-    execute_cypher(workspace, cypher, params={"props": prop_values})
+    target_store._create_node(
+        name,
+        meta=prop_values,
+        labels=labels or None,
+        edges=None,
+    )
 
     # 创建显式 edges
     edge_results = []
     if edges:
+        resolved_edges = []
         for e in edges:
             a_name = e.get("a", "")
             b_name = e.get("b", "")
             if not a_name or not b_name:
                 continue
-            if not workspace.cypher('MATCH (n {name: $name}) RETURN n', params={"name": a_name}):
+            a_rows = workspace.cypher(
+                'MATCH (n {name: $name}) RETURN n',
+                params={"name": a_name},
+                project=project,
+            )
+            if not a_rows:
                 edge_results.append(f"  跳过: 端点不存在 '{a_name}'")
                 continue
-            if not workspace.cypher('MATCH (n {name: $name}) RETURN n', params={"name": b_name}):
+            b_rows = workspace.cypher(
+                'MATCH (n {name: $name}) RETURN n',
+                params={"name": b_name},
+                project=project,
+            )
+            if not b_rows:
                 edge_results.append(f"  跳过: 端点不存在 '{b_name}'")
                 continue
-            edge_cypher = 'MATCH (a {name: $a_name}),(b {name: $b_name}) CREATE (a)--(b)'
-            execute_cypher(workspace, edge_cypher, params={"a_name": a_name, "b_name": b_name})
+            a_id = a_rows[0]["n"].get("_eid")
+            b_id = b_rows[0]["n"].get("_eid")
+            if not a_id or not b_id:
+                edge_results.append(f"  跳过: 无法解析端点 '{a_name}' / '{b_name}'")
+                continue
+            resolved_edges.append({"a": a_id, "b": b_id})
             edge_results.append(f"  {a_name} ↔ {b_name}")
+        if resolved_edges:
+            target_store._add_edges(resolved_edges)
 
     lines = [f"Created: {name}"]
     if labels:

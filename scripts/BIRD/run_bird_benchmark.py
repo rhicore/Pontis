@@ -27,11 +27,22 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from scripts.BIRD.common import PROJECT_ROOT, get_data_dir, get_db_base
+
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
 DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
+
+
+def assign_question_ids(questions: list[dict]) -> list[dict]:
+    """为没有 question_id 的数据集补一个稳定 id。"""
+    normalized = []
+    for idx, q in enumerate(questions):
+        item = dict(q)
+        if item.get("question_id") is None:
+            item["question_id"] = idx
+        normalized.append(item)
+    return normalized
 
 # ═══════════════════════════════════════════════════════════
 #  SQL 提取与执行
@@ -84,12 +95,34 @@ QUERY_PROMPT_TEMPLATE = """\
 提示：{evidence}
 
 要求：
-- 第一步先用 glob("*") 查看项目有哪些文件，找到数据库文件（.sqlite/.db/.duckdb 等），不要假设文件名
+- 第零步先读取共享经验库：`meta("bird::README")`。没读之前不要访问 `bird` 的其他内容，也不要跳过这一步
+- 第一步先用更定向的入口找数据库文件，例如 `glob("*.sqlite")`、`glob("*.db")`、`glob("*:file:db")`，不要用 `glob("*")`
+- 然后如果需要 BIRD 跨库经验，再按需查看 `bird::*:knowledge`
 - 然后依次探索：glob 数据库内的 .table/.col/.fk/.rel/.overlap 实体，meta 确认列语义
+- 注意：在当前图结构里，`fk` 通常不直接挂在数据库文件下面；优先用 `glob("*:fk")` 或 `glob("<db>/*:table/*:fk")`，不要期待 `glob("<db>/*:fk")` 有结果
 - 充分理解 schema 和关系后再写 SQL，不要盲猜列名或 JOIN 条件
 - 只输出一条 SELECT 语句，用 ```sql ``` 代码块包裹
 - 不要解释，只输出 SQL
 - 注意 SQLite 语法：字符串用单引号，列名有特殊字符时用反引号或双引号
+
+严格遵循 evidence：
+- evidence 给出的列名映射 → 优先使用
+- evidence 给出的计算公式 → **严格翻译为 SQL**，不要简化或改写
+- evidence 给出的条件值 → 直接使用，不要猜测其他值
+
+常见错误清单：
+- 猜测 JOIN 条件 → 先 glob 确认 fk 关系
+- 猜测列名 → 先 meta 确认列语义
+- 多加/少加列 → 只 SELECT 问题要求的字段
+- 猜测 WHERE 值 → 先 query 确认实际值
+- 用 query 反复试错 → 前三步做完后一次写对
+- 自作主张加过滤条件 → 只加问题明确要求的 WHERE 条件
+- 不遵循 evidence 公式 → 严格按 evidence 给出的公式翻译 SQL
+- 代码列和名称列混淆 → meta 查看 topk 和 detail 区分
+
+输出协议：
+- 回复中只包含一个 ```sql``` 代码块和一条 SELECT 语句，代码块前后不要有任何文字
+- 多个值用单列多行输出，不要横向展开为多列，不要用 GROUP_CONCAT 合并
 """
 
 
@@ -431,9 +464,11 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         qid = q.get('question_id', 0)
         collector = TraceCollector()
 
+        spec = AgentSpec(mode="benchmark", effort="max")
+        spec.projects = [db_id, "bird"]
         agent = create_agent(
             str(db_dir),
-            AgentSpec(mode="benchmark", effort="max"),
+            spec,
             trace_callback=collector.callback,
         )
 
@@ -520,25 +555,20 @@ def main():
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     # 根据数据集选路径
-    if args.train:
-        data_dir = PROJECT_ROOT / "example_data" / "bird_train"
-        json_path = data_dir / "train.json"
-        db_base = data_dir / "train_databases"
-    else:
-        data_dir = PROJECT_ROOT / "example_data" / "bird"
-        json_path = data_dir / "dev.json"
-        db_base = data_dir / "dev_databases"
+    data_dir = get_data_dir(args.train)
+    json_path = data_dir / ("train.json" if args.train else "dev.json")
+    db_base = get_db_base(args.train)
 
     if not json_path.exists():
         print(f"Error: {json_path} not found")
         sys.exit(1)
 
-    data = json.loads(json_path.read_text(encoding="utf-8"))
+    data = assign_question_ids(json.loads(json_path.read_text(encoding="utf-8")))
     if args.db:
         data = [q for q in data if q['db_id'] == args.db]
     if args.qids:
         qid_set = {int(x.strip()) for x in args.qids.split(",")}
-        data = [q for q in data if q.get('question_id') in qid_set]
+        data = [q for q in data if q["question_id"] in qid_set]
 
     by_db = defaultdict(list)
     for q in data:
