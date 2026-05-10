@@ -258,7 +258,6 @@ Pontis/
 │   └── prompt/         # Prompt 组装层
 ├── extractor/          # 数据提取管线
 │   ├── engine.py       # 提取引擎主入口
-│   ├── bird_extract.py # BIRD 数据集专用提取
 │   └── modules/        # 各阶段提取模块
 ├── storage/            # 存储抽象层
 │   └── store.py        # Store 类
@@ -272,12 +271,13 @@ Pontis/
 ├── utils/              # 共享工具
 │   └── llm.py          # LLMClient + YAML 配置加载
 ├── scripts/            # 脚本
-│   ├── run_bird_benchmark.py  # BIRD Text-to-SQL 评测
-│   ├── classify_benchmark_errors.py  # 错误分类分析
+│   ├── BIRD/           # BIRD 数据集脚本
 │   └── front-end/      # Web 前端
 ├── docs/               # 文档
 ├── example_data/       # 示例数据集
-│   └── bird/           # BIRD Text-to-SQL 数据集
+│   ├── bird_dev/       # BIRD dev 数据集
+│   ├── bird_train/     # BIRD train 数据集
+│   └── bird_global/    # BIRD 跨库知识图谱
 ├── global_config.py    # 全局配置（API Key、模型参数）
 ├── pontis_cli.py       # CLI 入口
 └── pyproject.toml      # 项目配置

@@ -9,7 +9,7 @@ _SECTIONS = {
 - 如果当前访问的项目中存在 `README` 节点，在第一次有意义访问该项目内容前，必须先读取它
 - 如果 `bird` 项目处于当前已打开项目中，默认把它视为必须先读的共享知识库；不要等到出错后再去读
 - README 不存在时，这条约束不生效
-- 一般用 `meta("<project>::README")` 先读，`detail` 就是 README 正文
+- 一般用 `meta({"ref": "<project>::README", "property": ["detail"]})` 先读，`detail` 就是 README 正文
 - 未先读 README 前，不要访问该项目下的其他实体，也不要在该项目上做 search / create / update / delete
 """,
     "query_abuse": """## Query 限制

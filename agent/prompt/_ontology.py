@@ -10,7 +10,7 @@ def get_ontology_prompt() -> str:
 | `db` | 数据库文件 | `formula_1.db` |
 | `csv` | CSV 文件 | `schools.csv` |
 | `json` | JSON 文件 | `config.json` |
-| `knowledge` | 知识节点 | `README`,其他类型的知识比如lesson,term等 |
+| `knowledge` | 知识节点 | `README`、`join_cardinality` |
 | `directory` | 目录 | `data` |
 | `table` | 数据库表 | `drivers` |
 | `view` | 数据库视图 | `active_users` |

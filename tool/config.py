@@ -98,6 +98,7 @@ INFO_TYPE_CONFIG = {
     "overlap":  InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     "disambig": InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     # 知识段
+    "knowledge":    InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     "pattern":     InfoTypeConfig(info_fn=lambda m: {"pattern": _v(m, "pattern")}, max_str_len=80),
     "convention":  InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     "term":        InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
@@ -190,6 +191,10 @@ META_TYPE_CONFIG = {
         default_keys=["level", "brief", "detail"],
     ),
     # 知识段
+    "knowledge": MetaTypeConfig(
+        default_keys=["brief", "detail"],
+        max_detail_lines=None,
+    ),
     "pattern": MetaTypeConfig(
         default_keys=["name", "pattern"],
     ),
@@ -229,10 +234,22 @@ def resolve_meta_config(entity_labels: List[str]) -> MetaTypeConfig:
     merged_folded: Set[str] = set()
     merged_adjacency: Set[str] = set()
     seen_keys: Set[str] = set()
+    merged_max_value_len: Optional[int] = 100
+    merged_max_detail_lines: Optional[int] = 15
 
     for segment in entity_labels:
         if segment in META_TYPE_CONFIG:
                 cfg = META_TYPE_CONFIG[segment]
+                if cfg.max_value_len is None:
+                    merged_max_value_len = None
+                elif merged_max_value_len is not None:
+                    merged_max_value_len = max(merged_max_value_len, cfg.max_value_len)
+
+                if cfg.max_detail_lines is None:
+                    merged_max_detail_lines = None
+                elif merged_max_detail_lines is not None:
+                    merged_max_detail_lines = max(merged_max_detail_lines, cfg.max_detail_lines)
+
                 for k in cfg.default_keys:
                     if k not in seen_keys:
                         merged_keys.append(k)
@@ -245,6 +262,8 @@ def resolve_meta_config(entity_labels: List[str]) -> MetaTypeConfig:
 
     return MetaTypeConfig(
         default_keys=merged_keys,
+        max_value_len=merged_max_value_len,
+        max_detail_lines=merged_max_detail_lines,
         folded_keys=merged_folded,
         adjacency_keys=merged_adjacency,
     )

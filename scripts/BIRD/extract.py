@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""BIRD 数据库提取脚本。
-
-对 example_data/bird/dev_databases/ 下的数据库运行提取。
-"""
+"""BIRD 数据库提取脚本。"""
 import logging
 import shutil
 import sys

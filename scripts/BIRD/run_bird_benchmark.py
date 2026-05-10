@@ -8,13 +8,16 @@
 每个 query 生成两个日志：
   q{id}.brief.log  简洁版（问题、结果、调用链摘要、guardrail 拦截）
   q{id}.log        详细版（含每轮工具调用的完整参数和返回值）
+启用 `--reflection` 时，还会额外生成：
+  q{id}.reflection.log  题后复盘结果
 
 Usage:
-    python -m scripts.BIRD.run_bird_benchmark                       # dev 全量
-    python -m scripts.BIRD.run_bird_benchmark --train               # train 全量
-    python -m scripts.BIRD.run_bird_benchmark --db toxicology       # 指定库
+    python -m scripts.BIRD.run_bird_benchmark
+    python -m scripts.BIRD.run_bird_benchmark --train
+    python -m scripts.BIRD.run_bird_benchmark --db toxicology
     python -m scripts.BIRD.run_bird_benchmark --train --skip-extract
-    python -m scripts.BIRD.run_bird_benchmark --train --limit 10    # 每库限 10 条
+    python -m scripts.BIRD.run_bird_benchmark --train --limit 10
+    python -m scripts.BIRD.run_bird_benchmark --train --db citeseer --qids 4141 --reflection
 """
 import json
 import logging
@@ -32,6 +35,14 @@ from scripts.BIRD.common import PROJECT_ROOT, get_data_dir, get_db_base
 logger = logging.getLogger(__name__)
 
 DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
+
+
+def get_bird_shared_workflow() -> str:
+    """BIRD 场景下共享的解题/审题入口。"""
+    return """\
+先读 `bird::README`，并严格遵循其中的解题/审题工作流与常见错误约束。
+若当前数据库项目本身也有 `README`，再读该项目的 `README`。
+其余经验性规则不要在这里重复展开，统一以 `bird::README` 为准。"""
 
 
 def assign_question_ids(questions: list[dict]) -> list[dict]:
@@ -94,13 +105,10 @@ QUERY_PROMPT_TEMPLATE = """\
 
 提示：{evidence}
 
-要求：
-- 第零步先读取共享经验库：`meta("bird::README")`。没读之前不要访问 `bird` 的其他内容，也不要跳过这一步
-- 第一步先用更定向的入口找数据库文件，例如 `glob("*.sqlite")`、`glob("*.db")`、`glob("*:file:db")`，不要用 `glob("*")`
-- 然后如果需要 BIRD 跨库经验，再按需查看 `bird::*:knowledge`
-- 然后依次探索：glob 数据库内的 .table/.col/.fk/.rel/.overlap 实体，meta 确认列语义
-- 注意：在当前图结构里，`fk` 通常不直接挂在数据库文件下面；优先用 `glob("*:fk")` 或 `glob("<db>/*:table/*:fk")`，不要期待 `glob("<db>/*:fk")` 有结果
-- 充分理解 schema 和关系后再写 SQL，不要盲猜列名或 JOIN 条件
+解题工作流：
+{shared_workflow}
+
+本题要求：
 - 只输出一条 SELECT 语句，用 ```sql ``` 代码块包裹
 - 不要解释，只输出 SQL
 - 注意 SQLite 语法：字符串用单引号，列名有特殊字符时用反引号或双引号
@@ -109,20 +117,58 @@ QUERY_PROMPT_TEMPLATE = """\
 - evidence 给出的列名映射 → 优先使用
 - evidence 给出的计算公式 → **严格翻译为 SQL**，不要简化或改写
 - evidence 给出的条件值 → 直接使用，不要猜测其他值
-
-常见错误清单：
-- 猜测 JOIN 条件 → 先 glob 确认 fk 关系
-- 猜测列名 → 先 meta 确认列语义
-- 多加/少加列 → 只 SELECT 问题要求的字段
-- 猜测 WHERE 值 → 先 query 确认实际值
-- 用 query 反复试错 → 前三步做完后一次写对
-- 自作主张加过滤条件 → 只加问题明确要求的 WHERE 条件
-- 不遵循 evidence 公式 → 严格按 evidence 给出的公式翻译 SQL
-- 代码列和名称列混淆 → meta 查看 topk 和 detail 区分
+- 其余审题与纠错规则，统一遵循 `bird::README`
 
 输出协议：
 - 回复中只包含一个 ```sql``` 代码块和一条 SELECT 语句，代码块前后不要有任何文字
 - 多个值用单列多行输出，不要横向展开为多列，不要用 GROUP_CONCAT 合并
+"""
+
+
+REFLECTION_CASE_PROMPT_TEMPLATE = """\
+你现在仍在同一个对话上下文里：刚刚的 benchmark 消息、工具调用和最终 SQL 都还在。
+你不是新开一个会话，而是继续复盘这条已经完成并已验证结果的 benchmark case。
+
+先按 benchmark 的解题工作流回放这道题，再判断做对/做错的真正根因，然后只在必要时更新 `bird`。解题/审题工作流统一以 `bird::README` 为准，不在这里重复展开。
+
+回放信息：
+{shared_workflow}
+
+本轮复盘对象：
+- 数据库项目：{db_id}
+- Question ID: {question_id}
+- Difficulty: {difficulty}
+- Result: {result}
+- Elapsed: {elapsed:.1f}s
+
+题目：
+{question}
+
+Evidence：
+{evidence}
+
+Predicted SQL：
+{predicted_sql}
+
+Golden SQL：
+{golden_sql}
+
+Benchmark 调用链摘要：
+{calls_summary}
+
+Guardrail / blocks：
+{blocks_summary}
+
+详细执行轨迹：
+{trace_detail}
+
+你的任务：
+1. 先判断这道题的模式是否已被 `bird` 覆盖。
+2. 若已覆盖，不要重复 create；最多在确有新信息时 update。
+3. 若未覆盖，且结论明显可跨库迁移，再写入 `bird::<short_name>:knowledge:<type>`。
+4. 只允许写 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:example`。
+5. 数据库特有事实不要写入 `bird`。
+6. 如果只是执行流程失误、没有新的跨库经验缺口，明确说明“不写入任何知识实体”。
 """
 
 
@@ -238,6 +284,36 @@ class TraceCollector:
         detail_lines.append("")
         (bench_dir / f"q{qid}.log").write_text("\n".join(detail_lines), encoding="utf-8")
 
+    def summarize_calls(self) -> str:
+        parts = []
+        for rd in self._rounds:
+            for tc in rd["calls"]:
+                suffix = "(blocked)" if any(b["tool"] is not None for b in rd["blocks"]) else ""
+                parts.append(f"{tc['name']}({_args_brief(tc['args'])}){suffix}")
+        return " → ".join(parts) if parts else "(no calls)"
+
+    def summarize_blocks(self) -> str:
+        parts = []
+        for rd in self._rounds:
+            for bl in rd["blocks"]:
+                parts.append(f"[{bl['source']}] {bl['msg']}")
+        return "\n".join(parts) if parts else "(none)"
+
+    def detailed_trace_text(self, max_result_chars: int = 400) -> str:
+        lines = []
+        for rd in self._rounds:
+            for tc in rd["calls"]:
+                args_full = json.dumps(tc["args"], ensure_ascii=False) if tc["args"] else "{}"
+                lines.append(f"Round {rd['round']} | {tc['name']}({args_full})")
+                result = tc["result"] or "(no result)"
+                if len(result) > max_result_chars:
+                    result = result[:max_result_chars] + "..."
+                lines.append(f"  {result}")
+            for bl in rd["blocks"]:
+                lines.append(f"  [BLOCKED by {bl['source']}] {bl['msg']}")
+            lines.append("---")
+        return "\n".join(lines) if lines else "(empty trace)"
+
 
 def _args_brief(args: dict) -> str:
     """参数的简洁表示。"""
@@ -262,6 +338,67 @@ def find_db_file(db_dir: Path) -> str | None:
         if matches:
             return str(matches[0])
     return None
+
+
+def build_reflection_case_prompt(db_id: str, q: dict, collector: TraceCollector,
+                                 predicted_sql: str | None, result_str: str,
+                                 elapsed: float) -> str:
+    return REFLECTION_CASE_PROMPT_TEMPLATE.format(
+        shared_workflow=get_bird_shared_workflow(),
+        db_id=db_id,
+        question_id=q.get("question_id", 0),
+        difficulty=q.get("difficulty", "?"),
+        result=result_str,
+        elapsed=elapsed,
+        question=q["question"],
+        evidence=q.get("evidence", "") or "(无额外提示)",
+        predicted_sql=predicted_sql or "PARSE_ERROR",
+        golden_sql=q["SQL"],
+        calls_summary=collector.summarize_calls(),
+        blocks_summary=collector.summarize_blocks(),
+        trace_detail=collector.detailed_trace_text(),
+    )
+
+
+def run_reflection_for_case(db_id: str, q: dict,
+                            agent,
+                            predicted_sql: str | None, result_str: str,
+                            elapsed: float, bench_dir: Path) -> None:
+    from agent.config import AgentSpec, resolve_mode
+    from agent.prompt import build_prompt
+    from agent.tools import build_registry
+
+    reflection_spec = AgentSpec(mode="reflection", effort="max")
+    reflection_spec.projects = [db_id, "bird"]
+    resolve_mode(reflection_spec)
+
+    # 方案 1：沿用同一个 agent 会话，只在反思阶段切到 reflection 配置。
+    agent.tools = build_registry(reflection_spec)
+    agent.system_prompt = build_prompt(reflection_spec)
+    agent.guardrails = reflection_spec.guardrails
+    agent.messages[0]["content"] = agent.system_prompt
+
+    prompt = build_reflection_case_prompt(
+        db_id=db_id,
+        q=q,
+        collector=agent._reflection_collector,
+        predicted_sql=predicted_sql,
+        result_str=result_str,
+        elapsed=elapsed,
+    )
+    response = agent.chat(prompt)
+    qid = q.get("question_id", 0)
+    out = [
+        f"Q{qid} [{q.get('difficulty', '?')}] {result_str} {elapsed:.1f}s",
+        f"Question: {q['question']}",
+        f"Evidence: {q.get('evidence', '') or '(无)'}",
+        f"Predicted SQL: {predicted_sql or 'PARSE_ERROR'}",
+        f"Golden SQL: {q['SQL']}",
+        "",
+        response or "",
+        "",
+    ]
+    (bench_dir / f"q{qid}.reflection.log").write_text("\n".join(out), encoding="utf-8")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -471,10 +608,12 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             spec,
             trace_callback=collector.callback,
         )
+        agent._reflection_collector = collector
 
         prompt = QUERY_PROMPT_TEMPLATE.format(
             question=q['question'],
             evidence=q.get('evidence', '') or "(无额外提示)",
+            shared_workflow=get_bird_shared_workflow(),
         )
 
         t0 = time.time()
@@ -501,6 +640,20 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         )
 
         collector.write_logs(bench_dir, qid, q, response, predicted_sql, result_str, elapsed)
+
+        if args.reflection:
+            try:
+                run_reflection_for_case(
+                    db_id=db_id,
+                    agent=agent,
+                    q=q,
+                    predicted_sql=predicted_sql,
+                    result_str=result_str,
+                    elapsed=elapsed,
+                    bench_dir=bench_dir,
+                )
+            except Exception as e:
+                print(f"  Q{qid} reflection ERROR: {e}")
 
         status = "OK" if correct else "FAIL"
         print(f"  Q{qid} [{q.get('difficulty', '?')}] {status} {result_str} ({elapsed:.1f}s)")
@@ -549,6 +702,7 @@ def main():
     parser.add_argument("--db-workers", type=int, default=3, help="并行数据库数（默认 3）")
     parser.add_argument("--qids", help="只测试指定 question_id，逗号分隔")
     parser.add_argument("--limit", type=int, help="每库最多测试 N 条")
+    parser.add_argument("--reflection", action="store_true", help="每题验证后立即运行 reflection，不再读日志二次分析")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s | %(message)s", datefmt="%H:%M:%S")

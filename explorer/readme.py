@@ -35,7 +35,8 @@ README 的目标不是营销文案，而是：
 - **不要提及内部实现概念**：不要出现 Pontis、知识图谱、.pontis、实体节点、tool contract 等内部术语
 - **路径式引用**：读表/列时使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`
 - **最终必须写入图谱节点**：将内容写入名为 `README` 的节点
-- **写完要自检**：写入后用 `meta("README")` 确认 `detail` 中已有正文
+- **README 标签要求**：README 只能使用 `knowledge` 标签，不要使用 `doc`
+- **写完要自检**：写入后用 `meta({"ref": "README", "property": ["detail"]})` 确认正文完整可读
 
 ## 推荐读取顺序
 
@@ -94,7 +95,7 @@ update_meta({"ref": "README", "fields": {"brief": "...", "detail": "..."}})
 写完后再用：
 
 ```text
-meta({"ref": "README"})
+meta({"ref": "README", "property": ["detail"]})
 ```
 
 确认 `detail` 已写入。
