@@ -12,6 +12,7 @@
 import logging
 
 from storage.workspace import Workspace
+from extractor.modules.utils.refs import db_fk_ref, set_entity_meta
 from extractor.modules.utils.src import file_exists, open_sqlite_db
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,19 @@ def _get_db_rel(ref: str, workspace: Workspace) -> str | None:
     db_meta = db_meta_rows[0].get("n") if db_meta_rows else None
     db_rel = db_meta.get("path", db_entity) if db_meta else db_entity
     return db_rel
+
+
+def _get_db_name(ref: str, workspace: Workspace) -> str | None:
+    rows = workspace.cypher(
+        f'MATCH (f {{name: "{ref}"}})--(x)--(y:file:db) RETURN y'
+    )
+    if not rows:
+        rows = workspace.cypher(
+            f'MATCH (f {{name: "{ref}"}})--(x)--(y:file) RETURN y'
+        )
+    if not rows:
+        return None
+    return rows[0]["y"].get("name")
 
 
 def _validate_one(ref: str, workspace: Workspace) -> bool:
@@ -162,8 +176,6 @@ def _validate_one(ref: str, workspace: Workspace) -> bool:
         return False
 
     # 更新 meta
-    existing_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": ref})
-    existing = existing_rows[0].get("n") if existing_rows else None or {}
     update = {
         "match_rate": round(match_rate, 4),
         "violation_count": violation_count,
@@ -172,8 +184,12 @@ def _validate_one(ref: str, workspace: Workspace) -> bool:
     if format_hint:
         update["format_hint"] = format_hint
 
-    workspace.cypher('MATCH (n {name: $name}) SET n += $props',
-                  params={"name": ref, "props": update})
+    db_name = _get_db_name(ref, workspace)
+    if db_name:
+        set_entity_meta(workspace, db_fk_ref(db_name, ref), update)
+    else:
+        workspace.cypher('MATCH (n {name: $name}) SET n += $props',
+                      params={"name": ref, "props": update})
 
     status = "OK" if match_rate == 1.0 else f"MISMATCH {match_rate*100:.1f}%"
     logger.info(f"  {entity_name}: {status} ({matched}/{total})")

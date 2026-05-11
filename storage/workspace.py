@@ -1,5 +1,6 @@
 """Workspace — 顶层容器，统一创建入口和路由。"""
 import os
+from dataclasses import replace
 from storage.config import StoreConfig, load_config
 from storage import stores
 from storage.stores.base import MatchResult
@@ -95,7 +96,7 @@ class Workspace:
     # ── Graph API (Cypher only) ──
 
     def cypher(self, query: str, params: dict = None, project: str = None) -> list:
-        """执行 Cypher 查询，返回 [{"var": {"name": ..., "labels": ...}}, ...]。
+        """执行 Cypher 查询，实体访问面只暴露 id/project/labels/src。
 
         Args:
             query: Cypher 查询字符串
@@ -113,15 +114,49 @@ class Workspace:
             modules = self.modules(project_name)
             if modules:
                 target_store = MergedStoreView(store, modules)
+        else:
+            self._materialize_for_write(parsed, store, project=project)
         executor = CypherExecutor(target_store)
         return executor.execute(parsed)
+
+    def _materialize_for_write(self, parsed, store, project: str = None):
+        """Materialize virtual MATCH results as part of Cypher write execution."""
+        if parsed.action == "CREATE" and not parsed.create_rels:
+            return
+        project_name = getattr(store, "_project_name", "")
+        modules = self.modules(project_name)
+        if not modules:
+            return
+
+        match_query = replace(parsed, action="RETURN", return_items=[], return_vars=[
+            n.var for n in parsed.nodes if n.var
+        ])
+        from storage.cypher import CypherExecutor
+        view = MergedStoreView(store, modules)
+        rows = CypherExecutor(view).execute(match_query)
+        for row in rows:
+            for node in row.values():
+                if not isinstance(node, dict):
+                    continue
+                eid = node.get("id")
+                if not eid or eid in store._id_index:
+                    continue
+                ref = node.get("path") or node.get("ref") or node.get("name")
+                if ref:
+                    seed_meta = {
+                        k: v for k, v in node.items()
+                        if k not in ("id", "project", "labels", "src")
+                    }
+                    if "labels" in node:
+                        seed_meta["labels"] = list(node.get("labels", []))
+                    self._materialize(ref, project=project, seed_meta=seed_meta)
 
     def _collect_virtual_meta(self, ref: str, project: str = None) -> dict | None:
         """从模块收集虚元数据。
 
         规则：
         - 模块返回的虚属性覆盖已有结果
-        - `_labels` 做并集
+        - `labels` 做并集
         """
         store = self._get_store(project)
         if not store:
@@ -139,10 +174,10 @@ class Workspace:
             if merged is None:
                 merged = meta
                 continue
-            labels = set(merged.get("_labels", [])) | set(meta.get("_labels", []))
+            labels = set(merged.get("labels", [])) | set(meta.get("labels", []))
             merged.update(meta)
             if labels:
-                merged["_labels"] = sorted(labels)
+                merged["labels"] = sorted(labels)
         return merged
 
     def _collect_virtual_neighbors(self, ref: str, project: str = None) -> list:
@@ -174,14 +209,14 @@ class Workspace:
                 q = None
             if q is None:
                 continue
-            rows = store.cypher(q.query, params=q.params)
+            rows = store._cypher_internal(q.query, params=q.params)
             row_matches = []
             for row in rows:
                 item = row.get(q.var)
                 if isinstance(item, dict):
-                    name = item.get("name", "")
-                    if name and name not in row_matches:
-                        row_matches.append(name)
+                    ent_id = item.get("id", "")
+                    if ent_id and ent_id not in row_matches:
+                        row_matches.append(ent_id)
             if len(row_matches) > 1:
                 mergeable = False
             for m in row_matches:
@@ -197,18 +232,11 @@ class Workspace:
         if not store:
             return ""
 
-        ent_id = store._resolve_to_id(ref)
-        if ent_id:
-            return ent_id
-
         vnode = dict(vmeta)
-        vnode.setdefault("name", ref)
-        vnode.setdefault("labels", list(vmeta.get("_labels", [])))
+        vnode.setdefault("labels", list(vmeta.get("labels", [])))
         m = self._collect_materialize_query_matches(vnode, project=project)
-        if m.mergeable and len(m.matches) == 1:
-            matched_id = store._resolve_to_id(m.matches[0])
-            if matched_id:
-                return matched_id
+        if m.mergeable and len(m.matches) == 1 and m.matches[0] in store._id_index:
+            return m.matches[0]
         return ""
 
     def _materialize_closure(self, ref: str, project: str = None) -> tuple[list[str], list[tuple[str, str]]]:
@@ -239,8 +267,8 @@ class Workspace:
                     queue.append(child_ref)
         return closure, edges
 
-    def materialize(self, ref: str, project: str = None) -> str:
-        """中心化物化入口。
+    def _materialize(self, ref: str, project: str = None, seed_meta: dict | None = None) -> str:
+        """Cypher 写路径内部物化入口。
 
         - 已持久化实体：直接返回
         - 虚实体：按模块元数据物化
@@ -257,11 +285,20 @@ class Workspace:
         resolved: dict[str, str] = {}
 
         for current in closure:
-            ent_id = store._resolve_to_id(current)
             vmeta = self._collect_virtual_meta(current, project=project)
+            if seed_meta and current == ref:
+                merged_seed = dict(vmeta or {})
+                labels = set(merged_seed.get("labels", [])) | set(seed_meta.get("labels", []))
+                merged_seed.update(seed_meta)
+                if labels:
+                    merged_seed["labels"] = sorted(labels)
+                vmeta = merged_seed
+            ent_id = ""
 
-            if not ent_id and vmeta:
+            if vmeta:
                 ent_id = self._materialize_target_for_virtual(current, vmeta, project=project)
+            if not ent_id:
+                ent_id = store._resolve_to_id(current)
 
             if ent_id and not vmeta:
                 resolved[current] = ent_id
@@ -271,15 +308,14 @@ class Workspace:
                 resolved[current] = store._create_node(current)
                 continue
 
-            labels = list(vmeta.get("_labels", []))
-            payload = {k: v for k, v in vmeta.items() if k != "_labels"}
+            labels = list(vmeta.get("labels", []))
+            payload = {k: v for k, v in vmeta.items() if k != "labels"}
 
             if ent_id:
                 existing = store._read_raw(ent_id) or {}
                 merged = dict(existing)
                 merged.update(payload)
-                merged.setdefault("name", current)
-                merged["_labels"] = sorted(set(existing.get("_labels", [])) | set(labels))
+                merged["labels"] = sorted(set(existing.get("labels", [])) | set(labels))
                 store._write_entity_meta(ent_id, merged)
                 store._meta_cache[ent_id] = dict(merged)
                 store._register_node(ent_id, merged)
@@ -364,9 +400,9 @@ class Workspace:
 
         Returns:
             [
-                {"from": "name", "to_project": "bird", "to_entity_id": "ent_xxx",
+                {"from": "ent_xxx", "to_project": "bird", "to_entity_id": "ent_yyy",
                  "status": "ok", "to_entity": {...}},
-                {"from": "name", "to_project": "bird", "to_entity_id": "ent_xxx",
+                {"from": "ent_xxx", "to_project": "bird", "to_entity_id": "ent_yyy",
                  "status": "target_missing"},
                 ...
             ]
@@ -376,10 +412,9 @@ class Workspace:
             return []
         results = []
         for from_id, refs in store._cross_adjacent.items():
-            from_name = store._id_index.get(from_id, {}).get("name", "")
             for ref in refs:
                 entry = {
-                    "from": from_name,
+                    "from": from_id,
                     "to_project": ref["to_project"],
                     "to_entity_id": ref["to_entity_id"],
                 }
@@ -400,8 +435,8 @@ class Workspace:
                     if to_props:
                         entry["status"] = "ok"
                         entry["to_entity"] = {
-                            "name": to_props.get("name", ""),
-                            "labels": to_props.get("_labels", []),
+                            "id": ref["to_entity_id"],
+                            "labels": to_props.get("labels", []),
                         }
                     else:
                         store._mark_cross_edge_stale(

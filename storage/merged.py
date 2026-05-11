@@ -43,69 +43,68 @@ class MergedStoreView:
                 self._adjacent.setdefault(a, set()).add(b)
                 self._adjacent.setdefault(b, set()).add(a)
 
-        # 名称到主图 ID 的简单索引（保守：重名时只取第一个）
-        name_to_id = {}
-        for ent_id, raw in self._id_index.items():
-            name = raw.get("name", "")
-            if name and name not in name_to_id:
-                name_to_id[name] = ent_id
-
         # 2) 模块虚图
         vid_counter = 0
         for mod in self.modules:
             nodes = list(mod.iter_virtual_nodes())
-            path_to_id = {}
+            key_to_id = {}
 
             for node in nodes:
                 vnode = dict(node)
-                labels = vnode.get("labels", vnode.get("_labels", []))
-                vnode["_labels"] = list(labels)
+                vnode["labels"] = list(vnode.get("labels", []))
 
                 q = mod.match_query(vnode)
                 m = None
                 if q is not None:
-                    rows = self.base.cypher(q.query, params=q.params)
+                    rows = self.base._cypher_internal(q.query, params=q.params)
                     qmatches = []
                     for row in rows:
                         item = row.get(q.var)
                         if isinstance(item, dict):
-                            name = item.get("name", "")
-                            if name and name not in qmatches:
-                                qmatches.append(name)
+                            ent_id = item.get("id", "")
+                            if ent_id and ent_id not in qmatches:
+                                qmatches.append(ent_id)
                     from storage.stores.base import MatchResult
                     m = MatchResult(matches=qmatches, mergeable=len(qmatches) <= 1)
-                if m is not None and m.mergeable and len(m.matches) == 1 and m.matches[0] in name_to_id:
-                    eid = name_to_id[m.matches[0]]
+                if m is not None and m.mergeable and len(m.matches) == 1 and m.matches[0] in self._id_index:
+                    eid = m.matches[0]
                     base_raw = self._id_index[eid]
                     merged = dict(base_raw)
                     for k, v in vnode.items():
-                        if k == "_labels":
+                        if k == "labels":
                             continue
                         merged[k] = v
-                    merged["_labels"] = sorted(
-                        set(base_raw.get("_labels", [])) | set(vnode.get("_labels", []))
+                    merged["labels"] = sorted(
+                        set(base_raw.get("labels", [])) | set(vnode.get("labels", []))
                     )
                     self._id_index[eid] = merged
-                    if vnode.get("path"):
-                        self._merged_paths[vnode["path"]] = eid
-                        path_to_id[vnode["path"]] = eid
+                    for key in self._node_keys(vnode):
+                        self._merged_paths[key] = eid
+                        key_to_id[key] = eid
                 else:
                     vid_counter += 1
                     vid = f"_mv_{mod.name}_{vid_counter}"
                     self._id_index[vid] = vnode
                     self._adjacent.setdefault(vid, set())
-                    if vnode.get("path"):
-                        self._merged_paths[vnode["path"]] = vid
-                        path_to_id[vnode["path"]] = vid
-                        self._virtual_src_nodes[vid] = vnode
+                    for key in self._node_keys(vnode):
+                        self._merged_paths[key] = vid
+                        key_to_id[key] = vid
+                    self._virtual_src_nodes[vid] = vnode
 
             for a_path, b_path in mod.iter_virtual_edges(nodes):
-                a_id = path_to_id.get(a_path) or self._merged_paths.get(a_path)
-                b_id = path_to_id.get(b_path) or self._merged_paths.get(b_path)
+                a_id = key_to_id.get(a_path) or self._merged_paths.get(a_path)
+                b_id = key_to_id.get(b_path) or self._merged_paths.get(b_path)
                 if not a_id or not b_id or a_id == b_id:
                     continue
                 self._adjacent.setdefault(a_id, set()).add(b_id)
                 self._adjacent.setdefault(b_id, set()).add(a_id)
+
+    def _node_keys(self, vnode: dict) -> list[str]:
+        keys = []
+        for key in (vnode.get("path"), vnode.get("_path"), vnode.get("ref")):
+            if key and key not in keys:
+                keys.append(key)
+        return keys
 
     def _ensure_index(self):
         return
@@ -116,6 +115,10 @@ class MergedStoreView:
         return None
 
     def bind_src(self, node: dict):
+        eid = node.get("id") if isinstance(node, dict) else None
+        if eid and eid in self._id_index:
+            node = dict(self._id_index[eid])
+            node["id"] = eid
         # 先让模块试绑定，再退回主图
         for mod in self.modules:
             try:

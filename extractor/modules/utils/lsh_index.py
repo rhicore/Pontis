@@ -69,7 +69,13 @@ def ref_to_index_name(ref: str) -> str:
 
 def index_path(workspace, col_ref: str) -> str:
     """返回索引文件的完整路径。"""
-    return os.path.join(workspace.index_root, ref_to_index_name(col_ref))
+    rows = workspace.cypher("MATCH (d:dir {path: '.'}) RETURN d.src AS src")
+    if not rows:
+        raise FileNotFoundError("project root source is not available")
+    src = rows[0].get("src")
+    if not src or not src.has("path"):
+        raise FileNotFoundError("project root source path is not available")
+    return os.path.join(src.get("path"), ".pontis", "_index", ref_to_index_name(col_ref))
 
 
 def choose_bucket_count(cardinality: Optional[int] = None) -> int:

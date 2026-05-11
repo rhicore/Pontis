@@ -1,7 +1,15 @@
 """Add Edge tool — 通过 Cypher CREATE 添加无向边。"""
 
-from tool.utils import execute_cypher
-from tool.utils.resolve import resolve_entity_selector, selector_match_pattern
+from tool.utils.resolve import resolve_entity_selector
+
+
+def _selector_pattern(selector: dict, var: str, prefix: str) -> tuple[str, dict]:
+    labels = "".join(f":{label}" for label in selector.get("labels", []))
+    if selector.get("path"):
+        return f"({var}{labels} {{path: ${prefix}_path}})", {f"{prefix}_path": selector["path"]}
+    if selector.get("ref"):
+        return f"({var}{labels} {{ref: ${prefix}_ref}})", {f"{prefix}_ref": selector["ref"]}
+    return f"({var}{labels} {{name: ${prefix}_name}})", {f"{prefix}_name": selector["name"]}
 
 
 def add_edge_command(workspace, edges: list) -> str:
@@ -25,18 +33,18 @@ def add_edge_command(workspace, edges: list) -> str:
             results.append(f"跳过: 缺少必填字段 (a={a_ref}, b={b_ref})")
             continue
 
-        a_sel, a_err = resolve_entity_selector(workspace, a_ref)
+        a_node, a_err = resolve_entity_selector(workspace, a_ref)
         if a_err:
             results.append(f"跳过 a: {a_err}")
             continue
 
-        b_sel, b_err = resolve_entity_selector(workspace, b_ref)
+        b_node, b_err = resolve_entity_selector(workspace, b_ref)
         if b_err:
             results.append(f"跳过 b: {b_err}")
             continue
 
-        a_project = a_sel["project"]
-        b_project = b_sel["project"]
+        a_project = a_node.get("project") or None
+        b_project = b_node.get("project") or None
         project = a_project or b_project
         if a_project and b_project and a_project != b_project:
             results.append(f"跳过: 暂不支持跨项目加边 ({a_ref} ↔ {b_ref})")
@@ -44,8 +52,8 @@ def add_edge_command(workspace, edges: list) -> str:
 
         valid_edges.append({
             "project": project,
-            "a_sel": a_sel,
-            "b_sel": b_sel,
+            "a_selector": a_node,
+            "b_selector": b_node,
             "a_ref": a_ref,
             "b_ref": b_ref,
         })
@@ -56,19 +64,16 @@ def add_edge_command(workspace, edges: list) -> str:
         return "没有有效的边可添加"
 
     for e in valid_edges:
-        workspace.materialize(e["a_sel"]["name"], project=e["project"])
-        workspace.materialize(e["b_sel"]["name"], project=e["project"])
-        a_match = selector_match_pattern(e["a_sel"], "a", "a_name")
-        b_match = selector_match_pattern(e["b_sel"], "b", "b_name")
-        execute_cypher(
-            workspace,
-            f"MATCH {a_match}, {b_match} CREATE (a)--(b)",
-            params={
-                "a_name": e["a_sel"]["name"],
-                "b_name": e["b_sel"]["name"],
-            },
+        a_pat, a_params = _selector_pattern(e["a_selector"], "a", "a")
+        b_pat, b_params = _selector_pattern(e["b_selector"], "b", "b")
+        rows = workspace.cypher(
+            f"MATCH {a_pat}, {b_pat} CREATE (a)--(b)",
+            params={**a_params, **b_params},
             project=e["project"],
         )
+        if not rows:
+            results.append(f"跳过: 无法创建边 ({e['a_ref']} ↔ {e['b_ref']})")
+            continue
 
     results.insert(0, f"已添加 {len(valid_edges)} 条边:")
     for e in valid_edges:

@@ -10,13 +10,27 @@ from typing import Optional
 from storage.workspace import Workspace
 
 
+def _lookup_file_src_rows(workspace: Workspace, rel_path: str, *, require_db: bool = False):
+    label_suffix = ":db" if require_db else ""
+    rows = workspace.cypher(
+        f"MATCH (f:file{label_suffix}) WHERE f.path = $path RETURN f.src AS src",
+        params={"path": rel_path},
+    )
+    if len(rows) == 1:
+        return rows
+    basename = os.path.basename(rel_path)
+    if not basename:
+        return []
+    return workspace.cypher(
+        f"MATCH (f:file{label_suffix}) WHERE f.name = $name RETURN f.src AS src",
+        params={"name": basename},
+    )
+
+
 def get_file_src(workspace: Workspace, rel_path: str):
     if os.path.isabs(rel_path):
         return None
-    rows = workspace.cypher(
-        "MATCH (f:file) WHERE f.name = $file OR f.path = $file RETURN f.src AS src",
-        params={"file": rel_path},
-    )
+    rows = _lookup_file_src_rows(workspace, rel_path)
     if len(rows) != 1:
         return None
     return rows[0].get("src")
@@ -28,7 +42,7 @@ def file_exists(workspace: Workspace, rel_path: str) -> bool:
     src = get_file_src(workspace, rel_path)
     if src and src.has("path"):
         return os.path.exists(src.get("path"))
-    return os.path.exists(os.path.join(workspace.project_path, rel_path))
+    return False
 
 
 def get_file_path(workspace: Workspace, rel_path: str) -> Optional[str]:
@@ -37,8 +51,7 @@ def get_file_path(workspace: Workspace, rel_path: str) -> Optional[str]:
     src = get_file_src(workspace, rel_path)
     if src and src.has("path"):
         return src.get("path")
-    path = os.path.join(workspace.project_path, rel_path)
-    return path if os.path.exists(path) else None
+    return None
 
 
 @contextmanager
@@ -62,24 +75,23 @@ def open_text_file(workspace: Workspace, rel_path: str, mode="r", **kwargs):
 def open_sqlite_db(workspace: Workspace, rel_path: str, *, readonly: bool = True):
     src = None
     if not os.path.isabs(rel_path):
-        rows = workspace.cypher(
-            "MATCH (f:file:db) WHERE f.name = $file OR f.path = $file RETURN f.src AS src",
-            params={"file": rel_path},
-        )
+        rows = _lookup_file_src_rows(workspace, rel_path, require_db=True)
         if len(rows) == 1:
             src = rows[0].get("src")
 
-    if src and src.has("path"):
-        db_path = src.get("path")
+    if src and src.has("db_connect"):
+        conn = src.get("db_connect")(readonly=readonly)
     else:
-        db_path = get_file_path(workspace, rel_path)
-    if not db_path:
-        raise FileNotFoundError(rel_path)
-
-    if readonly:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    else:
-        conn = sqlite3.connect(db_path)
+        if src and src.has("path"):
+            db_path = src.get("path")
+        else:
+            db_path = get_file_path(workspace, rel_path)
+        if not db_path:
+            raise FileNotFoundError(rel_path)
+        if readonly:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        else:
+            conn = sqlite3.connect(db_path)
     try:
         yield conn
     finally:

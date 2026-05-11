@@ -37,9 +37,11 @@ storage/
 基类不包含任何领域逻辑。它是一个纯粹的属性图数据库：
 
 - 节点有属性（dict），边是无向对
-- 只有 `labels` 是特殊属性（Cypher 语法级匹配）
+- 对 storage 外部，只有 `project`、`labels`、`src` 是框架保留的特殊访问面
 - `project` 不存储在节点属性中，由 Cypher 引擎实时附加（从 `store._project_name` 读取）
-- `name` 是普通属性，不是标识符
+- `labels` 是标签视图，底层仍由 `_labels` 存储
+- `src` 是只读虚属性，由模块在读路径按需绑定
+- `name` 是普通属性，不是标识符，也不比其他业务字段更特殊
 
 所有 FS 专属逻辑（名称索引、inode 检测、虚属性计算、文件系统扫描）都在 FSStore 中。
 

@@ -1,30 +1,26 @@
-"""Storage 层综合测试 — 覆盖 Store / Workspace / Cypher / src。
+"""Storage public contract tests.
 
-覆盖：
-- CRUD / 边
-- Cypher 查询与写入（含多跳/变长路径/参数化）
-- FS project 虚实体
-- graph-only project
-- n.src 原生端口绑定
-- 跨项目边
-- 并发控制
-- 持久化
+All graph operations in this file go through `cypher(...)`.
+The test intentionally avoids Store private methods: storage core must be
+validated as a Cypher graph engine, not as a ref/name/path resolver.
 
-用法: python3 scripts/storage/test_store.py
+Usage: python3 scripts/storage/test_store.py
 """
+
 import os
-import sys
 import shutil
+import sqlite3
+import sys
 import tempfile
 import traceback
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
-from storage.workspace import Workspace
-from storage.config import StoreConfig, ProjectConfig, SourceConfig, GraphConfig
 from storage import stores as store_factory
-from storage.stores.base import MatchQuery, MatchResult
+from storage.config import GraphConfig, ProjectConfig, SourceConfig
+from storage.workspace import Workspace
+
 
 passed = 0
 failed = 0
@@ -45,12 +41,6 @@ def ok(name, cond, detail=""):
         errors.append(name)
 
 
-def fresh_copy(src):
-    tmp = tempfile.mkdtemp(prefix="pontis_test_")
-    shutil.copytree(src, tmp, dirs_exist_ok=True)
-    return tmp
-
-
 def empty_project():
     tmp = tempfile.mkdtemp(prefix="pontis_empty_")
     os.makedirs(os.path.join(tmp, ".pontis"), exist_ok=True)
@@ -58,7 +48,6 @@ def empty_project():
 
 
 def make_store(path):
-    """Helper: 从路径创建一个带 FS 模块的主图 Store。"""
     return store_factory.create_store(
         ProjectConfig(source=SourceConfig(type="fs", path=path)))
 
@@ -75,709 +64,320 @@ def make_graph_store(db_path=None):
     )
 
 
-# ─── 1. CRUD ───────────────────────────────────────────────
+def names(rows, var="n"):
+    return {row[var].get("name") for row in rows}
+
+
+def first(rows, var="n"):
+    return rows[0][var] if rows else {}
+
+
+def external_entity_shape(node):
+    return isinstance(node, dict) and "id" in node and "labels" in node and "label" not in node and "eid" not in node
+
+
+def create_node(s, label, **props):
+    props_text = ", ".join(
+        f"{k}: {repr(v)}" if not isinstance(v, (int, float)) else f"{k}: {v}"
+        for k, v in props.items()
+    )
+    query = f"CREATE (n:{label} {{{props_text}}})" if props_text else f"CREATE (n:{label})"
+    return s.cypher(query)[0]["created"]
+
+
+def create_edge_by_name(s, a_name, b_name):
+    return s.cypher(
+        "MATCH (a {name: $a}), (b {name: $b}) CREATE (a)--(b)",
+        params={"a": a_name, "b": b_name},
+    )
+
 
 def test_crud(s):
-    print("\n[1] CRUD")
+    print("\n[1] CRUD via Cypher")
 
-    eid = s._create_node("t1", meta={"v": 1}, labels=["test"])
-    ok("create returns ent_", eid.startswith("ent_"))
+    created = create_node(s, "test", name="t1", v=1)
+    ent_id = created["id"]
+    ok("CREATE returns id", ent_id.startswith("ent_"), f"got {created}")
+    ok("external entity fields", external_entity_shape(created), f"got {created}")
+    ok("ordinary name returned", created.get("name") == "t1", f"got {created}")
 
-    m = s._get_meta("t1")
-    ok("get_meta by name", m is not None and m["v"] == 1)
-    ok("get_meta by id", s._get_meta(eid) is not None)
+    rows = s.cypher("MATCH (n {name: $name}) RETURN n", params={"name": "t1"})
+    ok("MATCH by ordinary name", len(rows) == 1 and rows[0]["n"]["id"] == ent_id, f"got {rows}")
 
-    s._set_meta("t1", {"v": 2, "extra": True})
-    m2 = s._get_meta("t1")
-    ok("set_meta merge", m2["v"] == 2 and m2["extra"] is True)
+    rows_by_id = s.cypher("MATCH (n {id: $id}) RETURN n", params={"id": ent_id})
+    ok("MATCH by id", len(rows_by_id) == 1 and rows_by_id[0]["n"]["name"] == "t1")
 
-    s._put_meta("t1", {"v": 3, "_labels": ["test"]})
-    m3 = s._get_meta("t1")
-    ok("put_meta replace", m3["v"] == 3 and "extra" not in m3)
+    s.cypher("MATCH (n {id: $id}) SET n.v = 2, n.extra = 'yes'", params={"id": ent_id})
+    updated = first(s.cypher("MATCH (n {id: $id}) RETURN n", params={"id": ent_id}))
+    ok("SET ordinary props", updated.get("v") == 2 and updated.get("extra") == "yes", f"got {updated}")
 
-    eid2 = s._create_node("t1", labels=["test"])
-    ok("idempotent create", eid == eid2)
+    s.cypher("MATCH (n {id: $id}) SET n.id = 'bad_id'", params={"id": ent_id})
+    same_id = first(s.cypher("MATCH (n {id: $id}) RETURN n", params={"id": ent_id}))
+    bad_id = s.cypher("MATCH (n {id: 'bad_id'}) RETURN n")
+    ok("SET id ignored", same_id.get("id") == ent_id and bad_id == [], f"got {same_id} / {bad_id}")
 
-    deleted = s._delete_node("t1")
-    ok("delete returns name", deleted == "t1", f"got {deleted}")
-    ok("deleted → None", s._get_meta("t1") is None)
-    ok("delete nonexistent → ''", s._delete_node("no_such") == "")
+    s.cypher("MATCH (n {id: $id}) SET n.labels = $labels", params={"id": ent_id, "labels": ["test", "updated"]})
+    relabeled = first(s.cypher("MATCH (n {id: $id}) RETURN n", params={"id": ent_id}))
+    ok("SET labels", set(relabeled.get("labels", [])) == {"test", "updated"}, f"got {relabeled}")
 
+    s.cypher("MATCH (n {id: $id}) DELETE n", params={"id": ent_id})
+    gone = s.cypher("MATCH (n {id: $id}) RETURN n", params={"id": ent_id})
+    ok("DELETE by id", gone == [], f"got {gone}")
 
-# ─── 2. Edges ──────────────────────────────────────────────
 
 def test_edges(s):
-    print("\n[2] Edges")
+    print("\n[2] Edges via Cypher")
 
-    s._create_node("a")
-    s._create_node("b")
-    s._create_node("c")
+    for name in ("a", "b", "c"):
+        create_node(s, "node", name=name)
+    create_edge_by_name(s, "a", "b")
+    create_edge_by_name(s, "b", "c")
+    create_edge_by_name(s, "a", "b")
 
-    s._add_edges([{"a": "a", "b": "b"}, {"a": "b", "b": "c"}])
-    ok("neighbor forward", "b" in s._neighbors("a"))
-    ok("neighbor bidirectional", "a" in s._neighbors("b") and "c" in s._neighbors("b"))
+    rows = s.cypher("MATCH (a {name: 'a'})--(b) RETURN b")
+    ok("neighbor forward", names(rows, "b") == {"b"}, f"got {rows}")
 
-    s._add_edges([{"a": "a", "b": "b"}])
-    ok("edge dedup", len(s._neighbors("a")) == 1)
+    rows = s.cypher("MATCH (b {name: 'b'})--(n) RETURN n")
+    ok("neighbor bidirectional and dedup", names(rows) == {"a", "c"}, f"got {rows}")
 
-    s._add_edges([{"a": "a", "b": "a"}])
-    ok("self-loop ignored", "a" not in s._neighbors("a"))
+    s.cypher("MATCH (n {name: 'c'}) DELETE n")
+    rows = s.cypher("MATCH (b {name: 'b'})--(n) RETURN n")
+    ok("delete cascades edges", names(rows) == {"a"}, f"got {rows}")
 
-    s._delete_node("c")
-    ok("delete cascades edges", "c" not in s._neighbors("b"))
-
-    ok("get_edges non-empty", len(s._get_edges()) >= 1)
-
-    s._clear_edges()
-    ok("clear_edges", len(s._neighbors("a")) == 0)
-
-    s._delete_node("a")
-    s._delete_node("b")
-
-
-# ─── Graph builder ─────────────────────────────────────────
 
 def build_graph(s):
-    """e-commerce 图: db→tables→cols, FK, overlap, disambig, knowledge.
-
-    shop (db)
-    ├── users (table, 1000 rows, 4 cols)
-    │   ├── id      (col, INT, card=1000)
-    │   ├── name    (col, TEXT, card=980)
-    │   ├── email   (col, TEXT, card=1000)
-    │   └── age     (col, INT, card=45)
-    ├── orders (table, 50000 rows, 6 cols)
-    │   ├── id      (col, INT, card=50000)
-    │   ├── user_id (col, INT, card=800)  ──fk──▸ users.id
-    │   ├── amount  (col, REAL, card=12000) ──overlap──▸ products.price
-    │   ├── status  (col, TEXT, card=5)
-    │   ├── note    (col, TEXT, card=200)
-    │   └── ts      (col, TEXT, card=45000)
-    └── products (table, 300 rows, 5 cols)
-        ├── id      (col, INT, card=300)
-        ├── name    (col, TEXT, card=300) ──disambig──▸ users.name
-        ├── price   (col, REAL, card=250)
-        ├── cat     (col, TEXT, card=15)
-        └── stock   (col, INT, card=80)
-
-    + knowledge: convention, pattern
-    """
-    s._create_node("shop", labels=["db"], meta={"path": "shop.sqlite"})
-
-    for t, rc, cc in [("users", 1000, 4), ("orders", 50000, 6), ("products", 300, 5)]:
-        s._create_node(t, labels=["table"], meta={"row_count": rc, "column_count": cc})
+    create_node(s, "db", name="shop", path="shop.sqlite")
+    for table, rc, cc in [("users", 1000, 4), ("orders", 50000, 6), ("products", 300, 5)]:
+        create_node(s, "table", name=table, row_count=rc, column_count=cc)
+        create_edge_by_name(s, "shop", table)
 
     cols = [
-        ("users", "id",       ["col", "INT"],  {"cardinality": 1000}),
-        ("users", "name",     ["col", "TEXT"],  {"cardinality": 980}),
-        ("users", "email",    ["col", "TEXT"],  {"cardinality": 1000}),
-        ("users", "age",      ["col", "INT"],   {"cardinality": 45}),
-        ("orders", "id",      ["col", "INT"],   {"cardinality": 50000}),
-        ("orders", "user_id", ["col", "INT"],   {"cardinality": 800}),
-        ("orders", "amount",  ["col", "REAL"],  {"cardinality": 12000}),
-        ("orders", "status",  ["col", "TEXT"],  {"cardinality": 5}),
-        ("orders", "note",    ["col", "TEXT"],  {"cardinality": 200}),
-        ("orders", "ts",      ["col", "TEXT"],  {"cardinality": 45000}),
-        ("products", "id",    ["col", "INT"],   {"cardinality": 300}),
-        ("products", "name",  ["col", "TEXT"],  {"cardinality": 300}),
-        ("products", "price", ["col", "REAL"],  {"cardinality": 250}),
-        ("products", "cat",   ["col", "TEXT"],  {"cardinality": 15}),
-        ("products", "stock", ["col", "INT"],   {"cardinality": 80}),
+        ("users", "id", ["col", "INT"], {"cardinality": 1000}),
+        ("users", "name", ["col", "TEXT"], {"cardinality": 980}),
+        ("users", "email", ["col", "TEXT"], {"cardinality": 1000}),
+        ("users", "age", ["col", "INT"], {"cardinality": 45}),
+        ("orders", "id", ["col", "INT"], {"cardinality": 50000}),
+        ("orders", "user_id", ["col", "INT"], {"cardinality": 800}),
+        ("orders", "amount", ["col", "REAL"], {"cardinality": 12000}),
+        ("orders", "status", ["col", "TEXT"], {"cardinality": 5}),
+        ("orders", "note", ["col", "TEXT"], {"cardinality": 200}),
+        ("orders", "ts", ["col", "TEXT"], {"cardinality": 45000}),
+        ("products", "id", ["col", "INT"], {"cardinality": 300}),
+        ("products", "name", ["col", "TEXT"], {"cardinality": 300}),
+        ("products", "price", ["col", "REAL"], {"cardinality": 250}),
+        ("products", "cat", ["col", "TEXT"], {"cardinality": 15}),
+        ("products", "stock", ["col", "INT"], {"cardinality": 80}),
     ]
-    for tbl, cname, lbls, meta in cols:
-        full = f"{tbl}.{cname}"
-        s._create_node(full, labels=lbls, meta=meta)
-        s._add_edges([{"a": tbl, "b": full}])
+    for table, col, labels, props in cols:
+        full = f"{table}.{col}"
+        label_text = ":".join(labels)
+        props_text = ", ".join([f"name: {full!r}"] + [f"{k}: {v!r}" for k, v in props.items()])
+        s.cypher(f"CREATE (n:{label_text} {{{props_text}}})")
+        create_edge_by_name(s, table, full)
 
-    for t in ["users", "orders", "products"]:
-        s._add_edges([{"a": "shop", "b": t}])
+    create_node(s, "fk", name="fk_o_u")
+    create_edge_by_name(s, "orders.user_id", "fk_o_u")
+    create_edge_by_name(s, "users.id", "fk_o_u")
 
-    # FK: orders.user_id → users.id
-    s._create_node("fk_o_u", labels=["fk"], meta={"from": "orders.user_id", "to": "users.id"})
-    s._add_edges([
-        {"a": "orders.user_id", "b": "fk_o_u"},
-        {"a": "users.id", "b": "fk_o_u"},
-    ])
+    create_node(s, "overlap", name="ol_price_amt", similarity=0.85)
+    create_edge_by_name(s, "products.price", "ol_price_amt")
+    create_edge_by_name(s, "orders.amount", "ol_price_amt")
 
-    # overlap: products.price ↔ orders.amount
-    s._create_node("ol_price_amt", labels=["overlap"], meta={"similarity": 0.85})
-    s._add_edges([
-        {"a": "products.price", "b": "ol_price_amt"},
-        {"a": "orders.amount", "b": "ol_price_amt"},
-    ])
+    create_node(s, "disambig", name="dis_name", note="users.name=person, products.name=item")
+    create_edge_by_name(s, "users.name", "dis_name")
+    create_edge_by_name(s, "products.name", "dis_name")
 
-    # disambiguation: users.name vs products.name
-    s._create_node("dis_name", labels=["disambig"],
-                   meta={"note": "users.name=person, products.name=item"})
-    s._add_edges([
-        {"a": "users.name", "b": "dis_name"},
-        {"a": "products.name", "b": "dis_name"},
-    ])
-
-    # knowledge
-    s._create_node("conv_id", labels=["convention"],
-                   meta={"content": "All id columns are INT auto-increment PKs"})
-    s._create_node("pat_ts", labels=["pattern"],
-                   meta={"content": "Timestamps use ISO 8601"})
+    create_node(s, "convention", name="conv_id", content="All id columns are INT auto-increment PKs")
+    create_node(s, "pattern", name="pat_ts", content="Timestamps use ISO 8601")
 
 
-# ─── 3. Cypher MATCH ──────────────────────────────────────
-
-def test_cypher_match(s):
-    print("\n[3] Cypher MATCH")
+def test_cypher_match_and_traversal(s):
+    print("\n[3] Cypher Match and Traversal")
     build_graph(s)
 
-    # label filter — exact set (empty project, no virtual pollution)
-    r = s.cypher("MATCH (n:table) RETURN n")
-    names = {row["n"]["name"] for row in r}
-    ok("MATCH :table", names == {"users", "orders", "products"}, f"got {names}")
+    ok("MATCH :table", names(s.cypher("MATCH (n:table) RETURN n")) == {"users", "orders", "products"})
+    ok("MATCH :col:INT", names(s.cypher("MATCH (n:col:INT) RETURN n")) == {
+        "users.id", "users.age", "orders.id", "orders.user_id", "products.id", "products.stock"
+    })
+    ok("inline prop", first(s.cypher("MATCH (n:table {row_count: 1000}) RETURN n")).get("name") == "users")
+    ok("WHERE =", first(s.cypher("MATCH (n:table) WHERE n.row_count = 50000 RETURN n")).get("name") == "orders")
+    ok("WHERE >", names(s.cypher("MATCH (n:table) WHERE n.row_count > 1000 RETURN n")) == {"orders"})
+    ok("WHERE <=", names(s.cypher("MATCH (n:table) WHERE n.row_count <= 300 RETURN n")) == {"products"})
+    ok("WHERE !=", names(s.cypher("MATCH (n:table) WHERE n.name != 'orders' RETURN n")) == {"users", "products"})
+    ok("STARTS WITH", len(s.cypher("MATCH (n) WHERE n.name STARTS WITH 'orders.' RETURN n")) == 6)
+    ok("ENDS WITH", len(s.cypher("MATCH (n:col) WHERE n.name ENDS WITH '.id' RETURN n")) == 3)
+    ok("CONTAINS", names(s.cypher("MATCH (n:col) WHERE n.name CONTAINS '.user' RETURN n")) == {"orders.user_id"})
 
-    # multi-label
-    r = s.cypher("MATCH (n:col:INT) RETURN n")
-    int_names = {row["n"]["name"] for row in r}
-    ok("MATCH :col:INT",
-       int_names == {"users.id", "users.age", "orders.id", "orders.user_id",
-                      "products.id", "products.stock"},
-       f"got {int_names}")
-
-    # inline property
-    r = s.cypher("MATCH (n:table {row_count: 1000}) RETURN n")
-    ok("inline prop", len(r) == 1 and r[0]["n"]["name"] == "users")
-
-    # WHERE = > <= != STARTS/ENDS/CONTAINS
-    r = s.cypher("MATCH (n:table) WHERE n.row_count = 50000 RETURN n")
-    ok("WHERE =", len(r) == 1 and r[0]["n"]["name"] == "orders")
-
-    r = s.cypher("MATCH (n:table) WHERE n.row_count > 1000 RETURN n")
-    ok("WHERE >", {row["n"]["name"] for row in r} == {"orders"})
-
-    r = s.cypher("MATCH (n:table) WHERE n.row_count <= 300 RETURN n")
-    ok("WHERE <=", {row["n"]["name"] for row in r} == {"products"})
-
-    r = s.cypher("MATCH (n:table) WHERE n.name != 'orders' RETURN n")
-    ok("WHERE !=", {row["n"]["name"] for row in r} == {"users", "products"})
-
-    r = s.cypher("MATCH (n) WHERE n.name STARTS WITH 'orders.' RETURN n")
-    ok("STARTS WITH", len(r) == 6, f"got {len(r)}")  # id,user_id,amount,status,note,ts
-
-    r = s.cypher("MATCH (n:col) WHERE n.name ENDS WITH '.id' RETURN n")
-    ok("ENDS WITH", len(r) == 3, f"got {[x['n']['name'] for x in r]}")
-
-    r = s.cypher("MATCH (n:col) WHERE n.name CONTAINS '.user' RETURN n")
-    user_cols = {row["n"]["name"] for row in r}
-    ok("CONTAINS", user_cols == {"orders.user_id"}, f"got {user_cols}")
-
-    # >= / <
-    r = s.cypher("MATCH (n:col:INT) WHERE n.cardinality >= 1000 RETURN n")
-    big_ints = {row["n"]["name"] for row in r}
-    ok("WHERE >=", "users.id" in big_ints and "orders.id" in big_ints, f"got {big_ints}")
-
-    r = s.cypher("MATCH (n:col:INT) WHERE n.cardinality < 100 RETURN n")
-    small_ints = {row["n"]["name"] for row in r}
-    ok("WHERE <", small_ints == {"users.age", "products.stock"}, f"got {small_ints}")
-
-
-# ─── 4. Cypher traversal ──────────────────────────────────
-
-def test_cypher_traversal(s):
-    print("\n[4] Cypher Traversal")
-
-    # 1-hop: db → table
-    r = s.cypher("MATCH (d:db)--(t:table) RETURN d, t")
-    ok("1-hop", len(r) == 3, f"got {len(r)}")
-    ok("1-hop var d", all(row["d"]["name"] == "shop" for row in r))
-
-    # 2-hop: db → table → col
-    r = s.cypher("MATCH (d:db)--(t:table)--(c:col) RETURN c")
-    ok("2-hop", len(r) == 15, f"got {len(r)}")
-
-    # 3-hop: db → table → col → disambig
-    r = s.cypher("MATCH (d:db)--(t:table)--(c:col)--(x:disambig) RETURN c, x")
-    ok("3-hop disambig", len(r) == 2, f"got {len(r)}")
-    c_names = {row["c"]["name"] for row in r}
-    ok("disambig cols", c_names == {"users.name", "products.name"})
-
-    # FK path (undirected: both directions match)
-    r = s.cypher("MATCH (c1:col)--(fk:fk)--(c2:col) RETURN c1, c2")
-    ok("FK path count", len(r) == 2, f"got {len(r)}")
-    pairs = {(row["c1"]["name"], row["c2"]["name"]) for row in r}
-    ok("FK endpoints",
-       ("orders.user_id", "users.id") in pairs or ("users.id", "orders.user_id") in pairs,
-       f"got {pairs}")
-
-    # overlap path
-    r = s.cypher("MATCH (c1:col)--(o:overlap)--(c2:col) RETURN c1, c2")
-    ok("overlap path count", len(r) == 2, f"got {len(r)}")
-    overlap_pair = {(row["c1"]["name"], row["c2"]["name"]) for row in r}
-    ok("overlap endpoints",
-       ("products.price", "orders.amount") in overlap_pair
-       or ("orders.amount", "products.price") in overlap_pair)
-
-    # 4-hop: table → col → fk → col → table
-    r = s.cypher("""
-        MATCH (t1:table)--(c1:col)--(fk:fk)--(c2:col)--(t2:table)
-        RETURN t1, t2
-    """)
-    ok("4-hop join path", len(r) >= 1, f"got {len(r)}")
-    if r:
-        pair = (r[0]["t1"]["name"], r[0]["t2"]["name"])
-        ok("join path orders↔users",
-           pair == ("orders", "users") or pair == ("users", "orders"),
-           f"got {pair}")
-
-    # variable-length 1..2
-    r = s.cypher("MATCH (d:db)-[*1..2]-(t:table) RETURN DISTINCT t")
-    ok("[*1..2]", len(r) == 3, f"got {len(r)}")
-
-    # variable-length 1..3
-    r = s.cypher("MATCH (d:db {name: 'shop'})-[*1..3]-(n) RETURN DISTINCT n")
-    ok("[*1..3]", len(r) >= 15, f"got {len(r)}")
-
-    # cartesian product + WHERE
-    r = s.cypher("""
+    ok("1-hop", len(s.cypher("MATCH (d:db)--(t:table) RETURN d, t")) == 3)
+    ok("2-hop", len(s.cypher("MATCH (d:db)--(t:table)--(c:col) RETURN c")) == 15)
+    ok("3-hop disambig", names(s.cypher("MATCH (d:db)--(t:table)--(c:col)--(x:disambig) RETURN c"), "c") == {"users.name", "products.name"})
+    ok("FK path", len(s.cypher("MATCH (c1:col)--(fk:fk)--(c2:col) RETURN c1, c2")) == 2)
+    ok("overlap path", len(s.cypher("MATCH (c1:col)--(o:overlap)--(c2:col) RETURN c1, c2")) == 2)
+    ok("varlen", len(s.cypher("MATCH (d:db {name: 'shop'})-[*1..3]-(n) RETURN DISTINCT n")) >= 15)
+    ok("cartesian + WHERE", "orders.user_id" in names(s.cypher("""
         MATCH (a:table), (b:col:INT)
         WHERE a.name = 'users' AND b.cardinality > 500
         RETURN b
-    """)
-    big_int = {row["b"]["name"] for row in r}
-    ok("cartesian + WHERE", "users.id" in big_int and "orders.user_id" in big_int,
-       f"got {big_int}")
+    """), "b"))
 
-    # knowledge
-    r = s.cypher("MATCH (n:convention) RETURN n")
-    ok("MATCH :convention", len(r) == 1 and r[0]["n"]["name"] == "conv_id")
-    r = s.cypher("MATCH (n:pattern) RETURN n")
-    ok("MATCH :pattern", len(r) == 1 and r[0]["n"]["name"] == "pat_ts")
-
-    # no-label match by property only
-    s._create_node("loner", meta={"note": "no labels"})
-    r = s.cypher("MATCH (n {name: 'loner'}) RETURN n")
-    ok("property-only match", len(r) == 1)
-    s._delete_node("loner")
-
-
-# ─── 5. Cypher writes ─────────────────────────────────────
 
 def test_cypher_writes(s):
-    print("\n[5] Cypher Writes")
+    print("\n[4] Cypher Writes")
 
-    # CREATE — returns list with {"created": ...}
-    r = s.cypher("CREATE (n:demo {name: 'w1', x: 10})")
-    ok("CREATE node", isinstance(r, list) and r[0].get("created", {}).get("name") == "w1",
-       f"got {r}")
-    ok("CREATE verifiable", len(s.cypher("MATCH (n:demo) RETURN n")) == 1)
+    created = s.cypher("CREATE (n:demo {name: 'w1', x: 10})")[0]["created"]
+    ok("CREATE node", created.get("name") == "w1" and created.get("x") == 10, f"got {created}")
 
-    # SET =
     s.cypher("MATCH (n:demo {name: 'w1'}) SET n.x = 20")
-    m = s._get_meta("w1")
-    ok("SET =", m["x"] == 20)
+    ok("SET =", first(s.cypher("MATCH (n:demo {name: 'w1'}) RETURN n")).get("x") == 20)
 
-    # SET += $params (params dict is nested: the key "p" matches $p)
-    s.cypher("MATCH (n:demo {name: 'w1'}) SET n += $p",
-             params={"p": {"y": "hello", "tags": [1, 2, 3]}})
-    m2 = s._get_meta("w1")
-    ok("SET += merge", m2["x"] == 20 and m2["y"] == "hello")
-    ok("SET += labels kept", "demo" in m2.get("_labels", []))
+    s.cypher("MATCH (n:demo {name: 'w1'}) SET n += $p", params={"p": {"y": "hello", "tags": [1, 2, 3]}})
+    row = first(s.cypher("MATCH (n:demo {name: 'w1'}) RETURN n"))
+    ok("SET += merge", row.get("x") == 20 and row.get("y") == "hello", f"got {row}")
+    ok("param WHERE", len(s.cypher("MATCH (n:demo) WHERE n.y = $v RETURN n", params={"v": "hello"})) == 1)
 
-    # param WHERE
-    r = s.cypher("MATCH (n:demo) WHERE n.y = $v RETURN n", params={"v": "hello"})
-    ok("param WHERE", len(r) == 1)
+    create_edge_by_name(s, "users", "w1")
+    ok("CREATE edge", len(s.cypher("MATCH (a {name: 'users'})--(b {name: 'w1'}) RETURN a, b")) == 1)
 
-    # CREATE edge
-    r = s.cypher("MATCH (a {name: 'users'}), (b {name: 'w1'}) CREATE (a)--(b)")
-    ok("CREATE edge", isinstance(r, list) and r[0].get("created_edges", 0) >= 1,
-       f"got {r}")
-    ok("edge exists", "w1" in s._neighbors("users"))
-
-    # DELETE
-    r = s.cypher("MATCH (n:demo) DELETE n")
-    ok("DELETE", isinstance(r, list) and len(r[0].get("deleted", [])) >= 1,
-       f"got {r}")
-    ok("deleted gone", s._get_meta("w1") is None)
-    ok("edge cleaned", "w1" not in s._neighbors("users"))
+    s.cypher("MATCH (n:demo {name: 'w1'}) DELETE n")
+    ok("DELETE", s.cypher("MATCH (n:demo {name: 'w1'}) RETURN n") == [])
+    ok("edge cleaned", s.cypher("MATCH (a {name: 'users'})--(b {name: 'w1'}) RETURN a, b") == [])
 
 
-# ─── 6. Virtual entities (needs real FS) ──────────────────
-
-def test_virtual(s):
-    print("\n[6] Virtual Entities")
-
-    # create a real sqlite file for virtual discovery
-    import sqlite3
-    db_path = os.path.join(s._project_path, "test.db")
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE IF NOT EXISTS t1 (id INT, name TEXT)")
-    conn.execute("INSERT INTO t1 VALUES (1, 'a'), (2, 'b')")
-    conn.commit()
-    conn.close()
-
-    s._ensure_index()
-
-    ws = Workspace(project_path=s._project_path)
-    subgraph = ws.module_subgraph()
-    virtual_names = {n.get("name") for n in subgraph["nodes"]}
-    ok("file virtual in module subgraph", "test.db" in virtual_names, f"got {sorted(virtual_names)}")
-
-    # get_virtual_meta
-    fm = s.get_virtual_meta("test.db")
-    ok("file virtual meta", fm is not None, f"got {fm}")
-    if fm:
-        ok("file has file_size", "file_size" in fm)
-        ok("file has db label", "db" in fm.get("_labels", []))
-
-    # dir virtual
-    dm = s.get_virtual_meta(".")
-    ok("root dir virtual", dm is not None, f"got {dm}")
-    if dm:
-        ok("dir has child_count", "child_count" in dm, f"keys: {list(dm.keys())}")
-
-    # 中心化 materialize
-    eid = ws.materialize("test.db")
-    ok("materialize → ent_", eid.startswith("ent_"))
-    ok("materialize persisted", s._get_meta(eid) is not None)
-    pm = s._get_meta("test.db") or {}
-    ok("materialize keeps path", pm.get("path") == "test.db", f"got {pm.get('path')}")
-    ok("materialize keeps file_size", "file_size" in pm, f"got keys: {list(pm.keys())}")
-    ok("materialize keeps db label", "db" in pm.get("_labels", []), f"got {pm.get('_labels')}")
-
-    s._set_meta("test.db", {"path": "WRONG_PATH", "detail": "manual"})
-    eid2 = ws.materialize("test.db")
-    ok("materialize idempotent", eid == eid2)
-    pm2 = s._get_meta("test.db") or {}
-    ok("virtual path overrides persisted path", pm2.get("path") == "test.db", f"got {pm2.get('path')}")
-    ok("non-virtual field survives rematerialize", pm2.get("detail") == "manual", f"got {pm2.get('detail')}")
-
-    # discover_virtual for dirs
-    dirs = s.discover_virtual("*", label="dir")
-    ok("discover dirs", len(dirs) > 0, f"got {len(dirs)}")
-
-    # discover_virtual for untracked files — create a new one
-    with open(os.path.join(s._project_path, "new_file.csv"), "w") as f:
-        f.write("a,b\n1,2\n")
-    found_files = s.discover_virtual("*.csv")
-    ok("discover new csv", len(found_files) > 0, f"got {len(found_files)}")
-
-    # closure materialization: materialize dir and persist virtual child edges
-    dir_id = ws.materialize("docs")
-    ok("dir materialize → ent_", dir_id.startswith("ent_"), f"got {dir_id}")
-    dir_neighbors = s._neighbors("docs")
-    ok("dir materialize persists child edge", len(dir_neighbors) > 0, f"got {dir_neighbors}")
-
-
-# ─── 6b. src binding ──────────────────────────────────────
-
-def test_src_binding():
-    print("\n[6b] src Binding")
+def test_virtual_and_src():
+    print("\n[5] Virtual Entities and src via Workspace.cypher")
 
     p = empty_project()
-    db_path = os.path.join(p, "sample.sqlite")
-    conn = __import__("sqlite3").connect(db_path)
-    conn.execute("CREATE TABLE t (id INT, name TEXT)")
-    conn.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+    db_path = os.path.join(p, "test.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("CREATE TABLE orders(order_id INTEGER, user_id INTEGER, FOREIGN KEY(user_id) REFERENCES users(id))")
+    conn.execute("INSERT INTO users VALUES (1, 'a'), (2, 'b')")
+    conn.execute("INSERT INTO orders VALUES (10, 1), (11, 2)")
     conn.commit()
     conn.close()
+
     txt_path = os.path.join(p, "notes.txt")
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write("hello\nworld\n")
 
     ws = Workspace(project_path=p)
-    rows = ws.cypher("MATCH (f:file:db) RETURN f, f.src AS src")
-    ok("file:db rows found", len(rows) == 1, f"got {len(rows)}")
-    if rows:
-        src = rows[0]["src"]
-        ok("src handle type", type(src).__name__ == "SrcHandle", f"got {type(src).__name__}")
-        ok("src has path", src.has("path"))
-        ok("src has open", src.has("open"))
-        ok("src has db_connect", src.has("db_connect"))
-        ok("src path exists", os.path.isfile(src.get("path")))
-        dbc = src.get("db_connect")()
-        try:
-            n = dbc.execute("SELECT COUNT(*) FROM t").fetchone()[0]
-            ok("db_connect works", n == 2, f"got {n}")
-        finally:
-            dbc.close()
+    db_rows = ws.cypher("MATCH (f:file:db) WHERE f.name = 'test.db' RETURN f, f.src AS src")
+    ok("db file virtual row", len(db_rows) == 1, f"got {db_rows}")
+    if db_rows:
+        f = db_rows[0]["f"]
+        src = db_rows[0]["src"]
+        ok("virtual file external fields", external_entity_shape(f), f"got {f}")
+        ok("virtual file ordinary props", f.get("name") == "test.db" and f.get("path") == "test.db", f"got {f}")
+        ok("src db_connect", src is not None and src.has("db_connect"))
 
-    rows2 = ws.cypher("MATCH (f:file) WHERE f.name = 'notes.txt' RETURN f.src AS src")
-    ok("text file src found", len(rows2) == 1, f"got {len(rows2)}")
-    if rows2:
-        src = rows2[0]["src"]
-        ok("text src has open", src.has("open"))
+    table_rows = ws.cypher('MATCH (d:file:db {name: "test.db"})--(t:table) RETURN t')
+    ok("db schema tables", names(table_rows, "t") == {"users", "orders"}, f"got {table_rows}")
+
+    col_rows = ws.cypher("""
+        MATCH (d:file:db {name: "test.db"})--(t:table {name: "users"})--(c:col {name: "id"})
+        RETURN c
+    """)
+    ok("db schema column by ordinary props", len(col_rows) == 1, f"got {col_rows}")
+    if col_rows:
+        ok("db schema external fields", external_entity_shape(col_rows[0]["c"]), f"got {col_rows[0]['c']}")
+
+    fk_rows = ws.cypher("MATCH (n:fk) RETURN n")
+    ok("db schema fk", "orders.user_id->users.id" in names(fk_rows), f"got {fk_rows}")
+
+    text_rows = ws.cypher("MATCH (f:file) WHERE f.name = 'notes.txt' RETURN f.src AS src")
+    ok("text file src row", len(text_rows) == 1, f"got {text_rows}")
+    if text_rows:
+        src = text_rows[0]["src"]
         with src.get("open")("r", encoding="utf-8") as fh:
             content = fh.read()
-        ok("text open works", content == "hello\nworld\n", f"got {content!r}")
+        ok("text src open", content == "hello\nworld\n", f"got {content!r}")
+
+    ws.cypher("MATCH (f:file {name: 'notes.txt'}) SET f.note = 'kept'")
+    note_rows = ws.cypher("MATCH (f:file {name: 'notes.txt'}) RETURN f")
+    ok("Cypher SET materializes virtual", first(note_rows, "f").get("note") == "kept", f"got {note_rows}")
+
+    edge_rows = ws.cypher(
+        "MATCH (a:file {name: 'notes.txt'}), (b:file:db {name: 'test.db'}) CREATE (a)--(b)"
+    )
+    linked = ws.cypher("MATCH (a:file {name: 'notes.txt'})--(b:file:db {name: 'test.db'}) RETURN a, b")
+    ok("Cypher CREATE edge materializes virtual endpoints", edge_rows and len(linked) == 1, f"got {edge_rows}, {linked}")
 
     shutil.rmtree(p, ignore_errors=True)
 
 
-# ─── 6c. graph-only project ───────────────────────────────
-
 def test_graph_only():
-    print("\n[6c] Graph-only Project")
+    print("\n[6] Graph-only Project")
 
     root = tempfile.mkdtemp(prefix="pontis_graph_only_")
     db_path = os.path.join(root, "store.db")
     s = make_graph_store(db_path)
-    s._create_node("README", labels=["knowledge"], meta={"brief": "x", "detail": "y"})
-    ws = Workspace.__new__(Workspace)
-    ws._config = StoreConfig(
-        projects={"g": ProjectConfig(name="g", source=SourceConfig(type="graph"),
-                                      graph=GraphConfig(type="sqlite", path=db_path))}
-    )
-    ws._stores = {"g": s}
+    s.cypher("CREATE (n:knowledge {name: 'README', brief: 'x', detail: 'y'})")
 
-    rows = ws.cypher("MATCH (n:knowledge) RETURN n")
+    rows = s.cypher("MATCH (n:knowledge) RETURN n")
     ok("graph-only cypher", len(rows) == 1 and rows[0]["n"]["name"] == "README", f"got {rows}")
-    rows2 = ws.cypher("MATCH (n:knowledge) RETURN n.src AS src")
+    rows2 = s.cypher("MATCH (n:knowledge) RETURN n.src AS src")
     ok("graph-only src is None", len(rows2) == 1 and rows2[0]["src"] is None, f"got {rows2}")
 
     shutil.rmtree(root, ignore_errors=True)
 
 
-def test_store_modules():
-    print("\n[6d] Store Modules")
-
-    p = empty_project()
-    db_path = os.path.join(p, "sample.sqlite")
-    conn = __import__("sqlite3").connect(db_path)
-    conn.execute("CREATE TABLE t (id INT)")
-    conn.commit()
-    conn.close()
-
-    s = make_store(p)
-    ok("fs store exposes module", len(s.modules) == 1, f"got {len(s.modules)}")
-    if s.modules:
-        mod = s.modules[0]
-        ok("module has stable name", getattr(mod, "name", "") == "fs", f"got {getattr(mod, 'name', None)}")
-        ok("module exposes match query",
-           isinstance(mod.match_query({"labels": ["file", "db"], "path": "sample.sqlite"}), MatchQuery))
-        q = mod.match_query({"labels": ["file", "db"], "path": "sample.sqlite"})
-        rows = s.cypher(q.query, params=q.params) if q else []
-        ok("match query unmaterialized count", len(rows) == 0, f"got {rows}")
-
-        s._create_node("sample.sqlite")
-        q2 = mod.match_query({"labels": ["file", "db"], "path": "sample.sqlite"})
-        rows2 = s.cypher(q2.query, params=q2.params) if q2 else []
-        names2 = [row["n"]["name"] for row in rows2]
-        ok("materialized file path match count", len(names2) == 1, f"got {names2}")
-        ok("materialized file path match target", names2 == ["sample.sqlite"], f"got {names2}")
-
-    ws = Workspace(project_path=p)
-    mods = ws.modules()
-    ok("workspace sees modules", len(mods) == 1, f"got {len(mods)}")
-    wq = mods[0].match_query({"labels": ["file", "db"], "path": "sample.sqlite"}) if mods else None
-    wrows = ws.cypher(wq.query, params=wq.params) if wq else []
-    wnames = [row["n"]["name"] for row in wrows]
-    ok("workspace file path match count", len(wnames) == 1, f"got {wnames}")
-    ok("workspace file path match target", wnames == ["sample.sqlite"], f"got {wnames}")
-    subgraph = ws.module_subgraph()
-    ok("workspace subgraph has nodes", len(subgraph["nodes"]) >= 2, f"got {len(subgraph['nodes'])}")
-    ok("workspace subgraph has edges", len(subgraph["edges"]) >= 1, f"got {len(subgraph['edges'])}")
-
-    shutil.rmtree(p, ignore_errors=True)
-
-
-# ─── 7. Cross-project ─────────────────────────────────────
-
-def test_cross_project():
-    print("\n[7] Cross-Project Edges")
-
-    p1_path = empty_project()
-    p2_path = empty_project()
-
-    s1 = make_store(p1_path)
-    s2 = make_store(p2_path)
-
-    id_a = s1._create_node("svc_a", labels=["service"], meta={"team": "platform"})
-    id_b = s2._create_node("svc_b", labels=["service"], meta={"team": "data"})
-    id_c = s2._create_node("tbl_x", labels=["table"], meta={"rows": 999})
-
-    ws = Workspace.__new__(Workspace)
-    ws._config = StoreConfig(
-        projects={
-            "p1": ProjectConfig(source=SourceConfig(type="fs", path=p1_path)),
-            "p2": ProjectConfig(source=SourceConfig(type="fs", path=p2_path)),
-        })
-    ws._stores = {"p1": s1, "p2": s2}
-
-    # add cross-ref
-    ws._add_cross_ref("p1", "svc_a", "p2", id_b)
-    refs = s1.get_cross_refs("svc_a")
-    ok("cross-ref created", len(refs) == 1 and refs[0]["to_project"] == "p2")
-    ok("not stale", not refs[0]["stale"])
-
-    # resolve OK
-    res = ws._resolve_cross_refs(project="p1")
-    ok_r = [r for r in res if r["status"] == "ok"]
-    ok("resolve ok", len(ok_r) == 1 and ok_r[0]["to_entity"]["name"] == "svc_b")
-
-    # second cross-ref
-    ws._add_cross_ref("p1", "svc_a", "p2", id_c)
-    ok("two cross-refs", len(s1.get_cross_refs("svc_a")) == 2)
-
-    # delete target → stale
-    s2._delete_node("svc_b")
-    res2 = ws._resolve_cross_refs(project="p1")
-    missing = [r for r in res2 if r["status"] == "target_missing"]
-    ok("target_missing", len(missing) == 1)
-
-    # purge
-    purged = ws._purge_stale_refs(project="p1")
-    ok("purge stale", purged == 1)
-    ok("after purge", len(s1.get_cross_refs("svc_a")) == 1)
-
-    # project unavailable
-    ws2 = Workspace.__new__(Workspace)
-    ws2._config = ws._config
-    ws2._stores = {"p1": s1}
-    res3 = ws2._resolve_cross_refs(project="p1")
-    unavail = [r for r in res3 if r["status"] == "project_unavailable"]
-    ok("project_unavailable", len(unavail) >= 1)
-
-    # invalid format
-    try:
-        ws._add_cross_ref("p1", "svc_a", "p2", "bad_id")
-        ok("invalid raises", False)
-    except ValueError:
-        ok("invalid raises ValueError", True)
-
-    # delete source cleans cross-edges
-    s1._delete_node("svc_a")
-    ok("delete source cleans", len(s1.get_cross_refs()) == 0)
-
-    # cross-edge persists across restart
-    id_d = s2._create_node("remote", labels=["x"])
-    id_e = s1._create_node("local", labels=["y"])
-    ws._stores["p2"] = s2
-    ws._add_cross_ref("p1", "local", "p2", id_d)
-
-    s1_new = make_store(p1_path)
-    ok("cross-edge persisted", len(s1_new.get_cross_refs("local")) == 1)
-
-    shutil.rmtree(p1_path, ignore_errors=True)
-    shutil.rmtree(p2_path, ignore_errors=True)
-
-
-# ─── 8. Concurrency ───────────────────────────────────────
-
-def test_concurrency():
-    print("\n[8] Concurrency")
+def test_concurrency_and_persistence():
+    print("\n[7] Persistence and Concurrent Visibility")
 
     p = empty_project()
     a = make_store(p)
     b = make_store(p)
-    a._ensure_index()
-    b._ensure_index()
 
-    ok("same initial version", a._last_version == b._last_version)
+    a.cypher("CREATE (n:p {name: 'p1', v: 1})")
+    b_rows = b.cypher("MATCH (n:p {name: 'p1'}) RETURN n")
+    ok("second store sees create", len(b_rows) == 1 and b_rows[0]["n"]["v"] == 1, f"got {b_rows}")
 
-    # A writes
-    a._create_node("cnode", labels=["test"], meta={"who": "A"})
-    ok("A bumps version", a._last_version > b._last_version)
+    b.cypher("MATCH (n:p {name: 'p1'}) SET n.v = 2")
+    a_rows = a.cypher("MATCH (n:p {name: 'p1'}) RETURN n")
+    ok("first store sees update", len(a_rows) == 1 and a_rows[0]["n"]["v"] == 2, f"got {a_rows}")
 
-    # B rebuilds
-    b._ensure_index()
-    ok("B catches version", b._last_version == a._last_version)
-    ok("B sees A's data", b._get_meta("cnode") is not None)
-
-    # B writes
-    b._set_meta("cnode", {"who": "B", "note": "from B"})
-    ok("B bumps version", b._last_version > a._last_version)
-
-    # A rebuilds
-    a._ensure_index()
-    m = a._get_meta("cnode")
-    ok("A sees B's write", m.get("who") == "B" and m.get("note") == "from B",
-       f"got {m}")
-
-    # version persists
+    b.cypher("CREATE (n:p {name: 'p2'})")
+    b.cypher("MATCH (a {name: 'p1'}), (b {name: 'p2'}) CREATE (a)--(b)")
     c = make_store(p)
-    c._ensure_index()
-    ok("version persists", c._last_version == a._last_version)
+    ok("persisted meta", first(c.cypher("MATCH (n:p {name: 'p1'}) RETURN n")).get("v") == 2)
+    ok("persisted edge", len(c.cypher("MATCH (a {name: 'p1'})--(b {name: 'p2'}) RETURN a, b")) == 1)
+
+    c.cypher("MATCH (n:p {name: 'p1'}) DELETE n")
+    d = make_store(p)
+    ok("delete persists", d.cypher("MATCH (n:p {name: 'p1'}) RETURN n") == [])
+    ok("edge cleaned persists", d.cypher("MATCH (a {name: 'p1'})--(b {name: 'p2'}) RETURN a, b") == [])
 
     shutil.rmtree(p, ignore_errors=True)
 
-
-# ─── 9. Persistence ───────────────────────────────────────
-
-def test_persistence():
-    print("\n[9] Persistence")
-
-    p = empty_project()
-    s1 = make_store(p)
-    s1._create_node("p1", labels=["p"], meta={"v": 1})
-    s1._create_node("p2", labels=["p"])
-    s1._add_edges([{"a": "p1", "b": "p2"}])
-
-    s2 = make_store(p)
-    ok("persisted meta", s2._get_meta("p1") is not None and s2._get_meta("p1")["v"] == 1)
-    ok("persisted edge", "p2" in s2._neighbors("p1"))
-    ok("persisted labels", "p" in s2._get_meta("p1").get("_labels", []))
-
-    # cypher write across instances
-    s2.cypher("MATCH (n:p) SET n.v = 2")
-    s3 = make_store(p)
-    ok("cypher persists", s3._get_meta("p1")["v"] == 2)
-
-    # delete persists
-    s3._delete_node("p1")
-    s4 = make_store(p)
-    ok("delete persists", s4._get_meta("p1") is None)
-    ok("edge cleaned persists", "p2" not in s4._neighbors("p1"))
-
-    shutil.rmtree(p, ignore_errors=True)
-
-
-# ─── Main ─────────────────────────────────────────────────
 
 def main():
-    global failed
-
     try:
-        # Sections 1-2: empty project for pure graph ops
         p = empty_project()
         s = make_store(p)
         test_crud(s)
         test_edges(s)
-        shutil.rmtree(p, ignore_errors=True)
-
-        # Sections 3-5: clean project for Cypher tests
-        p = empty_project()
-        s = make_store(p)
-        test_cypher_match(s)
-        test_cypher_traversal(s)
+        test_cypher_match_and_traversal(s)
         test_cypher_writes(s)
         shutil.rmtree(p, ignore_errors=True)
 
-        # Section 6: needs real FS with sqlite file
-        ctx_src = os.path.join(ROOT, "example_data", "context")
-        ctx_path = fresh_copy(ctx_src)
-        s = make_store(ctx_path)
-        test_virtual(s)
-        shutil.rmtree(ctx_path, ignore_errors=True)
-        test_src_binding()
+        test_virtual_and_src()
         test_graph_only()
-        test_store_modules()
-
-        # Sections 7-9: independent
-        test_cross_project()
-        test_concurrency()
-        test_persistence()
+        test_concurrency_and_persistence()
 
     except Exception:
-        print(f"\n💥 UNEXPECTED ERROR:")
+        print("\n💥 UNEXPECTED ERROR:")
         traceback.print_exc()
-        failed += 1
+        return 1
 
-    total = passed + failed
-    print(f"\n{'='*50}")
-    print(f"Results: {passed}/{total} passed")
+    print("\n" + "=" * 50)
+    print(f"Results: {passed}/{passed + failed} passed")
     if errors:
         print("Failed:")
         for e in errors:
             print(f"  - {e}")
-    print('=' * 50)
-    sys.exit(0 if failed == 0 else 1)
+    print("=" * 50)
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

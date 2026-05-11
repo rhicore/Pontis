@@ -6,8 +6,10 @@ from __future__ import annotations
 _SECTIONS = {
     "readme_check": """## README 约束
 
-- 如果当前访问的项目中存在 `README` 节点，在第一次有意义访问该项目内容前，必须先读取它
-- 如果 `bird` 项目处于当前已打开项目中，默认把它视为必须先读的共享知识库；不要等到出错后再去读
+- 如果当前打开了多个项目，只要其中还有项目的 `README` 未读完，就不要做任何其他操作
+- 先把所有相关项目的 `README` 读完，再去读知识节点、schema 节点、跑 query 或做其他探索
+- 不要求固定顺序；多个项目里，先读哪个 `README` 都可以
+- 读取 README 时不要先 `glob("<project>::README")` 试探；推荐直接用 `meta({"ref": "<project>::README", "property": ["detail"]})` 全量读取正文
 - README 不存在时，这条约束不生效
 - 一般用 `meta({"ref": "<project>::README", "property": ["detail"]})` 先读，`detail` 就是 README 正文
 - 未先读 README 前，不要访问该项目下的其他实体，也不要在该项目上做 search / create / update / delete

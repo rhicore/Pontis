@@ -5,8 +5,7 @@
   dev:   11 DB, 1534 queries
   train: 69 DB, 9428 queries (--train flag)
 
-每个 query 生成两个日志：
-  q{id}.brief.log  简洁版（问题、结果、调用链摘要、guardrail 拦截）
+每个 query 生成一个主日志：
   q{id}.log        详细版（含每轮工具调用的完整参数和返回值）
 启用 `--reflection` 时，还会额外生成：
   q{id}.reflection.log  题后复盘结果
@@ -40,8 +39,13 @@ DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
 def get_bird_shared_workflow() -> str:
     """BIRD 场景下共享的解题/审题入口。"""
     return """\
-先读 `bird::README`，并严格遵循其中的解题/审题工作流与常见错误约束。
-若当前数据库项目本身也有 `README`，再读该项目的 `README`。
+如果当前同时打开了多个项目，先把这些项目里存在的 `README` 全部读完，再做任何其他操作。
+读取 README 时，推荐直接使用 `meta({"ref": "<project>::README", "property": ["detail"]})` 全量读取正文。
+不要先用 `glob("<project>::README")`、`search` 或其他试探式调用确认 README 是否存在。
+通常在 BIRD 场景下，这意味着先读 `bird::README`，再读当前数据库项目的 `README`。
+在所有相关 `README` 读完之前，不要先去读知识节点、schema 节点、跑 query 或做其他探索。
+严格遵循 `bird::README` 中的解题/审题工作流与常见错误约束。
+若 `bird` 中存在相关 `knowledge:example`，可把它们当作 BIRD benchmark 偏好案例阅读：重点吸收其中总结出的 BIRD 写法偏好、schema 背景、易错点与迁移提示，而不是机械照抄历史 SQL。
 其余经验性规则不要在这里重复展开，统一以 `bird::README` 为准。"""
 
 
@@ -119,6 +123,15 @@ QUERY_PROMPT_TEMPLATE = """\
 - evidence 给出的条件值 → 直接使用，不要猜测其他值
 - 其余审题与纠错规则，统一遵循 `bird::README`
 
+关于 `bird` 经验的使用：
+- `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` 优先作为通用决策依据
+- `knowledge:example` 只应被当作“解释型 benchmark case”阅读：它的作用是说明 BIRD 在某类题上通常偏好怎么写、为什么这么写、模型最容易错在哪里
+- 阅读 `knowledge:example` 时，优先吸收其中总结出的 `bird_bias`、`schema_background`、`why_this_case_matters`、`transfer_hint`、`mistake_summary`
+- 如果命中某条 `knowledge:example`，应继续查看它相连的抽象知识节点；若抽象知识已存在，优先吸收抽象结论，再用 example 理解其证据和适用边界
+- 不要把 `knowledge:example` 当作可直接改名复用的 SQL 模板；不要机械复用其中的具体表名、列名、字面值
+- 如果当前题与某个 example 高度同型，允许参考其 golden SQL 的结构偏好和决策偏好，但最终 SQL 必须完全基于当前库 schema 和当前题 evidence 落地
+- `knowledge:example` 主要回答四件事：这题问什么、golden SQL 为什么这样写、它体现了哪种 BIRD 偏好、模型最容易在哪一步想错
+
 输出协议：
 - 回复中只包含一个 ```sql``` 代码块和一条 SELECT 语句，代码块前后不要有任何文字
 - 多个值用单列多行输出，不要横向展开为多列，不要用 GROUP_CONCAT 合并
@@ -167,8 +180,15 @@ Guardrail / blocks：
 2. 若已覆盖，不要重复 create；最多在确有新信息时 update。
 3. 若未覆盖，且结论明显可跨库迁移，再写入 `bird::<short_name>:knowledge:<type>`。
 4. 只允许写 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:example`。
-5. 数据库特有事实不要写入 `bird`。
-6. 如果只是执行流程失误、没有新的跨库经验缺口，明确说明“不写入任何知识实体”。
+5. 若写 `knowledge:example`，它必须是“解释型 benchmark case”，不是裸 few-shot，也不是只存 question + golden SQL。
+6. `knowledge:example` 至少应包含：`question`、必要 `evidence`、`golden_sql`、`db_id`、`question_id`、`difficulty`、`schema_background`、`bird_bias`、`why_this_case_matters`、`transfer_hint`。
+7. 如果该题本轮做错了，但你仍决定沉淀为 `knowledge:example`，还应补：`predicted_sql`、`error_type`、`mistake_summary`、`wrong_assumption`、`fix_hint`。
+8. `knowledge:example` 允许包含具体数据库/表/列信息，但必须服务于“解释 BIRD 偏好”；不要让它退化成无解释的样题堆积。
+9. 不要写入完整推理过程、原始 chain-of-thought 或逐轮自言自语；如果需要保留思路，只保留高密度摘要，例如 `decision_summary`、`mistake_summary`、`verification_note`、`rejected_alternatives`。
+10. 写入 `knowledge:example` 后，应主动把它与相关的 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term` 建立普通图边；当前图是无向边，不需要表达方向，重点是保证后续可以从抽象知识导航到案例，也可以从案例导航回抽象知识。
+11. 若相关抽象知识节点尚不存在，先创建或更新抽象知识节点，再把 `knowledge:example` 与其连边；不要让 example 长期作为孤立节点存在。
+12. `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` 仍应尽量去 schema 化，不要把具体字段名直接写成通用规则。
+13. 如果只是执行流程失误、没有新的跨库经验缺口，也没有值得沉淀的 BIRD 偏好案例，明确说明“不写入任何知识实体”。
 """
 
 
@@ -180,52 +200,56 @@ class TraceCollector:
     """收集 agent 事件，生成简洁版和详细版日志。"""
 
     def __init__(self):
-        self._round = 0
-        self._rounds = []  # [{round, calls: [{name, args, result}], blocks: [{source, msg}]}]
-        self._current_calls = []
-        self._current_blocks = []
+        self._next_round = 1
+        self._entries = []  # [{type, round, ...}]
+        self._pending_by_id = {}
 
     def callback(self, event: dict):
         etype = event.get("type")
 
         if etype == "tool_call":
-            self._current_calls.append({
+            entry = {
+                "type": "call",
+                "round": self._next_round,
                 "name": event["name"],
                 "args": event.get("arguments", {}),
                 "result": None,
-            })
+            }
+            self._entries.append(entry)
+            if event.get("id"):
+                self._pending_by_id[event["id"]] = entry
+            self._next_round += 1
         elif etype == "tool_result":
             result = event.get("result", "")
-            # 填入最近的同名无结果调用
-            for tc in reversed(self._current_calls):
-                if tc["name"] == event.get("name") and tc["result"] is None:
-                    tc["result"] = result
-                    break
-            # 这轮结束，记录并推进
-            self._rounds.append({
-                "round": self._round,
-                "calls": self._current_calls,
-                "blocks": self._current_blocks,
-            })
-            self._current_calls = []
-            self._current_blocks = []
-            self._round += 1
+            entry = None
+            event_id = event.get("id")
+            if event_id:
+                entry = self._pending_by_id.pop(event_id, None)
+            if entry is None:
+                for item in reversed(self._entries):
+                    if (
+                        item["type"] == "call"
+                        and item["name"] == event.get("name")
+                        and item["result"] is None
+                    ):
+                        entry = item
+                        break
+            if entry is not None:
+                entry["result"] = result
         elif etype == "blocked":
-            self._current_blocks.append({
+            self._entries.append({
+                "type": "block",
+                "round": self._next_round,
                 "source": event.get("guardrail", ""),
                 "msg": event.get("content", ""),
-                "tool": event.get("call_index"),
+                "name": event.get("name"),
+                "args": event.get("arguments", {}),
             })
+            self._next_round += 1
         elif etype == "warning":
             pass
         elif etype == "done":
-            # 如果还有未关闭的调用
-            if self._current_calls:
-                self._rounds.append({
-                    "round": self._round,
-                    "calls": self._current_calls,
-                    "blocks": self._current_blocks,
-                })
+            self._pending_by_id.clear()
 
     def write_logs(self, bench_dir: Path, qid: int, q: dict,
                    response: str, predicted_sql: str | None,
@@ -240,43 +264,19 @@ class TraceCollector:
             f"Golden SQL: {q['SQL']}",
         ])
 
-        # ── 调用链摘要（简洁版用） ──
-        call_summary_parts = []
-        block_summary_parts = []
-        for rd in self._rounds:
-            for tc in rd["calls"]:
-                name = tc["name"]
-                args_str = _args_brief(tc["args"])
-                suffix = "(blocked)" if any(
-                    b["tool"] is not None for b in rd["blocks"]
-                ) else ""
-                call_summary_parts.append(f"{name}({args_str}){suffix}")
-            for bl in rd["blocks"]:
-                block_summary_parts.append(f"[{bl['source']}] {bl['msg'][:80]}")
-
-        call_summary = " → ".join(call_summary_parts) if call_summary_parts else "(no calls)"
-        block_summary = "\n".join(block_summary_parts) if block_summary_parts else ""
-
-        # ── 简洁版 ──
-        brief_lines = [header, f"Calls: {call_summary}"]
-        if block_summary:
-            brief_lines.append(f"Blocks:\n{block_summary}")
-        brief_lines.append("")  # trailing newline
-        (bench_dir / f"q{qid}.brief.log").write_text("\n".join(brief_lines), encoding="utf-8")
-
         # ── 详细版 ──
         detail_lines = [header, "---"]
-        for rd in self._rounds:
-            for tc in rd["calls"]:
-                args_full = json.dumps(tc["args"], ensure_ascii=False) if tc["args"] else "{}"
-                detail_lines.append(f"Round {rd['round']} | {tc['name']}({args_full})")
-                result = tc["result"] or "(no result)"
-                # 截断过长结果
+        for entry in self._entries:
+            if entry["type"] == "call":
+                args_full = json.dumps(entry["args"], ensure_ascii=False) if entry["args"] else "{}"
+                detail_lines.append(f"Round {entry['round']} | {entry['name']}({args_full})")
+                result = entry["result"] or "(no result)"
                 if len(result) > 500:
                     result = result[:500] + "..."
                 detail_lines.append(f"  {result}")
-            for bl in rd["blocks"]:
-                detail_lines.append(f"  [BLOCKED by {bl['source']}] {bl['msg']}")
+            else:
+                detail_lines.append(self._format_block_header(entry))
+                detail_lines.append(f"  {_normalize_block_message(entry['msg'])}")
             detail_lines.append("---")
 
         if response:
@@ -286,33 +286,45 @@ class TraceCollector:
 
     def summarize_calls(self) -> str:
         parts = []
-        for rd in self._rounds:
-            for tc in rd["calls"]:
-                suffix = "(blocked)" if any(b["tool"] is not None for b in rd["blocks"]) else ""
-                parts.append(f"{tc['name']}({_args_brief(tc['args'])}){suffix}")
+        for entry in self._entries:
+            if entry["type"] == "call":
+                parts.append(f"{entry['name']}({_args_brief(entry['args'])})")
+            elif entry.get("name"):
+                parts.append(f"{entry['name']}({_args_brief(entry['args'])})(blocked)")
         return " → ".join(parts) if parts else "(no calls)"
 
     def summarize_blocks(self) -> str:
         parts = []
-        for rd in self._rounds:
-            for bl in rd["blocks"]:
-                parts.append(f"[{bl['source']}] {bl['msg']}")
+        for entry in self._entries:
+            if entry["type"] != "block":
+                continue
+            label = f"{entry['name']}({_args_brief(entry['args'])})" if entry.get("name") else "text response"
+            msg = _truncate(_normalize_block_message(entry["msg"]), 180)
+            parts.append(f"[{entry['source']}] {label}: {msg}")
         return "\n".join(parts) if parts else "(none)"
 
     def detailed_trace_text(self, max_result_chars: int = 400) -> str:
         lines = []
-        for rd in self._rounds:
-            for tc in rd["calls"]:
-                args_full = json.dumps(tc["args"], ensure_ascii=False) if tc["args"] else "{}"
-                lines.append(f"Round {rd['round']} | {tc['name']}({args_full})")
-                result = tc["result"] or "(no result)"
+        for entry in self._entries:
+            if entry["type"] == "call":
+                args_full = json.dumps(entry["args"], ensure_ascii=False) if entry["args"] else "{}"
+                lines.append(f"Round {entry['round']} | {entry['name']}({args_full})")
+                result = entry["result"] or "(no result)"
                 if len(result) > max_result_chars:
                     result = result[:max_result_chars] + "..."
                 lines.append(f"  {result}")
-            for bl in rd["blocks"]:
-                lines.append(f"  [BLOCKED by {bl['source']}] {bl['msg']}")
+            else:
+                lines.append(self._format_block_header(entry))
+                lines.append(f"  {_normalize_block_message(entry['msg'])}")
             lines.append("---")
         return "\n".join(lines) if lines else "(empty trace)"
+
+    @staticmethod
+    def _format_block_header(entry: dict) -> str:
+        if entry.get("name"):
+            args_full = json.dumps(entry["args"], ensure_ascii=False) if entry["args"] else "{}"
+            return f"Round {entry['round']} | [BLOCKED by {entry['source']}] {entry['name']}({args_full})"
+        return f"Round {entry['round']} | [BLOCKED by {entry['source']}] text response"
 
 
 def _args_brief(args: dict) -> str:
@@ -326,6 +338,16 @@ def _args_brief(args: dict) -> str:
             sv = sv[:40] + "..."
         parts.append(f"{k}={sv}")
     return ", ".join(parts)
+
+
+def _normalize_block_message(msg: str) -> str:
+    return " ".join((msg or "").split())
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3] + "..."
 
 
 # ═══════════════════════════════════════════════════════════
@@ -555,6 +577,26 @@ def cleanup_all(db_base: Path, db_map: dict[str, list], force_extract: bool = Fa
     print("Cleanup done\n")
 
 
+def cleanup_bird_global(clear_bird_knowledge: bool = False):
+    if not clear_bird_knowledge:
+        return
+
+    from storage.workspace import Workspace
+
+    print("=== Cleanup bird ===")
+    ws = Workspace(active_projects=["bird"])
+    rows = ws.cypher("MATCH (n) WHERE n.name != 'README' RETURN n", project="bird")
+    total = len(rows)
+    if not total:
+        print("  [bird] No non-README knowledge nodes to delete")
+        print("Cleanup bird done\n")
+        return
+
+    ws.cypher("MATCH (n) WHERE n.name != 'README' DELETE n", project="bird")
+    print(f"  [bird] Deleted {total} non-README nodes")
+    print("Cleanup bird done\n")
+
+
 # ═══════════════════════════════════════════════════════════
 #  单库完整流程
 # ═══════════════════════════════════════════════════════════
@@ -703,6 +745,11 @@ def main():
     parser.add_argument("--qids", help="只测试指定 question_id，逗号分隔")
     parser.add_argument("--limit", type=int, help="每库最多测试 N 条")
     parser.add_argument("--reflection", action="store_true", help="每题验证后立即运行 reflection，不再读日志二次分析")
+    parser.add_argument(
+        "--clear-bird-knowledge",
+        action="store_true",
+        help="运行前清空 bird 全局知识库中除 README 外的所有节点",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s | %(message)s", datefmt="%H:%M:%S")
@@ -739,6 +786,7 @@ def main():
     print(f"DB workers: {args.db_workers}, Query workers/db: {args.workers}\n")
 
     cleanup_all(db_base, by_db, force_extract=args.force_extract)
+    cleanup_bird_global(clear_bird_knowledge=args.clear_bird_knowledge)
 
     progress_path = data_dir / "progress.log"
     tracker = ProgressTracker(by_db, progress_path)

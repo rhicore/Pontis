@@ -17,21 +17,17 @@ from extractor.engine import (
 logger = logging.getLogger(__name__)
 
 STATIC_PIPELINE = [
-    "db_basic",
     "csv_basic",
-    "db_column_stats",
+    "db_column_stats_approx",
     "db_column_sample",
     "db_column_topk",
     "csv_info",
-    "db_table_relations",
     "db_fk_validate",
     "db_column_overlap",
 ]
 
 AI_PIPELINE = [
     "ai_db_column_summary",
-    "ai_db_table_summary",
-    "ai_db_summary",
 ]
 
 AGENT_PIPELINE = [

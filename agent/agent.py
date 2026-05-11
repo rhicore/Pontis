@@ -190,7 +190,9 @@ class PontusAgent:
                 sources = "+".join(s for s, v in call_vs if v.action == "block")
                 self.logger.info(f"Guardrail block [{sources}] call#{i}({name}): {message}")
                 yield {"type": "blocked", "guardrail": sources,
-                       "call_index": i, "content": message}
+                       "call_index": i, "name": name,
+                       "arguments": self._parse_args(tc.function.arguments),
+                       "content": message}
                 self.messages.append({
                     "role": "tool", "tool_call_id": tc.id,
                     "content": message,

@@ -7,7 +7,16 @@
 """
 
 from tool.utils import execute_cypher
-from tool.utils.resolve import resolve_entity_selector, selector_match_pattern
+from tool.utils.resolve import resolve_entity_selector
+
+
+def _selector_pattern(selector: dict, var: str, prefix: str) -> tuple[str, dict]:
+    labels = "".join(f":{label}" for label in selector.get("labels", []))
+    if selector.get("path"):
+        return f"({var}{labels} {{path: ${prefix}_path}})", {f"{prefix}_path": selector["path"]}
+    if selector.get("ref"):
+        return f"({var}{labels} {{ref: ${prefix}_ref}})", {f"{prefix}_ref": selector["ref"]}
+    return f"({var}{labels} {{name: ${prefix}_name}})", {f"{prefix}_name": selector["name"]}
 
 def _parse_ref(ref: str) -> tuple:
     """从 ref 中提取实体名和标签。
@@ -47,9 +56,6 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
         meta: 元数据
         edges: 边列表 [{"a": "...", "b": "..."}, ...]
     """
-    if not workspace.pontis_exists:
-        return f"Error: .pontis directory not found in {workspace.project_path}"
-
     # 禁止通配符
     if _has_wildcards(ref):
         return "错误: 实体名不允许包含通配符 (*, ?, [])"
@@ -98,34 +104,35 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
             b_name = e.get("b", "")
             if not a_name or not b_name:
                 continue
-            created_sel = {"project": project, "name": name, "labels": list(labels or [])}
-            a_sel = created_sel if a_name == name or a_name == ref else None
-            a_err = None
-            if a_sel is None:
-                a_sel, a_err = resolve_entity_selector(workspace, a_name)
+            if a_name == name or a_name == ref:
+                a_selector = {"project": project, "name": name, "labels": labels}
+                a_err = None
+            else:
+                a_selector, a_err = resolve_entity_selector(workspace, a_name)
             if a_err:
                 edge_results.append(f"  跳过: {a_err}")
                 continue
-            b_sel = created_sel if b_name == name or b_name == ref else None
-            b_err = None
-            if b_sel is None:
-                b_sel, b_err = resolve_entity_selector(workspace, b_name)
+            if b_name == name or b_name == ref:
+                b_selector = {"project": project, "name": name, "labels": labels}
+                b_err = None
+            else:
+                b_selector, b_err = resolve_entity_selector(workspace, b_name)
             if b_err:
                 edge_results.append(f"  跳过: {b_err}")
                 continue
-            if not a_sel or not b_sel:
+            if not a_selector or not b_selector:
                 edge_results.append(f"  跳过: 无法解析端点 '{a_name}' / '{b_name}'")
                 continue
-            workspace.materialize(a_sel["name"], project=project)
-            workspace.materialize(b_sel["name"], project=project)
-            a_match = selector_match_pattern(a_sel, "a", "a_name")
-            b_match = selector_match_pattern(b_sel, "b", "b_name")
-            execute_cypher(
-                workspace,
-                f"MATCH {a_match}, {b_match} CREATE (a)--(b)",
-                params={"a_name": a_sel["name"], "b_name": b_sel["name"]},
+            a_pat, a_params = _selector_pattern(a_selector, "a", "a")
+            b_pat, b_params = _selector_pattern(b_selector, "b", "b")
+            rows = workspace.cypher(
+                f"MATCH {a_pat}, {b_pat} CREATE (a)--(b)",
+                params={**a_params, **b_params},
                 project=project,
             )
+            if not rows:
+                edge_results.append(f"  跳过: 无法创建边 '{a_name}' / '{b_name}'")
+                continue
             edge_results.append(f"  {a_name} ↔ {b_name}")
 
     lines = [f"Created: {name}"]

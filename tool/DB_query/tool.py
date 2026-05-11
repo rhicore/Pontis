@@ -52,24 +52,34 @@ def query_command(workspace, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -
         if not os.path.isfile(file):
             return f"错误：数据库文件不存在: {file}"
         db_path = file
+        src = None
     else:
         try:
             rows = workspace.cypher(
-                "MATCH (f:file:db) WHERE f.name = $file OR f.path = $file RETURN f.src AS src",
-                params={"file": file},
+                "MATCH (f:file:db) WHERE f.path = $path RETURN f.src AS src",
+                params={"path": file},
             )
+            if len(rows) != 1:
+                basename = os.path.basename(file)
+                rows = workspace.cypher(
+                    "MATCH (f:file:db) WHERE f.name = $name RETURN f.src AS src",
+                    params={"name": basename},
+                )
             if len(rows) != 1:
                 raise ValueError("not unique")
             src = rows[0].get("src")
             if src is None:
                 raise ValueError("not found")
-            db_path = src.get("path")
+            db_path = src.get("path") if src.has("path") else None
         except Exception:
             return f"错误：数据库文件不存在或不唯一: {file}"
 
     # 执行查询
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        if src is not None and src.has("db_connect"):
+            conn = src.get("db_connect")(readonly=True)
+        else:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         cursor = conn.cursor()
         cursor.execute(sql)
 

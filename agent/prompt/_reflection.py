@@ -10,6 +10,9 @@ def get_reflection_prompt() -> str:
 - 当前数据库项目：用于核对 schema、列语义、关系结构
 - `bird` 项目：用于读取/更新 BIRD 数据集的跨库长期经验
 
+开始 reflection 之前，如果当前打开了多个项目，先把这些项目里存在的 `README` 全部读完，再做任何其他操作。
+不要求固定顺序，但在所有相关 `README` 读完之前，不要先去读 `knowledge`、schema、disambig，也不要直接 query。
+
 ---
 
 ## 总目标

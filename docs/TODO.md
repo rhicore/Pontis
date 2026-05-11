@@ -42,6 +42,26 @@
 
 ### P0：优先处理
 
+- **修复文件/数据库 source 查询中的伪 OR**
+  - 现状：`tool/DB_query/tool.py` 和 `extractor/modules/utils/src.py` 使用 `WHERE f.name = $file OR f.path = $file`，但当前 Cypher 子集不支持 `OR`，实际会退化成错误语义。
+  - 风险：嵌套目录中的数据库文件和普通文件会出现“明明存在但查不到”的失败。
+  - 建议：不要依赖 `OR`；先按 `path` 精确匹配，再回退到 `name` 匹配，必要时显式区分“未找到”和“不唯一”。
+
+- **统一通过 `src` 端口访问数据库**
+  - 现状：`DB_query` 和部分 source helper 拿到 `f.src` 后仍优先取 `path` 并自己 `sqlite3.connect()`，没有把 `db_connect` 当成主入口。
+  - 风险：一旦底层 source 不再是本地 SQLite 文件，而是 DuckDB、远程 DB 或其他 provider，tool 会重新写死访问逻辑。
+  - 建议：优先使用 `db_connect`，`path` 只作为回退。
+
+- **去掉 storage 综合测试对仓库 fixture 的硬依赖**
+  - 现状：`scripts/storage/test_store.py` 末尾仍依赖 `example_data/context`。
+  - 风险：测试不是自包含的，CI 或新环境中容易直接失败。
+  - 建议：测试运行时自己构造临时目录结构和最小 fixture；若必须依赖外部数据，至少显式 skip。
+
+- **CSV extractor 改成 scoped ref**
+  - 现状：CSV 列节点和连边仍大量依赖裸列名。
+  - 风险：多个 CSV 都有 `id`、`name` 等常见列时，容易错连、重用错节点或覆盖错误元数据。
+  - 建议：统一使用 canonical ref / scoped ref，不再按裸 `name` 定位列节点。
+
 - **拆分 `FSStore` 过重职责**
   - 现状：`storage/stores/fs.py` 同时承担文件系统扫描、虚实体、名称索引、inode 索引、路径解析、meta fallback、虚属性 enrichment、跨项目边等职责。
   - 风险：后续增加新数据源、调整引用解析、修改虚实体策略时，容易引发大范围回归。
@@ -58,6 +78,16 @@
   - 建议：引入结构化结果，例如 `ToolResult(ok, content, error)`；Extractor 支持 `fail_fast`、`continue_on_error`、错误汇总报告。
 
 ### P1：中期优化
+
+- **给 Cypher 执行器抽 GraphView 协议**
+  - 现状：`CypherExecutor` 直接访问 `store._id_index`、`store._adjacent`、`store._get_meta()`、`store._create_node()` 等私有结构。
+  - 风险：`MergedStoreView` 被迫伪装成 Store，内部字段耦合强，后续很难替换 view、缓存层或远程图视图。
+  - 建议：抽最小 `GraphView` 接口，让持久 Store 和 merged view 都通过稳定协议被执行器消费。
+
+- **为 MergedStoreView 增加缓存或懒加载**
+  - 现状：读查询会频繁重建 merged view，并触发模块全量虚图枚举。
+  - 风险：随着 source 规模增大，查询成本会迅速失控。
+  - 建议：至少引入版本缓存；进一步支持按 selector 懒加载虚节点。
 
 - **重构 Extractor 模块注册**
   - 现状：`extractor/engine.py` 手写导入所有模块，`CONFIG_MODULES` 靠模块名特判是否传 config。

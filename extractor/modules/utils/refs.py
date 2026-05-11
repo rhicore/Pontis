@@ -20,13 +20,41 @@ def db_column_ref(db_ref: str, table_name: str, column_name: str) -> str:
     return f"{db_ref}--{table_name}--{column_name}"
 
 
+def db_fk_ref(db_ref: str, fk_name: str) -> str:
+    return f"{db_ref}--{fk_name}"
+
+
 def get_entity_meta(workspace: Workspace, ref: str) -> dict | None:
-    rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": ref})
-    return rows[0].get("n") if rows else None
+    for prop in ("ref", "path", "name"):
+        rows = workspace.cypher(
+            f"MATCH (n {{{prop}: $ref}}) RETURN n",
+            params={"ref": ref},
+        )
+        if rows:
+            return rows[0].get("n")
+    return None
 
 
 def set_entity_meta(workspace: Workspace, ref: str, props: dict) -> None:
+    rows = workspace.cypher(
+        "MATCH (n {ref: $ref}) SET n += $props RETURN n",
+        params={"ref": ref, "props": props},
+    )
+    if rows:
+        return
+    rows = workspace.cypher(
+        "MATCH (n {path: $ref}) SET n += $props RETURN n",
+        params={"ref": ref, "props": props},
+    )
+    if rows:
+        return
+    rows = workspace.cypher(
+        "MATCH (n {name: $ref}) SET n += $props RETURN n",
+        params={"ref": ref, "props": props},
+    )
+    if rows:
+        return
     workspace.cypher(
-        "MATCH (n {name: $name}) SET n += $props",
-        params={"name": ref, "props": props},
+        "CREATE (n {name: $ref}) SET n += $props RETURN n",
+        params={"ref": ref, "props": props},
     )

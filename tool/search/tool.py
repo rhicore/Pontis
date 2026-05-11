@@ -8,7 +8,7 @@ from collections import Counter
 from typing import List, Optional
 
 from tool.config import TOOL_PAGINATION
-from tool.utils.formatters import format_labels, get_info
+from tool.utils.formatters import format_entity_name, get_info
 
 
 # ========== Tokenizer ==========
@@ -122,9 +122,6 @@ def search_command(
     current_cwd: str = ""
 ) -> str:
     """BM25 语义检索，搜索实体的 brief 和 detail。"""
-    if not workspace.pontis_exists:
-        return f"Error: .pontis directory not found in {workspace.project_path}"
-
     page_conf = TOOL_PAGINATION["search"]
     if limit is None:
         limit = page_conf.default_limit
@@ -145,8 +142,8 @@ def search_command(
 
     lines = []
     for score, ref_name, info, labels in page:
-        label_str = format_labels(labels)
-        lines.append(f"{project_name}::\t{ref_name}\t{label_str}\t{info}")
+        entity_name = format_entity_name(ref_name, labels)
+        lines.append(f"{project_name}::\t{entity_name}\t{info}")
     output = '\n'.join(lines)
 
     end = offset + len(page)

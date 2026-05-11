@@ -10,9 +10,10 @@ from dataclasses import replace
 from storage.config import ProjectConfig
 from storage.backends import create_backend
 from storage.stores.fs import FSModule
+from storage.stores.db_schema import SQLiteSchemaModule
 
 _MODULE_REGISTRY = {
-    "fs": FSModule,
+    "fs": [FSModule, SQLiteSchemaModule],
 }
 
 
@@ -35,9 +36,11 @@ def create_store(config: ProjectConfig):
     )
 
     store = Store(source_cfg, backend)
-    mod_cls = _MODULE_REGISTRY.get(source_cfg.type or "")
-    if mod_cls:
-        store.add_module(mod_cls(store))
+    mod_entry = _MODULE_REGISTRY.get(source_cfg.type or "")
+    if mod_entry:
+        mod_classes = mod_entry if isinstance(mod_entry, list) else [mod_entry]
+        for mod_cls in mod_classes:
+            store.add_module(mod_cls(store))
     return store
 
 

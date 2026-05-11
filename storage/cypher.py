@@ -5,16 +5,15 @@
   MATCH (n {name: "loan"}) RETURN n
   MATCH (n:file:db)--(t:table) RETURN n, t
   MATCH (a:table)-[*1..3]-(b:col) RETURN a, b
-  MATCH (n) WHERE n.name ENDS WITH 'id' RETURN n
+  MATCH (n) WHERE n.path = "data/x.db" RETURN n
+  MATCH (n) WHERE n.id = $id RETURN n
   CREATE (n:Label {name: "x", path: "data/x.db"})
-  MATCH (n {name: "x"}) DELETE n
-  MATCH (n {name: "x"}) SET n.brief = "description", n.detail = "..."
-  MATCH (a {name: "x"}),(b {name: "y"}) CREATE (a)--(b)
+  MATCH (n {id: $id}) DELETE n
+  MATCH (a {id: $a}),(b {id: $b}) CREATE (a)--(b)
 
 参数化查询（params）：
+  MATCH (n {id: $id}) RETURN n
   MATCH (n {name: $name}) RETURN n
-  MATCH (n {name: $name}) SET n.brief = $brief
-  MATCH (n {name: $name}) SET n += $props
 """
 import re
 from collections import deque
@@ -111,7 +110,7 @@ _WHERE_NUM_RE = re.compile(
     r"""(-?[\d]+(?:\.[\d]+)?)""",
     re.IGNORECASE
 )
-# WHERE n.name = $param
+# WHERE n.prop = $param
 _WHERE_PARAM_RE = re.compile(
     r"""(\w+)\.(\w+)\s*(=)\s*\$(\w+)""",
     re.IGNORECASE
@@ -158,6 +157,9 @@ def _parse_props(text: str, params: dict = None) -> Dict[str, Union[str, Any]]:
             if param_name in params:
                 props[key] = params[param_name]
                 continue
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", val):
+            props[key] = float(val) if "." in val else int(val)
+            continue
         # 去引号
         props[key] = val.strip('"').strip("'")
     return props
@@ -227,7 +229,7 @@ def parse_cypher(text: str, params: dict = None) -> CypherQuery:
             var=wm.group(1), prop=wm.group(2),
             op=wm.group(3), value=value,
         ))
-    # WHERE n.name = $param 模式
+    # WHERE n.prop = $param
     for wm in _WHERE_PARAM_RE.finditer(where_text):
         param_name = wm.group(4)
         if param_name in params:
@@ -398,7 +400,7 @@ def _prop_matches(actual, op: str, expected) -> bool:
 
 
 def _inline_props_match(props: Dict[str, str], entity_props: dict) -> bool:
-    """检查内联属性 {name: "loan"} 是否全部匹配。"""
+    """检查内联属性是否全部匹配。"""
     for key, expected in props.items():
         actual = entity_props.get(key)
         if not _prop_matches(actual, "=", expected):
@@ -408,7 +410,7 @@ def _inline_props_match(props: Dict[str, str], entity_props: dict) -> bool:
 
 def _where_matches(wheres: List[WhereClause], var: str,
                    entity_props: dict) -> bool:
-    """检查 WHERE 条件。所有属性（包括 name/project）从 entity_props 统一读取。"""
+    """检查 WHERE 条件。"""
     for w in wheres:
         if w.var != var:
             continue
@@ -423,13 +425,13 @@ def _where_matches(wheres: List[WhereClause], var: str,
 # ═══════════════════════════════════════════════════════════
 
 def _strip_internal(results: List[dict]) -> List[dict]:
-    """递归移除结果中的 _eid 内部字段。"""
+    """递归移除内部字段。"""
     clean = []
     for row in results:
         out = {}
         for k, v in row.items():
             if isinstance(v, dict):
-                out[k] = {dk: dv for dk, dv in v.items() if dk != "_eid"}
+                out[k] = {dk: dv for dk, dv in v.items() if not dk.startswith("_")}
             else:
                 out[k] = v
         clean.append(out)
@@ -437,34 +439,31 @@ def _strip_internal(results: List[dict]) -> List[dict]:
 
 
 def _entity_props(store, eid: str) -> dict:
-    """构建实体的基础属性。只有 labels 和 project 是特殊的。"""
+    """构建实体的框架保留访问面。"""
     props = store._id_index.get(eid, {})
     return {
-        "labels": props.get("_labels", []),
+        "id": eid,
+        "labels": props.get("labels", []),
         "project": getattr(store, '_project_name', ''),
     }
 
 
-def _node_result(store, eid: str, *, _internal=False) -> Optional[dict]:
-    """将 ent_id 转换为结果字典。_internal=True 时包含 _eid 供写操作使用。"""
+def _node_result(store, eid: str) -> Optional[dict]:
+    """将内部节点 id 转换为 Cypher 实体结果。"""
     props = store._id_index.get(eid)
     if not props:
         return None
     internal = store.internal_fields
-    result = {"labels": props.get("_labels", []),
+    result = {"id": eid,
+              "labels": props.get("labels", []),
               "project": getattr(store, '_project_name', '')}
-    if _internal:
-        result["_eid"] = eid
-
-    # MergedStoreView has already combined matching virtual node metadata.
     full_meta = store._get_meta(eid)
     if full_meta:
         for k, v in full_meta.items():
-            if k not in internal and k != "_labels" and k not in result:
+            if not k.startswith("_") and k not in internal and k not in result:
                 result[k] = v
-
     for k, v in props.items():
-        if k not in internal and k != "_labels":
+        if not k.startswith("_") and k not in internal and k not in result:
             result[k] = v
     return result
 
@@ -479,7 +478,7 @@ class CypherExecutor:
     def __init__(self, store):
         self.store = store
 
-    def execute(self, query: CypherQuery) -> List[dict]:
+    def execute(self, query: CypherQuery, *, strip_internal: bool = True) -> List[dict]:
         if not query.nodes:
             return []
 
@@ -509,26 +508,18 @@ class CypherExecutor:
                 results = self._execute_traverse(query)
 
         results = self._project_results(query, results)
-        # 过滤内部字段 _eid
-        return _strip_internal(results)
+        if strip_internal:
+            return _strip_internal(results)
+        return results
 
     # ════════════════════════════════════════════════════════
     #  写操作
     # ════════════════════════════════════════════════════════
 
     def _execute_create_node(self, query: CypherQuery) -> List[dict]:
-        """CREATE (n:Label {path: "data/x.db"}) [SET n += $props]"""
+        """CREATE (n:Label {ordinary: "property"})"""
         node = query.nodes[0]
-        props = dict(node.props)
-        ref = props.pop("name", props.pop("ref", None))
-        if not ref:
-            return [{"error": "CREATE requires a 'name' or 'ref' property"}]
-
-        meta = {}
-        for k, v in props.items():
-            if k not in ("labels", "project", "ent_id"):
-                meta[k] = v
-
+        meta = dict(node.props)
         for sc in query.set_clauses:
             if sc.is_merge:
                 value = query.params.get(sc.param_name, {})
@@ -536,25 +527,12 @@ class CypherExecutor:
                     meta.update(value)
             elif sc.prop:
                 meta[sc.prop] = sc.value
-
-        edges = []
-        if query.rels:
-            for rel in query.rels:
-                other_var = rel.to_var if rel.from_var == node.var else rel.from_var
-                other_node = next((n for n in query.nodes if n.var == other_var), None)
-                if other_node:
-                    other_ref = other_node.props.get("name", other_node.props.get("ref"))
-                    if other_ref:
-                        edges.append({"a": ref, "b": other_ref})
-
-        ent_id = self.store._create_node(ref, meta=meta,
-                                        labels=node.labels or None,
-                                        edges=edges or None)
+        ent_id = self.store._create_node("", meta=meta, labels=node.labels or None)
         result = _node_result(self.store, ent_id)
         return [{"created": result}]
 
     def _execute_create_edge(self, query: CypherQuery) -> List[dict]:
-        """MATCH (a {name:"x"}),(b {name:"y"}) CREATE (a)--(b)"""
+        """MATCH (a {id:$a}),(b {id:$b}) CREATE (a)--(b)"""
         matched = self._execute_match_only(query)
         if not matched:
             return []
@@ -566,8 +544,8 @@ class CypherExecutor:
                 a_info = row.get(var_a)
                 b_info = row.get(var_b)
                 if a_info and b_info:
-                    a_id = a_info.get("_eid")
-                    b_id = b_info.get("_eid")
+                    a_id = a_info.get("id")
+                    b_id = b_info.get("id")
                     if a_id and b_id:
                         pair.append({"a": a_id, "b": b_id})
             edges_to_add.extend(pair)
@@ -588,7 +566,7 @@ class CypherExecutor:
         return [{"created_edges": len(unique)}]
 
     def _execute_delete(self, query: CypherQuery) -> List[dict]:
-        """MATCH (n {name: "x"}) DELETE n"""
+        """MATCH (...) DELETE n"""
         matched = self._execute_match_only(query)
         deleted = []
         skipped = []
@@ -598,7 +576,7 @@ class CypherExecutor:
                 info = row.get(var)
                 if not info or not isinstance(info, dict):
                     continue
-                eid = info.get("_eid")
+                eid = info.get("id")
                 if not eid:
                     continue
 
@@ -614,7 +592,7 @@ class CypherExecutor:
         return result
 
     def _execute_set(self, query: CypherQuery) -> List[dict]:
-        """MATCH (n {name: "x"}) SET n.brief = "...", n += $props"""
+        """MATCH (...) SET n.prop = value"""
         matched = self._execute_match_only(query)
         updated = []
         skipped = []
@@ -639,7 +617,7 @@ class CypherExecutor:
                 info = row.get(var)
                 if not info or not isinstance(info, dict):
                     continue
-                eid = info.get("_eid")
+                eid = info.get("id")
                 if not eid:
                     continue
 
@@ -650,12 +628,16 @@ class CypherExecutor:
                 if var in var_sets:
                     fields.update(var_sets[var])
 
-                # 过滤掉系统属性
                 safe_fields = {k: v for k, v in fields.items()
-                               if not k.startswith("_")}
+                               if not k.startswith("_") and k not in ("id", "project", "src")}
                 if not safe_fields:
                     continue
 
+                if "labels" in safe_fields:
+                    labels = safe_fields["labels"]
+                    if isinstance(labels, str):
+                        labels = [labels]
+                    safe_fields["labels"] = labels
                 self.store._set_meta(eid, safe_fields)
                 updated.append({"set": list(safe_fields.keys())})
 
@@ -714,7 +696,7 @@ class CypherExecutor:
         self.store._ensure_index()
         results = []
         for eid, props in self.store._id_index.items():
-            labels = props.get("_labels", [])
+            labels = props.get("labels", [])
             if not node.matches_labels(labels):
                 continue
             ent_props = _entity_props(self.store, eid)
@@ -725,7 +707,7 @@ class CypherExecutor:
                 continue
             if not _where_matches(wheres, node.var, ent_props):
                 continue
-            node_res = _node_result(self.store, eid, _internal=True)
+            node_res = _node_result(self.store, eid)
             results.append({node.var: node_res or ent_props})
 
         return results
@@ -753,7 +735,7 @@ class CypherExecutor:
                     adj_props = self.store._id_index.get(adj_eid)
                     if not adj_props:
                         continue
-                    adj_labels = adj_props.get("_labels", [])
+                    adj_labels = adj_props.get("labels", [])
                     if not target.matches_labels(adj_labels):
                         continue
                     ent_props = _entity_props(self.store, adj_eid)
@@ -773,7 +755,7 @@ class CypherExecutor:
             row = {}
             for i, node in enumerate(nodes):
                 if i < len(path):
-                    nr = _node_result(self.store, path[i], _internal=True)
+                    nr = _node_result(self.store, path[i])
                     if nr:
                         row[node.var] = nr
             for v in ret_vars:
@@ -808,14 +790,14 @@ class CypherExecutor:
                     adj_props = self.store._id_index.get(adj_eid)
                     if not adj_props:
                         continue
-                    adj_labels = adj_props.get("_labels", [])
+                    adj_labels = adj_props.get("labels", [])
 
                     if to_node.matches_labels(adj_labels):
                         ent_props = _entity_props(self.store, adj_eid)
                         if _where_matches(wheres, to_node.var, ent_props):
                             if depth >= var_rel.min_hops:
-                                seed_nr = _node_result(self.store, seed, _internal=True)
-                                adj_nr = _node_result(self.store, adj_eid, _internal=True)
+                                seed_nr = _node_result(self.store, seed)
+                                adj_nr = _node_result(self.store, adj_eid)
                                 if seed_nr and adj_nr:
                                     results.append({
                                         from_node.var: seed_nr,
@@ -829,7 +811,7 @@ class CypherExecutor:
         seen = set()
         deduped = []
         for row in results:
-            key = (row[from_node.var].get("_eid"), row[to_node.var].get("_eid"))
+            key = (row[from_node.var].get("id"), row[to_node.var].get("id"))
             if key not in seen:
                 seen.add(key)
                 deduped.append(row)
@@ -838,8 +820,8 @@ class CypherExecutor:
     # ── 辅助方法 ──
 
     def _needs_meta(self, node: NodePattern, wheres: List[WhereClause]) -> bool:
-        """是否需要加载完整 meta（内联属性或 WHERE 引用了非基础属性）。"""
-        base_keys = {"_eid", "labels", "project"}
+        """非核心属性通过普通/虚属性元数据参与匹配。"""
+        base_keys = {"id", "labels", "project", "src"}
         if any(k not in base_keys for k in node.props):
             return True
         return any(w.prop not in base_keys
@@ -852,7 +834,7 @@ class CypherExecutor:
         self.store._ensure_index()
         ids = set()
         for eid, props in self.store._id_index.items():
-            labels = props.get("_labels", [])
+            labels = props.get("labels", [])
             if not node.matches_labels(labels):
                 continue
             ent_props = _entity_props(self.store, eid)

@@ -9,11 +9,9 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 from storage.backends import GraphBackend
 from storage.config import SourceConfig
-from storage.stores.base import MatchResult
-
 logger = logging.getLogger(__name__)
 
-_BASE_INTERNAL_FIELDS = {"_id"}
+_BASE_INTERNAL_FIELDS = set()
 
 
 def _gen_id() -> str:
@@ -42,7 +40,6 @@ class Store:
         self._adjacent: Dict[str, set] = {}
         self._cross_adjacent: Dict[str, List[dict]] = {}
 
-        self._name_index: Dict[str, object] = {}
         self._read_timestamps: Dict[str, float] = {}
         self._modules: list = []
 
@@ -121,6 +118,10 @@ class Store:
     # ==================== src / modules ====================
 
     def bind_src(self, node: dict):
+        eid = node.get("id") if isinstance(node, dict) else None
+        if eid and eid in self._id_index:
+            node = dict(self._id_index[eid])
+            node["id"] = eid
         for mod in self._modules:
             src = mod.bind_src(node)
             if src is not None:
@@ -144,11 +145,11 @@ class Store:
             if merged is None:
                 merged = meta
             else:
-                labels |= set(merged.get("_labels", []))
+                labels |= set(merged.get("labels", []))
                 merged.update(meta)
-            labels |= set(meta.get("_labels", []))
+            labels |= set(meta.get("labels", []))
         if merged is not None and labels:
-            merged["_labels"] = sorted(labels)
+            merged["labels"] = sorted(labels)
         return merged
 
     def get_virtual_neighbors(self, key: str) -> list:
@@ -173,11 +174,12 @@ class Store:
         from storage.labels import normalize_labels
         self._id_index.clear()
         self._adjacent.clear()
-        self._name_index.clear()
 
         for ent_id, raw in self._scan_entities():
-            if "_labels" in raw:
-                raw["_labels"] = normalize_labels(raw["_labels"])
+            raw["id"] = ent_id
+            if "labels" in raw:
+                raw["labels"] = normalize_labels(raw["labels"])
+            raw = self._sanitize_meta(raw)
             self._meta_cache[ent_id] = raw
             self._register_node(ent_id, raw)
 
@@ -193,114 +195,28 @@ class Store:
 
     def _register_node(self, ent_id: str, props: dict):
         self._id_index[ent_id] = props
-        ename = props.get("name", "")
-        if ename:
-            if ename in self._name_index:
-                existing = self._name_index[ename]
-                if isinstance(existing, list):
-                    if ent_id not in existing:
-                        existing.append(ent_id)
-                elif ent_id != existing:
-                    self._name_index[ename] = [existing, ent_id]
-            else:
-                self._name_index[ename] = ent_id
 
     def _unregister_node(self, ent_id: str):
-        props = self._id_index.get(ent_id, {})
-        ename = props.get("name", "")
-        if ename:
-            ent_ids = self._name_index.get(ename)
-            if isinstance(ent_ids, list):
-                ent_ids = [eid for eid in ent_ids if eid != ent_id]
-                if len(ent_ids) == 1:
-                    self._name_index[ename] = ent_ids[0]
-                elif len(ent_ids) == 0:
-                    self._name_index.pop(ename, None)
-                else:
-                    self._name_index[ename] = ent_ids
-            elif ent_ids == ent_id:
-                self._name_index.pop(ename, None)
         self._id_index.pop(ent_id, None)
 
-    # ==================== name resolution ====================
+    def _sanitize_meta(self, data: Optional[dict], labels: Optional[List[str]] = None) -> dict:
+        result = dict(data or {})
+        if labels is not None:
+            result["labels"] = list(labels)
+        elif "labels" not in result:
+            result["labels"] = []
+        return result
 
-    def _name_to_id(self, entity_name: str) -> Optional[str]:
+    def _resolve_to_id(self, eid: str) -> Optional[str]:
         if not self._index_built:
             self._ensure_index()
-        ent_ids = self._name_index.get(entity_name)
-        if ent_ids is None:
-            return None
-        if isinstance(ent_ids, list):
-            best_labeled = None
-            for eid in ent_ids:
-                labels = self._get_labels_by_id(eid)
-                if labels:
-                    if self._adjacent.get(eid):
-                        return eid
-                    if best_labeled is None:
-                        best_labeled = eid
-            return best_labeled or ent_ids[0]
-        return ent_ids
-
-    def _name_to_ids(self, entity_name: str) -> List[str]:
-        if not self._index_built:
-            self._ensure_index()
-        ent_ids = self._name_index.get(entity_name)
-        if ent_ids is None:
-            return []
-        if isinstance(ent_ids, list):
-            return list(ent_ids)
-        return [ent_ids]
-
-    def _resolve_to_id(self, ref: str) -> Optional[str]:
-        if not self._index_built:
-            self._ensure_index()
-        eid = self._name_to_id(ref)
-        if eid:
+        if isinstance(eid, str) and eid in self._id_index:
             return eid
-        if ref in self._id_index:
-            return ref
-        if "--" in ref:
-            parts = ref.split("--")
-            current_ids = self._name_to_ids(parts[0])
-            matched_prefix = bool(current_ids)
-            for seg in parts[1:]:
-                if not current_ids:
-                    break
-                next_ids = []
-                for current_id in current_ids:
-                    for adj_id in self._adjacent.get(current_id, set()):
-                        adj_props = self._id_index.get(adj_id, {})
-                        if adj_props.get("name") == seg:
-                            next_ids.append(adj_id)
-                current_ids = next_ids
-                if current_ids:
-                    matched_prefix = True
-            if len(current_ids) == 1:
-                return current_ids[0]
-            if len(current_ids) > 1:
-                best_labeled = None
-                for candidate in current_ids:
-                    labels = self._get_labels_by_id(candidate)
-                    if labels:
-                        if self._adjacent.get(candidate):
-                            return candidate
-                        if best_labeled is None:
-                            best_labeled = candidate
-                if best_labeled:
-                    return best_labeled
-                return current_ids[0]
-            if matched_prefix:
-                return None
-            bare = parts[-1]
-            eid = self._name_to_id(bare)
-            if eid:
-                return eid
         return None
 
     def _get_labels_by_id(self, ent_id: str) -> List[str]:
         props = self._id_index.get(ent_id)
-        return props.get("_labels", []) if props else []
+        return props.get("labels", []) if props else []
 
     # ==================== meta ====================
 
@@ -322,13 +238,13 @@ class Store:
             cached = self._meta_cache[ent_id]
             if cached is None:
                 return None
-            return {k: v for k, v in cached.items() if k not in self.internal_fields}
+            return {k: v for k, v in cached.items() if not k.startswith("_") and k not in self.internal_fields}
         raw = self._read_entity_meta(ent_id)
         if raw is None:
             self._meta_cache[ent_id] = None
             return None
         self._meta_cache[ent_id] = dict(raw)
-        return {k: v for k, v in raw.items() if k not in self.internal_fields}
+        return {k: v for k, v in raw.items() if not k.startswith("_") and k not in self.internal_fields}
 
     def _get_meta_internal(self, ref: str, include_props: Optional[List[str]], _visiting: set) -> Optional[dict]:
         self._ensure_index()
@@ -347,17 +263,7 @@ class Store:
                 result = dict(raw)
                 self._meta_cache[ent_id] = dict(raw)
                 self._on_meta_read(ent_id)
-            result = {k: v for k, v in result.items() if k not in self.internal_fields}
-            for adj_id in self._adjacent.get(ent_id, set()):
-                adj_props = self._id_index.get(adj_id)
-                if adj_props is None:
-                    continue
-                adj_name = adj_props.get("name", "")
-                adj_labels = adj_props.get("_labels", [])
-                group_key = adj_labels[0] if adj_labels else (adj_name.rsplit(".", 1)[-1] if "." in adj_name else adj_name)
-                result.setdefault(group_key, [])
-                if isinstance(result[group_key], list):
-                    result[group_key].append(adj_name)
+            result = {k: v for k, v in result.items() if not k.startswith("_") and k not in self.internal_fields}
             return result
         return self._get_meta_fallback(ref, include_props, _visiting)
 
@@ -376,99 +282,55 @@ class Store:
 
     # ==================== create/update/delete ====================
 
-    def _materialize_virtual(self, ref: str, vmeta: dict) -> str:
-        labels = list(vmeta.get("_labels", []))
-        return self._create_node(ref, meta={}, labels=labels or None)
-
-    def _materialize(self, ref: str) -> str:
-        ent_id = self._resolve_to_id(ref)
-        if ent_id:
-            return ent_id
-        vmeta = self.get_virtual_meta(ref)
-        if vmeta:
-            return self._materialize_virtual(ref, vmeta)
-        return self._create_node(ref)
-
     def _set_meta(self, ref: str, data: dict):
         ent_id = self._resolve_to_id(ref)
-        if ent_id:
-            existing = self._read_raw(ent_id) or {}
-            existing.update(data)
-        else:
-            ent_id = self._materialize(ref)
-            existing = self._read_raw(ent_id) or {}
-            existing.update(data)
-        existing.setdefault("_labels", [])
+        if not ent_id:
+            return ""
+        existing = self._read_raw(ent_id) or {}
+        existing.update(data)
+        existing = self._sanitize_meta(existing)
         self._register_node(ent_id, existing)
         self._write_entity_meta(ent_id, existing)
         self._meta_cache[ent_id] = dict(existing)
         self._on_meta_read(ent_id)
         self._mark_dirty()
+        return ent_id
 
     def _put_meta(self, ref: str, data: dict):
-        ent_id = self._resolve_to_id(ref) or self._materialize(ref)
-        data["_id"] = ent_id
-        data.setdefault("_labels", [])
+        ent_id = self._resolve_to_id(ref)
+        if not ent_id:
+            return ""
+        data = self._sanitize_meta(data)
+        data["id"] = ent_id
         self._register_node(ent_id, data)
         self._write_entity_meta(ent_id, data)
         self._meta_cache[ent_id] = dict(data)
         self._on_meta_read(ent_id)
         self._mark_dirty()
-
-    def _apply_labels(self, data: dict, labels: Optional[List[str]]) -> dict:
-        data["_labels"] = list(labels) if labels is not None else []
-        return data
+        return ent_id
 
     def _create_node(self, ref: str, *, meta: Optional[dict] = None, edges: Optional[List[dict]] = None, labels: Optional[List[str]] = None) -> str:
         existing = self._resolve_to_id(ref)
         if existing:
             if labels is None:
                 return existing
-            existing_labels = set(self._id_index.get(existing, {}).get("_labels", []))
+            existing_labels = set(self._id_index.get(existing, {}).get("labels", []))
             requested_labels = set(labels or [])
             if existing_labels == requested_labels:
                 return existing
 
-        meta = meta or {}
         vmeta = self.get_virtual_meta(ref)
-        if vmeta:
-            merged = dict(meta)
-            merged.update(vmeta)
-            meta = merged
-            if labels is None and "_labels" in vmeta:
-                labels = vmeta["_labels"]
-
-        self._apply_labels(meta, labels)
-        if "--" in ref:
-            parts = ref.split("--")
-            ename = parts[-1]
-            parent_name = parts[-2]
-        else:
-            parts = [ref]
-            ename = ref
-            parent_name = None
-
-        self._on_before_persist(meta, ename)
+        if vmeta and labels is None and "labels" in vmeta:
+            labels = vmeta["labels"]
+        meta = self._sanitize_meta(meta, labels)
         ent_id = _gen_id()
-        meta["_id"] = ent_id
-        meta.setdefault("_labels", [])
+        meta["id"] = ent_id
+        meta.setdefault("labels", [])
         self._write_entity_meta(ent_id, meta)
         self._meta_cache[ent_id] = dict(meta)
         self._register_node(ent_id, meta)
 
-        if parent_name:
-            all_edges = []
-            if "--" in ref:
-                for i in range(1, len(parts)):
-                    parent_ref = "--".join(parts[:i])
-                    child_ref = ent_id if i == len(parts) - 1 else "--".join(parts[:i + 1])
-                    all_edges.append({"a": parent_ref, "b": child_ref})
-            else:
-                all_edges.append({"a": parent_name, "b": ename})
-            if edges:
-                all_edges.extend(edges)
-            self._add_edges(all_edges)
-        elif edges:
+        if edges:
             self._add_edges(edges)
 
         self._mark_dirty()
@@ -479,7 +341,6 @@ class Store:
         ent_id = self._resolve_to_id(ref)
         if not ent_id:
             return ""
-        ename = self._id_index.get(ent_id, {}).get("name", ref)
         if not ent_id.startswith("ent_"):
             return ""
         raw = self._read_edges_storage()
@@ -493,7 +354,7 @@ class Store:
         self._meta_cache.pop(ent_id, None)
         self._remove_cross_edges(ent_id)
         self._mark_dirty()
-        return ename
+        return ent_id
 
     # ==================== traversal helpers ====================
 
@@ -501,6 +362,11 @@ class Store:
         from storage.cypher import CypherExecutor, parse_cypher
         self._ensure_index()
         return CypherExecutor(self).execute(parse_cypher(query, params=params))
+
+    def _cypher_internal(self, query: str, params: dict = None) -> list:
+        from storage.cypher import CypherExecutor, parse_cypher
+        self._ensure_index()
+        return CypherExecutor(self).execute(parse_cypher(query, params=params), strip_internal=False)
 
     def _walk_metas(self) -> Iterator[Tuple[str, dict]]:
         self._ensure_index()
@@ -511,7 +377,7 @@ class Store:
 
     def _list_all(self) -> List[Tuple[str, List[str]]]:
         self._ensure_index()
-        return [(eid, props.get("_labels", [])) for eid, props in self._id_index.items()]
+        return [(eid, props.get("labels", [])) for eid, props in self._id_index.items()]
 
     def _neighbors(self, ref: str) -> List[str]:
         self._ensure_index()
@@ -523,7 +389,7 @@ class Store:
             props = self._id_index.get(aid)
             if not props:
                 continue
-            result.append(props.get("name", aid))
+            result.append(aid)
         return result
 
     def _get_edges(self, node_ref: str = None) -> List[dict]:
@@ -545,12 +411,8 @@ class Store:
         for e in edges:
             a_ref = e.get("a", "")
             b_ref = e.get("b", "")
-            a_id = a_ref if a_ref.startswith("ent_") else (self._name_to_id(a_ref) or self._resolve_to_id(a_ref))
-            if not a_id:
-                a_id = self._materialize(a_ref)
-            b_id = b_ref if b_ref.startswith("ent_") else (self._name_to_id(b_ref) or self._resolve_to_id(b_ref))
-            if not b_id:
-                b_id = self._materialize(b_ref)
+            a_id = self._resolve_to_id(a_ref)
+            b_id = self._resolve_to_id(b_ref)
             if not a_id or not b_id or a_id == b_id:
                 continue
             pair = frozenset({a_id, b_id})
@@ -612,9 +474,6 @@ class Store:
                     "stale": r.get("stale", False),
                 })
         return results
-
-    def _on_before_persist(self, meta: dict, ename: str):
-        meta.setdefault("name", ename)
 
     def _on_meta_read(self, ent_id: str):
         if ent_id.startswith("ent_") and self._pontis_root:

@@ -109,7 +109,7 @@ class FSModule(StoreModule):
         if root_meta is not None:
             root = {"name": ".", **root_meta}
             root.setdefault("path", ".")
-            root.setdefault("labels", root.pop("_labels", []))
+            root.setdefault("labels", root.get("labels", []))
             nodes.append(root)
 
         self._scan_dirs()
@@ -119,7 +119,7 @@ class FSModule(StoreModule):
                 continue
             node = {"name": bare_name, **meta}
             node.setdefault("path", rel_path)
-            node.setdefault("labels", node.pop("_labels", []))
+            node.setdefault("labels", node.get("labels", []))
             nodes.append(node)
 
         for root, dirs, files in os.walk(self.store._project_path):
@@ -134,7 +134,7 @@ class FSModule(StoreModule):
                     continue
                 node = {"name": os.path.basename(rel), **meta}
                 node.setdefault("path", rel)
-                node.setdefault("labels", node.pop("_labels", []))
+                node.setdefault("labels", node.get("labels", []))
                 nodes.append(node)
 
         dedup = {}
@@ -170,7 +170,7 @@ class FSModule(StoreModule):
         return self._dir_adjacent(key)
 
     def bind_src(self, node: dict):
-        labels = set(node.get("labels", []) or node.get("_labels", []) or [])
+        labels = set(node.get("labels", []) or [])
         rel_path = node.get("path") or node.get("name", "")
         if not rel_path:
             return None
@@ -192,7 +192,7 @@ class FSModule(StoreModule):
         return None
 
     def match_query(self, node: dict) -> MatchQuery | None:
-        labels = set(node.get("labels", []) or node.get("_labels", []) or [])
+        labels = set(node.get("labels", []) or [])
         if "file" not in labels and "dir" not in labels:
             return None
 
@@ -275,24 +275,8 @@ class FSModule(StoreModule):
                             rel = os.path.relpath(fp, project_path)
                             if ".pontis" not in rel.split(os.sep):
                                 results.append(rel)
-        self.store._ensure_index()
         deduped = []
         for rel in results:
-            bare = os.path.basename(rel)
-            ent_ids = self.store._name_to_ids(bare)
-            if ent_ids:
-                found = False
-                for eid in ent_ids:
-                    cached = self.store._meta_cache.get(eid, {})
-                    if cached.get("path", bare) == rel:
-                        found = True
-                        break
-                    raw = self.store._read_entity_meta(eid)
-                    if raw and raw.get("path", bare) == rel:
-                        found = True
-                        break
-                if found:
-                    continue
             deduped.append(rel)
         return [(rel, os.path.basename(rel), ["file"], "file") for rel in deduped]
 
@@ -302,7 +286,7 @@ class FSModule(StoreModule):
         dir_path = self.store.project_path if key == "." else os.path.join(self.store.project_path, key)
         if not os.path.isdir(dir_path):
             return None
-        return {"_labels": ["dir"]}
+        return {"labels": ["dir"]}
 
     def _file_meta(self, name: str) -> Optional[dict]:
         if not self.store.project_path:
@@ -321,13 +305,13 @@ class FSModule(StoreModule):
                 ".toml": ["file", "toml"],
                 ".hcl": ["file", "hcl"],
             }
-            return {"_inode": stat.st_ino, "_labels": db_utils.file_labels(name) or label_map.get(ext, ["file"])}
+            return {"_inode": stat.st_ino, "labels": db_utils.file_labels(name) or label_map.get(ext, ["file"])}
         except OSError:
             return None
 
     def _rebuild_inode_index(self):
         self._inode_index.clear()
-        for _eid, raw in self.store._scan_entities():
+        for _, raw in self.store._scan_entities():
             inode = raw.get("_inode")
             if inode is not None:
                 self._inode_index[inode] = raw.get("name", "")
@@ -362,7 +346,7 @@ class FSModule(StoreModule):
                 matched_name = self._inode_index.get(inode)
                 if matched_name:
                     meta = self.store._get_meta(matched_name) or {}
-                    children.append((matched_name, meta.get("name", entry), meta.get("_labels", [])))
+                    children.append((matched_name, meta.get("name", entry), meta.get("labels", [])))
                 else:
                     child_rel = os.path.relpath(full, self.store.project_path)
                     children.append((child_rel, entry, ["file"]))

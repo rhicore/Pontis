@@ -41,6 +41,7 @@ class MetaTypeConfig:
     max_detail_lines: Optional[int] = 15
     folded_keys: Set[str] = field(default_factory=set)
     untruncated_keys: Set[str] = field(default_factory=lambda: {"detail", "brief"})
+    hidden_keys: Set[str] = field(default_factory=set)
     adjacency_keys: Set[str] = field(default_factory=set)  # 默认显示的邻接类型
 
 
@@ -161,10 +162,12 @@ META_TYPE_CONFIG = {
     # 结构段
     "table": MetaTypeConfig(
         default_keys=["row_count", "column_count", "primary_key", "fk", "rel", "disambig", "brief", "detail"],
+        hidden_keys={"name", "labels", "project", "path", "db_name", "db_path", "table_name"},
         adjacency_keys={"col", "fk", "rel"},
     ),
     "view": MetaTypeConfig(
         default_keys=["row_count", "column_count", "brief", "detail"],
+        hidden_keys={"name", "labels", "project", "path", "db_name", "db_path", "table_name"},
         adjacency_keys={"col", "fk"},
     ),
     "col": MetaTypeConfig(
@@ -174,11 +177,25 @@ META_TYPE_CONFIG = {
                        "min_length", "max_length", "avg_length",
                        "fk", "disambig", "brief", "detail"],
         folded_keys={"topk"},
+        hidden_keys={"name", "labels", "project", "path", "db_name", "db_path", "table_name", "col_type"},
         adjacency_keys={"fk", "rel", "disambig", "table"},
     ),
     # 关系段
     "fk": MetaTypeConfig(
         default_keys=["brief", "detail"],
+        hidden_keys={
+            "name",
+            "labels",
+            "project",
+            "path",
+            "db_name",
+            "db_path",
+            "from_table",
+            "from_column",
+            "to_table",
+            "to_column",
+            "relation_type",
+        },
     ),
     "rel": MetaTypeConfig(
         default_keys=["brief", "detail"],
@@ -232,6 +249,7 @@ def resolve_meta_config(entity_labels: List[str]) -> MetaTypeConfig:
     """
     merged_keys = []
     merged_folded: Set[str] = set()
+    merged_hidden: Set[str] = set()
     merged_adjacency: Set[str] = set()
     seen_keys: Set[str] = set()
     merged_max_value_len: Optional[int] = 100
@@ -255,6 +273,7 @@ def resolve_meta_config(entity_labels: List[str]) -> MetaTypeConfig:
                         merged_keys.append(k)
                         seen_keys.add(k)
                 merged_folded.update(cfg.folded_keys)
+                merged_hidden.update(cfg.hidden_keys)
                 merged_adjacency.update(cfg.adjacency_keys)
 
     if not merged_keys:
@@ -265,6 +284,7 @@ def resolve_meta_config(entity_labels: List[str]) -> MetaTypeConfig:
         max_value_len=merged_max_value_len,
         max_detail_lines=merged_max_detail_lines,
         folded_keys=merged_folded,
+        hidden_keys=merged_hidden,
         adjacency_keys=merged_adjacency,
     )
 

@@ -1,8 +1,7 @@
 """Delete tool — 删除节点，支持级联删除。"""
 
 from tool.config import resolve_rank
-from tool.utils import execute_cypher
-from tool.utils.resolve import resolve_entity_selector, selector_match_pattern
+from tool.utils.resolve import canonical_ref, resolve_entity, resolve_entity_selector, selector_match_pattern, selector_params
 
 
 def _get_entity_rank_from_labels(labels: list[str]) -> int:
@@ -24,30 +23,40 @@ def delete_command(workspace, ref: str) -> str:
       - 精确名称 → 直接匹配
       - glob 模式 → 必须匹配唯一实体
     """
-    if not workspace.pontis_exists:
-        return f"错误: 未找到 .pontis 目录 ({workspace.project_path})"
-
-    selector, err = resolve_entity_selector(workspace, ref)
+    node, err = resolve_entity(workspace, ref)
     if err:
         return f"Error: {err}"
 
-    project = selector["project"]
-    name = selector["name"]
+    project = node.get("project") or None
+    name = node.get("name", "")
+    target_ref = canonical_ref(node, ref)
     if not name:
         return f"节点不存在: {ref}"
-
-    workspace.materialize(name, project=project)
 
     # 级联查找派生实体
     # 只对已知层级关系级联：file→table, table→col, col→fk/rel/overlap
     _CASCADE_FROM = {"file", "db", "csv", "table", "view", "col"}
-    to_delete = [selector]
-    main_labels = set(selector["labels"])
+    to_delete = [{
+        "project": project,
+        "name": name,
+        "labels": list(node.get("labels", [])),
+        "path": node.get("path"),
+        "ref": node.get("ref"),
+        "target_ref": target_ref,
+    }]
+    main_labels = set(node.get("labels", []))
     if main_labels & _CASCADE_FROM:
+        selector = {
+            "project": project,
+            "name": name,
+            "labels": list(node.get("labels", [])),
+            "path": node.get("path"),
+            "ref": node.get("ref"),
+        }
         match = selector_match_pattern(selector, "n")
         neighbor_rows = workspace.cypher(
             f"MATCH {match}--(m) RETURN m",
-            params={"name": name},
+            params=selector_params(selector),
             project=project,
         )
         for row in neighbor_rows:
@@ -60,21 +69,24 @@ def delete_command(workspace, ref: str) -> str:
                     "project": project,
                     "name": meta.get("name", ""),
                     "labels": neighbor_labels,
+                    "path": meta.get("path"),
+                    "ref": meta.get("ref"),
+                    "target_ref": canonical_ref(meta, meta.get("name", "")),
                 })
 
     # 逐个删除
     deleted = []
     for sel in to_delete:
-        if not sel.get("name"):
+        if not sel.get("target_ref"):
             continue
         match = selector_match_pattern(sel, "n")
-        execute_cypher(
-            workspace,
+        rows = workspace.cypher(
             f"MATCH {match} DELETE n",
-            params={"name": sel["name"]},
+            params=selector_params(sel),
             project=sel.get("project"),
         )
-        deleted.append(sel["name"])
+        if rows:
+            deleted.append(sel["name"])
 
     if not deleted:
         return f"删除失败: {ref}"

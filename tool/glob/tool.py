@@ -20,7 +20,7 @@ from fnmatch import fnmatch
 from typing import Dict, List, Optional, Tuple
 
 from tool.config import TOOL_PAGINATION
-from tool.utils.formatters import format_labels, get_info
+from tool.utils.formatters import format_entity_name, get_info
 from tool.utils.resolve import selector_match_pattern
 
 
@@ -327,9 +327,6 @@ def glob_command(workspace, ref: str, offset: int = 0,
         limit = page_conf.default_limit
     limit = min(limit, page_conf.max_limit)
 
-    if not workspace.pontis_exists:
-        return "No .pontis directory found. Run extractor first."
-
     # 解析 URN → Cypher
     project, segments = parse_urn(ref)
     cypher, post_filters = _build_cypher(segments)
@@ -361,8 +358,8 @@ def glob_command(workspace, ref: str, offset: int = 0,
         name = _display_ref_from_row(workspace, project, row, main_var, main_info)
         labels = main_info.get("labels", [])
         info_str = get_info(labels, main_info or {})
-        label_str = format_labels(labels)
-        all_items.append((name, label_str, info_str))
+        entity_name = format_entity_name(name, labels)
+        all_items.append((entity_name, info_str))
 
     if not all_items:
         return "No objects found"
@@ -374,8 +371,8 @@ def glob_command(workspace, ref: str, offset: int = 0,
         return f"No results at offset {offset}. Total results: {total}"
 
     lines = []
-    for name, label_str, info in page:
-        lines.append(f"{name}\t{label_str}\t{info}")
+    for entity_name, info in page:
+        lines.append(f"{entity_name}\t{info}")
     output = "\n".join(lines)
 
     end = offset + len(page)

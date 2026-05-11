@@ -1,4 +1,4 @@
-"""Enricher — 现场计算的虚属性（基于 _labels 匹配）。
+"""Enricher — 现场计算的虚属性（基于 labels 匹配）。
 
 不存储在 _meta.yml 中，而是在 store.get_meta() 时按需计算。
 只补充 meta 中缺失的字段，已有则跳过（尊重 extractor 预计算的值）。
@@ -43,8 +43,8 @@ def enrich_meta(meta: dict, project_path: str, file_rel_path: str,
                      include_props)
         return result
 
-    # 按 _labels 查注册表（扁平标签：逐个查 key）
-    labels = result.get("_labels", [])
+    # 按 labels 查注册表（扁平标签：逐个查 key）
+    labels = result.get("labels", [])
     matched = False
 
     if labels:

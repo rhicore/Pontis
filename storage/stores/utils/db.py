@@ -22,7 +22,14 @@ def file_labels(path_or_name: str) -> list[str] | None:
     return DB_FILE_LABELS.get(ext)
 
 
-def connect_sqlite(path: str, *args, **kwargs):
+def connect_sqlite(path: str, *args, readonly: bool = False,
+                   immutable: bool = False, **kwargs):
+    if readonly or immutable:
+        qs = ["mode=ro"]
+        if immutable:
+            qs.append("immutable=1")
+        path = f"file:{path}?{'&'.join(qs)}"
+        kwargs["uri"] = True
     return sqlite3.connect(path, *args, **kwargs)
 
 

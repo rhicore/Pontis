@@ -19,7 +19,7 @@ class MatchResult:
     """中心层用的匹配结果。
 
     说明：
-    - `matches` 放的是主图里命中的实体 name
+    - `matches` 放的是主图里命中的实体内部 id
     - `mergeable=False` 表示不要自动复用
     """
     matches: list[str]
@@ -71,7 +71,7 @@ class StoreModule:
         返回的每个节点应尽量包含：
         - `name`
         - `path`（如果有稳定路径）
-        - `labels` 或 `_labels`
+        - `labels`
         """
         return []
 
@@ -95,7 +95,7 @@ class StoreModule:
 
         这里返回的内容会参与中心化物化：
         - 写入前物化时，虚属性覆盖已持久化内容
-        - `_labels` 会与已有标签取并集
+        - `labels` 会与已有标签取并集
         """
         return None
 
@@ -127,9 +127,10 @@ class StoreModule:
         - 让中心层去主图里找“是否已经有对应的持久化实体”
 
         约束：
-        - 命中 0 个：不复用
-        - 命中 1 个：可复用
-        - 命中多个：中心层不会自动猜
+        - 读查询只构造 merged view：命中 0 个时保留为虚实体，不创建持久实体
+        - 写查询触发物化：命中 0 个时没有可合并的持久实体，才创建持久 overlay
+        - 命中 1 个：把虚实体属性合并到该持久实体
+        - 命中多个：中心层不会自动猜，也不会自动合并
         """
         return None
 

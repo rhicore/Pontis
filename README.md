@@ -63,7 +63,7 @@ PONTIS_EXTRACTOR_API_KEY=sk-xxxx
 
 ```bash
 # 显式指定要运行的模块
-python -m extractor run db_basic,csv_basic,db_column_stats ./my_project
+python -m extractor run csv_basic,db_column_stats ./my_project
 ```
 
 ### 启动 CLI 交互

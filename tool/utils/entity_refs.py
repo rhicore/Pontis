@@ -8,9 +8,7 @@ def path_ref_to_internal(ref: str) -> str:
 
 
 def dotted_ref_to_path(ref: str) -> str:
-    if "/" in ref or "." not in ref:
-        return ref
-    head, tail = ref.rsplit(".", 1)
-    if not head or not tail:
-        return ref
-    return f"{head}/{tail}"
+    # Path refs are the only stable external syntax for structured entities.
+    # Blindly rewriting dots breaks filenames like "books.sqlite" and relation
+    # names like "orders.user_id->users.id".
+    return ref

@@ -241,6 +241,24 @@ def _sort_by_mtime(files: List[str]) -> List[str]:
     return sorted(files, key=mtime_key)
 
 
+def _source_path_for(workspace, rel_path: str = ".") -> Optional[str]:
+    labels = ":dir" if rel_path in ("", ".") else ""
+    rows = workspace.cypher(
+        f"MATCH (n{labels} {{path: $path}}) RETURN n.src AS src",
+        params={"path": rel_path or "."},
+    )
+    if not rows and rel_path not in ("", "."):
+        rows = workspace.cypher(
+            "MATCH (n {name: $name}) RETURN n.src AS src",
+            params={"name": os.path.basename(rel_path)},
+        )
+    if len(rows) != 1:
+        return None
+    src = rows[0].get("src")
+    if src and src.has("path"):
+        return src.get("path")
+    return None
+
 
 def grep_command(
     workspace,
@@ -289,31 +307,35 @@ def grep_command(
         offset=offset,
     )
 
-    # Resolve search path
-    search_base = os.path.join(workspace.project_path, current_cwd) if current_cwd else workspace.project_path
+    # Resolve search path through storage's Cypher src port only.
     if params.path:
-        search_base = os.path.join(search_base, params.path) if not os.path.isabs(params.path) else params.path
+        search_rel = os.path.join(current_cwd, params.path) if current_cwd and not os.path.isabs(params.path) else params.path
+    else:
+        search_rel = current_cwd or "."
+    search_base = search_rel if os.path.isabs(search_rel) else _source_path_for(workspace, search_rel)
 
-    if not os.path.exists(search_base):
+    if not search_base or not os.path.exists(search_base):
         return f"Path does not exist: {params.path or '.'}"
+
+    root_path = _source_path_for(workspace, ".") or (search_base if os.path.isdir(search_base) else os.path.dirname(search_base))
 
     # Physical file grep via ripgrep
     raw_results = _run_ripgrep(params, search_base)
 
     if params.output_mode == 'content':
         limited, applied_limit = _apply_head_limit(raw_results, params.head_limit, params.offset)
-        limited = _to_relative_paths(limited, workspace.project_path)
+        limited = _to_relative_paths(limited, root_path)
         return _format_content_output(limited, applied_limit, params.offset)
 
     elif params.output_mode == 'count':
         limited, applied_limit = _apply_head_limit(raw_results, params.head_limit, params.offset)
-        limited = _to_relative_paths(limited, workspace.project_path)
+        limited = _to_relative_paths(limited, root_path)
         return _format_count_output(limited, applied_limit, params.offset)
 
     else:  # files_with_matches (default)
         sorted_results = _sort_by_mtime(raw_results)
         limited, applied_limit = _apply_head_limit(sorted_results, params.head_limit, params.offset)
-        limited = _to_relative_paths(limited, workspace.project_path)
+        limited = _to_relative_paths(limited, root_path)
         return _format_files_output(limited, len(limited), applied_limit)
 
 

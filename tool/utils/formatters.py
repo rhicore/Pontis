@@ -2,7 +2,8 @@
 
 包含：
 - resolve_info: 按标签段叠加 info 显示
-- format_labels: 格式化标签为 :label/seg :label2 形式
+- format_labels: 格式化标签为 Cypher 风格 :label1:label2
+- format_entity_name: 将实体名与标签直接拼接
 - meta 格式化
 """
 from typing import Dict, Any, List, Optional
@@ -19,6 +20,11 @@ def format_labels(labels: List[str]) -> str:
     if not labels:
         return ""
     return "".join(f":{label}" for label in labels)
+
+
+def format_entity_name(name: str, labels: List[str]) -> str:
+    """将实体名与标签直接拼接，避免单独占一列。"""
+    return f"{name}{format_labels(labels)}"
 
 
 # ========== Info 解析 ==========
