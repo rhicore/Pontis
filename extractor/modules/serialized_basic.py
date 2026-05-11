@@ -8,6 +8,7 @@ import os
 import logging
 from datetime import datetime
 from storage.workspace import Workspace
+from extractor.modules.utils.src import file_exists, get_file_path, open_text_file
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def generate(workspace: Workspace) -> None:
 
 def _process_serialized(rel_path: str, workspace: Workspace) -> None:
     """处理单个序列化文件：写入结构属性（自动实体化）"""
-    if not workspace.data_exists(rel_path):
+    if not file_exists(workspace, rel_path):
         return
 
     basename = os.path.basename(rel_path)
@@ -60,8 +61,10 @@ def _process_serialized(rel_path: str, workspace: Workspace) -> None:
     labels = label_map.get(ext, ["file", "json"])
 
     # 分析结构
-    abs_path = workspace.resolve_data_path(rel_path)
-    with workspace.open_file(rel_path, 'r', encoding='utf-8', errors='ignore') as f:
+    abs_path = get_file_path(workspace, rel_path)
+    if not abs_path:
+        return
+    with open_text_file(workspace, rel_path, 'r', encoding='utf-8', errors='ignore') as f:
         content = f.read()
 
     line_count = len(content.splitlines())

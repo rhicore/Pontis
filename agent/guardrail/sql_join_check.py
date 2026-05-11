@@ -62,7 +62,7 @@ class BridgeTableCheck(Guardrail):
         lines = []
         for t1, c1, t2, c2 in col_pairs:
             pair_key = (t1, c1, t2, c2)
-            if pair_key in self._warned_pairs:
+            if not strict and pair_key in self._warned_pairs:
                 continue
 
             key = tuple(sorted([t1, t2]))
@@ -85,14 +85,16 @@ class BridgeTableCheck(Guardrail):
                 if not pair_match:
                     continue
                 full_ref = f"{prefix}{e}"
-                if full_ref in self._warned:
+                if not strict and full_ref in self._warned:
                     continue
                 if has_read(history, e):
                     continue
-                self._warned.add(full_ref)
+                if not strict:
+                    self._warned.add(full_ref)
                 matched.append((full_ref, rtype))
 
-            self._warned_pairs.add(pair_key)
+            if not strict:
+                self._warned_pairs.add(pair_key)
 
             if matched:
                 types = {rtype for _, rtype in matched}

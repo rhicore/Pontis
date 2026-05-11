@@ -1,7 +1,7 @@
 """Add Edge tool — 通过 Cypher CREATE 添加无向边。"""
 
 from tool.utils import execute_cypher
-from tool.utils.resolve import resolve_entity
+from tool.utils.resolve import resolve_entity_selector, selector_match_pattern
 
 
 def add_edge_command(workspace, edges: list) -> str:
@@ -25,18 +25,30 @@ def add_edge_command(workspace, edges: list) -> str:
             results.append(f"跳过: 缺少必填字段 (a={a_ref}, b={b_ref})")
             continue
 
-        a_id, a_err = resolve_entity(workspace, a_ref)
+        a_sel, a_err = resolve_entity_selector(workspace, a_ref)
         if a_err:
             results.append(f"跳过 a: {a_err}")
             continue
 
-        b_id, b_err = resolve_entity(workspace, b_ref)
+        b_sel, b_err = resolve_entity_selector(workspace, b_ref)
         if b_err:
             results.append(f"跳过 b: {b_err}")
             continue
 
-        valid_edges.append({"a_id": a_id, "b_id": b_id,
-                            "a_ref": a_ref, "b_ref": b_ref})
+        a_project = a_sel["project"]
+        b_project = b_sel["project"]
+        project = a_project or b_project
+        if a_project and b_project and a_project != b_project:
+            results.append(f"跳过: 暂不支持跨项目加边 ({a_ref} ↔ {b_ref})")
+            continue
+
+        valid_edges.append({
+            "project": project,
+            "a_sel": a_sel,
+            "b_sel": b_sel,
+            "a_ref": a_ref,
+            "b_ref": b_ref,
+        })
 
     if not valid_edges:
         if results:
@@ -44,8 +56,19 @@ def add_edge_command(workspace, edges: list) -> str:
         return "没有有效的边可添加"
 
     for e in valid_edges:
-        cypher = 'MATCH (a {id: $a_id}),(b {id: $b_id}) CREATE (a)--(b)'
-        execute_cypher(workspace, cypher, params={"a_id": e["a_id"], "b_id": e["b_id"]})
+        workspace.materialize(e["a_sel"]["name"], project=e["project"])
+        workspace.materialize(e["b_sel"]["name"], project=e["project"])
+        a_match = selector_match_pattern(e["a_sel"], "a", "a_name")
+        b_match = selector_match_pattern(e["b_sel"], "b", "b_name")
+        execute_cypher(
+            workspace,
+            f"MATCH {a_match}, {b_match} CREATE (a)--(b)",
+            params={
+                "a_name": e["a_sel"]["name"],
+                "b_name": e["b_sel"]["name"],
+            },
+            project=e["project"],
+        )
 
     results.insert(0, f"已添加 {len(valid_edges)} 条边:")
     for e in valid_edges:

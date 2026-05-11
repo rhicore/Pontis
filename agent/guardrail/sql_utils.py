@@ -108,9 +108,12 @@ def get_meta_read(tool_history: list) -> frozenset:
     read = set()
     for name, args, _ in tool_history:
         if name == "meta":
-            path = args.get("path", "")
-            entity = path.split("::", 1)[1] if "::" in path else path
-            read.add(entity)
+            ref = args.get("ref", "")
+            if not ref:
+                ref = args.get("path", "")
+            entity = ref.split("::", 1)[1] if "::" in ref else ref
+            if entity:
+                read.add(entity)
     return frozenset(read)
 
 
@@ -119,7 +122,14 @@ def has_read(tool_history: list, entity: str) -> bool:
     if "::" in entity:
         entity = entity.split("::", 1)[1]
     read = get_meta_read(tool_history)
-    return entity in read
+    if entity in read:
+        return True
+
+    # SQL 解析阶段常拿到裸 table/column 名，而实际 meta 读取常是
+    # `db/table` 或 `db/table/column` 这种 scoped ref。这里做一个轻量后缀匹配，
+    # 让“已读取 scoped ref”能够满足同名裸实体检查。
+    suffixes = (f"/{entity}", f".{entity}")
+    return any(r.endswith(suffixes) for r in read)
 
 
 def resolve_entity_ref(workspace, table: str, column: str = None) -> str:

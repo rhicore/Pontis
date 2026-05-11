@@ -45,7 +45,7 @@ storage/
 
 ### 2.2 FSStore = 图数据库的客户端
 
-FSStore 使用基类提供的图操作来管理自己的实体发现、去重、身份解析。它覆写基类的默认实现以获得 O(1) 名称解析和虚属性补充。
+FS 模块使用基类提供的图操作来管理自己的实体发现、去重、身份解析。它通过虚实体产出 source 侧元数据，再由中心层按匹配规则与持久实体合并。
 
 ### 2.3 SQLite 持久化
 
@@ -140,8 +140,7 @@ Workspace 层提供显式解析方法，含容错处理（target_missing / proje
 
 | 方法 | 基类默认 | 说明 |
 |---|---|---|
-| `_get_meta_internal(ref, ...)` | 加载 meta + 过滤内部字段 | 子类可加 label 分组、虚属性、fallback |
-| `_enrich_meta(eid, meta)` | 返回原始 meta | 子类可调用 enricher 补充虚属性 |
+| `_get_meta_internal(ref, ...)` | 加载 meta + 过滤内部字段 | 子类可加 label 分组、fallback |
 | `internal_fields` | `{_id, _entity_name}` | 内部字段集合，不暴露给外部 |
 
 #### 虚实体

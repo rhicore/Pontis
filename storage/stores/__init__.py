@@ -1,56 +1,48 @@
-"""Store 工厂 — 根据 ProjectConfig 创建 Store 实例。"""
+"""Store 工厂。
+
+- `storage.store.Store` 是唯一主图实现
+- `storage.stores.*` 下面只放 source 模块
+"""
+
 import os
 from dataclasses import replace
 
 from storage.config import ProjectConfig
 from storage.backends import create_backend
-from storage.stores.fs import FSStore
-from storage.stores.graph import GraphStore
+from storage.stores.fs import FSModule
 
-_STORE_REGISTRY = {
-    "fs": FSStore,
-    "graph": GraphStore,
+_MODULE_REGISTRY = {
+    "fs": FSModule,
 }
 
 
 def create_store(config: ProjectConfig):
-    """Store 工厂。
+    """根据 project config 创建主图 Store，并按 source 类型挂模块。"""
+    from storage.store import Store
 
-    根据 config.source.type 选择 Store 子类，
-    根据 config.graph.type 创建持久化后端。
-
-    Args:
-        config: 项目配置（含 source + graph 配置）
-    """
-    # 解析 graph.path（空则从 source.path 推导）
     graph_path = config.graph.path
     if not graph_path and config.source.path:
         src = os.path.abspath(os.path.expanduser(config.source.path))
         graph_path = os.path.join(src, ".pontis", "store.db")
 
-    # 确保目录存在
     if graph_path:
         os.makedirs(os.path.dirname(graph_path), exist_ok=True)
 
-    # 创建后端
     backend = create_backend(config.graph.type, graph_path)
-
-    # 创建 Store 子类
-    source_type = config.source.type or "graph"
-    store_cls = _STORE_REGISTRY.get(source_type)
-    if not store_cls:
-        raise ValueError(f"Unknown source type: {source_type!r}")
-
     source_cfg = replace(
         config.source,
         path=os.path.abspath(os.path.expanduser(config.source.path)) if config.source.path else "",
     )
-    return store_cls(source_cfg, backend)
+
+    store = Store(source_cfg, backend)
+    mod_cls = _MODULE_REGISTRY.get(source_cfg.type or "")
+    if mod_cls:
+        store.add_module(mod_cls(store))
+    return store
 
 
-def register_backend(name: str, store_cls):
-    """注册新的数据源类型。"""
-    _STORE_REGISTRY[name] = store_cls
+def register_module(name: str, module_cls):
+    _MODULE_REGISTRY[name] = module_cls
 
 
-__all__ = ["FSStore", "create_store", "register_backend"]
+__all__ = ["FSModule", "create_store", "register_module"]

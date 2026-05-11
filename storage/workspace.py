@@ -2,6 +2,8 @@
 import os
 from storage.config import StoreConfig, load_config
 from storage import stores
+from storage.stores.base import MatchResult
+from storage.merged import MergedStoreView
 
 import logging
 
@@ -13,6 +15,7 @@ class Workspace:
                  active_projects: list = None):
         self._config = load_config(config_path, project_path)
         self._stores: dict = {}  # project_name → Store
+        self._modules: dict = {}  # project_name → [StoreModule, ...]
 
         # 确定要激活的项目列表
         if active_projects:
@@ -35,6 +38,7 @@ class Workspace:
         store = stores.create_store(config)
         store._project_name = name
         self._stores[name] = store
+        self._modules[name] = list(getattr(store, "modules", []))
 
     @property
     def config(self) -> StoreConfig:
@@ -43,6 +47,25 @@ class Workspace:
     @property
     def active_projects(self) -> list:
         return list(self._stores.keys())
+
+    def modules(self, project: str = None) -> list:
+        """返回指定项目的模块列表。"""
+        if not hasattr(self, "_modules"):
+            self._modules = {}
+        if project:
+            mods = self._modules.get(project)
+            if mods is not None:
+                return list(mods)
+            store = self._stores.get(project)
+            return list(getattr(store, "modules", [])) if store else []
+        store = self._get_store(project)
+        if not store:
+            return []
+        pname = getattr(store, "_project_name", "")
+        mods = self._modules.get(pname)
+        if mods is not None:
+            return list(mods)
+        return list(getattr(store, "modules", []))
 
     def _get_store(self, project: str = None):
         """获取指定 project 的 Store，默认返回唯一已注册 store 或首个注册 store。"""
@@ -54,28 +77,10 @@ class Workspace:
             return next(iter(self._stores.values()))
         return None
 
-    # ── Data access proxies ──
-
     @property
     def project_path(self) -> str:
         store = self._get_store()
         return store.project_path if store else ""
-
-    def data_exists(self, rel_path: str, project: str = None) -> bool:
-        store = self._get_store(project)
-        return store.data_exists(rel_path) if store else False
-
-    def resolve_data_path(self, rel_path: str, project: str = None) -> str:
-        store = self._get_store(project)
-        return store.resolve_data_path(rel_path) if store else ""
-
-    def open_db(self, rel_path: str, project: str = None):
-        store = self._get_store(project)
-        return store.open_db(rel_path) if store else None
-
-    def open_file(self, rel_path: str, mode='r', project: str = None, **kwargs):
-        store = self._get_store(project)
-        return store.open_file(rel_path, mode=mode, **kwargs) if store else None
 
     @property
     def index_root(self) -> str:
@@ -101,8 +106,230 @@ class Workspace:
         store = self._get_store(project)
         if not store:
             return []
-        executor = CypherExecutor(store)
-        return executor.execute(parse_cypher(query, params=params))
+        parsed = parse_cypher(query, params=params)
+        target_store = store
+        if parsed.action == "RETURN":
+            project_name = getattr(store, "_project_name", "")
+            modules = self.modules(project_name)
+            if modules:
+                target_store = MergedStoreView(store, modules)
+        executor = CypherExecutor(target_store)
+        return executor.execute(parsed)
+
+    def _collect_virtual_meta(self, ref: str, project: str = None) -> dict | None:
+        """从模块收集虚元数据。
+
+        规则：
+        - 模块返回的虚属性覆盖已有结果
+        - `_labels` 做并集
+        """
+        store = self._get_store(project)
+        if not store:
+            return None
+        project_name = getattr(store, "_project_name", "")
+        merged = None
+        for mod in self.modules(project_name):
+            try:
+                meta = mod.get_virtual_meta(ref)
+            except Exception:
+                meta = None
+            if not meta:
+                continue
+            meta = dict(meta)
+            if merged is None:
+                merged = meta
+                continue
+            labels = set(merged.get("_labels", [])) | set(meta.get("_labels", []))
+            merged.update(meta)
+            if labels:
+                merged["_labels"] = sorted(labels)
+        return merged
+
+    def _collect_virtual_neighbors(self, ref: str, project: str = None) -> list:
+        store = self._get_store(project)
+        if not store:
+            return []
+        project_name = getattr(store, "_project_name", "")
+        results = []
+        for mod in self.modules(project_name):
+            try:
+                results.extend(mod.get_virtual_neighbors(ref))
+            except Exception:
+                continue
+        return results
+
+    def _collect_materialize_query_matches(self, vnode: dict, project: str = None) -> MatchResult:
+        store = self._get_store(project)
+        if not store:
+            return MatchResult(matches=[], mergeable=False)
+
+        project_name = getattr(store, "_project_name", "")
+        modules = self.modules(project_name)
+        matches = []
+        mergeable = True
+        for mod in modules:
+            try:
+                q = mod.match_query(vnode)
+            except Exception:
+                q = None
+            if q is None:
+                continue
+            rows = store.cypher(q.query, params=q.params)
+            row_matches = []
+            for row in rows:
+                item = row.get(q.var)
+                if isinstance(item, dict):
+                    name = item.get("name", "")
+                    if name and name not in row_matches:
+                        row_matches.append(name)
+            if len(row_matches) > 1:
+                mergeable = False
+            for m in row_matches:
+                if m not in matches:
+                    matches.append(m)
+
+        if len(matches) > 1:
+            mergeable = False
+        return MatchResult(matches=matches, mergeable=mergeable)
+
+    def _materialize_target_for_virtual(self, ref: str, vmeta: dict, project: str = None) -> str:
+        store = self._get_store(project)
+        if not store:
+            return ""
+
+        ent_id = store._resolve_to_id(ref)
+        if ent_id:
+            return ent_id
+
+        vnode = dict(vmeta)
+        vnode.setdefault("name", ref)
+        vnode.setdefault("labels", list(vmeta.get("_labels", [])))
+        m = self._collect_materialize_query_matches(vnode, project=project)
+        if m.mergeable and len(m.matches) == 1:
+            matched_id = store._resolve_to_id(m.matches[0])
+            if matched_id:
+                return matched_id
+        return ""
+
+    def _materialize_closure(self, ref: str, project: str = None) -> tuple[list[str], list[tuple[str, str]]]:
+        store = self._get_store(project)
+        if not store:
+            return [], []
+
+        queue = [ref]
+        seen = set()
+        closure = []
+        edges = []
+
+        while queue:
+            current = queue.pop(0)
+            if current in seen:
+                continue
+            seen.add(current)
+            closure.append(current)
+            for item in self._collect_virtual_neighbors(current, project=project):
+                if isinstance(item, (tuple, list)) and item:
+                    child_ref = item[0]
+                else:
+                    child_ref = item
+                if not isinstance(child_ref, str) or not child_ref:
+                    continue
+                edges.append((current, child_ref))
+                if child_ref not in seen:
+                    queue.append(child_ref)
+        return closure, edges
+
+    def materialize(self, ref: str, project: str = None) -> str:
+        """中心化物化入口。
+
+        - 已持久化实体：直接返回
+        - 虚实体：按模块元数据物化
+        - 若已有持久化实体，再次物化时虚属性覆盖旧值
+        """
+        store = self._get_store(project)
+        if not store:
+            return ""
+
+        closure, virtual_edges = self._materialize_closure(ref, project=project)
+        if not closure:
+            closure = [ref]
+
+        resolved: dict[str, str] = {}
+
+        for current in closure:
+            ent_id = store._resolve_to_id(current)
+            vmeta = self._collect_virtual_meta(current, project=project)
+
+            if not ent_id and vmeta:
+                ent_id = self._materialize_target_for_virtual(current, vmeta, project=project)
+
+            if ent_id and not vmeta:
+                resolved[current] = ent_id
+                continue
+
+            if not vmeta:
+                resolved[current] = store._create_node(current)
+                continue
+
+            labels = list(vmeta.get("_labels", []))
+            payload = {k: v for k, v in vmeta.items() if k != "_labels"}
+
+            if ent_id:
+                existing = store._read_raw(ent_id) or {}
+                merged = dict(existing)
+                merged.update(payload)
+                merged.setdefault("name", current)
+                merged["_labels"] = sorted(set(existing.get("_labels", [])) | set(labels))
+                store._write_entity_meta(ent_id, merged)
+                store._meta_cache[ent_id] = dict(merged)
+                store._register_node(ent_id, merged)
+                store._mark_dirty()
+                resolved[current] = ent_id
+            else:
+                resolved[current] = store._create_node(current, meta=payload, labels=labels or None)
+
+        edge_payloads = []
+        for a_ref, b_ref in virtual_edges:
+            a_id = resolved.get(a_ref) or store._resolve_to_id(a_ref)
+            b_id = resolved.get(b_ref) or store._resolve_to_id(b_ref)
+            if a_id and b_id and a_id != b_id:
+                edge_payloads.append({"a": a_id, "b": b_id})
+        if edge_payloads:
+            store._add_edges(edge_payloads)
+
+        return resolved.get(ref, store._resolve_to_id(ref) or "")
+
+    def module_subgraph(self, project: str = None) -> dict:
+        """导出指定项目所有模块提供的子图。
+
+        返回：
+        {
+          "nodes": [...],
+          "edges": [("a", "b"), ...],
+        }
+        """
+        store = self._get_store(project)
+        if not store:
+            return {"nodes": [], "edges": []}
+
+        project_name = getattr(store, "_project_name", "")
+        modules = self.modules(project_name)
+        all_nodes = []
+        all_edges = []
+
+        for mod in modules:
+            try:
+                nodes = list(mod.iter_virtual_nodes())
+            except Exception:
+                nodes = []
+            try:
+                edges = list(mod.iter_virtual_edges(nodes))
+            except Exception:
+                edges = []
+            all_nodes.extend(nodes)
+            all_edges.extend(edges)
+
+        return {"nodes": all_nodes, "edges": all_edges}
 
     # ==================== Cross Project ====================
 

@@ -11,6 +11,7 @@ import logging
 from typing import Optional, List, Dict, Any
 from storage.workspace import Workspace
 from extractor.modules.utils.refs import db_column_ref, get_entity_meta, set_entity_meta
+from extractor.modules.utils.src import file_exists, open_sqlite_db
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def _generate_for_column(col_ref: str, db_ref: str, table_ref: str,
     db_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": db_ref})
     db_meta = db_meta_rows[0].get("n") if db_meta_rows else None
     db_rel = db_meta.get("path", db_ref) if db_meta else db_ref
-    if not workspace.data_exists(db_rel):
+    if not file_exists(workspace, db_rel):
         return False
 
     topk = _calculate_topk(db_rel, table_name, col_name, k, workspace)
@@ -67,7 +68,7 @@ def _generate_for_column(col_ref: str, db_ref: str, table_ref: str,
 def _calculate_topk(db_rel: str, table: str, column: str, k: int, workspace: Workspace) -> Optional[List[Dict[str, Any]]]:
     """计算最常见的K个值"""
     try:
-        with workspace.open_db(db_rel) as conn:
+        with open_sqlite_db(workspace, db_rel) as conn:
             cursor = conn.cursor()
 
             cursor.execute(f'SELECT COUNT(*) FROM "{table}"')

@@ -1,9 +1,16 @@
-"""Store 层综合测试 — 纯 Store API，不依赖 tool 层。
+"""Storage 层综合测试 — 覆盖 Store / Workspace / Cypher / src。
 
-覆盖：CRUD、边、Cypher 查询（含多跳/变长路径/参数化）、
-     虚实体、跨项目边、并发控制、持久化。
+覆盖：
+- CRUD / 边
+- Cypher 查询与写入（含多跳/变长路径/参数化）
+- FS project 虚实体
+- graph-only project
+- n.src 原生端口绑定
+- 跨项目边
+- 并发控制
+- 持久化
 
-用法: python3 tests/test_store.py
+用法: python3 scripts/storage/test_store.py
 """
 import os
 import sys
@@ -14,10 +21,10 @@ import traceback
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
-from storage.stores.fs import FSStore
 from storage.workspace import Workspace
 from storage.config import StoreConfig, ProjectConfig, SourceConfig, GraphConfig
 from storage import stores as store_factory
+from storage.stores.base import MatchQuery, MatchResult
 
 passed = 0
 failed = 0
@@ -51,9 +58,21 @@ def empty_project():
 
 
 def make_store(path):
-    """Helper: 从路径创建 FSStore。"""
+    """Helper: 从路径创建一个带 FS 模块的主图 Store。"""
     return store_factory.create_store(
-        ProjectConfig(source=SourceConfig(path=path)))
+        ProjectConfig(source=SourceConfig(type="fs", path=path)))
+
+
+def make_graph_store(db_path=None):
+    if db_path is None:
+        root = tempfile.mkdtemp(prefix="pontis_graph_")
+        db_path = os.path.join(root, "store.db")
+    return store_factory.create_store(
+        ProjectConfig(
+            source=SourceConfig(type="graph"),
+            graph=GraphConfig(type="sqlite", path=db_path),
+        )
+    )
 
 
 # ─── 1. CRUD ───────────────────────────────────────────────
@@ -79,8 +98,8 @@ def test_crud(s):
     eid2 = s._create_node("t1", labels=["test"])
     ok("idempotent create", eid == eid2)
 
-    name = s._delete_node("t1")
-    ok("delete returns name", name == "t1")
+    deleted = s._delete_node("t1")
+    ok("delete returns name", deleted == "t1", f"got {deleted}")
     ok("deleted → None", s._get_meta("t1") is None)
     ok("delete nonexistent → ''", s._delete_node("no_such") == "")
 
@@ -394,35 +413,39 @@ def test_virtual(s):
 
     s._ensure_index()
 
-    # file virtual should be in index
-    found = False
-    for vid in s._virtual_ids:
-        props = s._id_index.get(vid, {})
-        if props.get("name") == "test.db":
-            found = True
-            break
-    ok("file virtual in index", found)
+    ws = Workspace(project_path=s._project_path)
+    subgraph = ws.module_subgraph()
+    virtual_names = {n.get("name") for n in subgraph["nodes"]}
+    ok("file virtual in module subgraph", "test.db" in virtual_names, f"got {sorted(virtual_names)}")
 
     # get_virtual_meta
     fm = s.get_virtual_meta("test.db")
-    ok("file virtual meta", fm is not None)
+    ok("file virtual meta", fm is not None, f"got {fm}")
     if fm:
         ok("file has file_size", "file_size" in fm)
         ok("file has db label", "db" in fm.get("_labels", []))
 
     # dir virtual
     dm = s.get_virtual_meta(".")
-    ok("root dir virtual", dm is not None)
+    ok("root dir virtual", dm is not None, f"got {dm}")
     if dm:
         ok("dir has child_count", "child_count" in dm, f"keys: {list(dm.keys())}")
 
-    # materialize
-    if found:
-        eid = s._create_node("test.db")
-        ok("materialize → ent_", eid.startswith("ent_"))
-        ok("materialize persisted", s._get_meta(eid) is not None)
-        eid2 = s._create_node("test.db")
-        ok("materialize idempotent", eid == eid2)
+    # 中心化 materialize
+    eid = ws.materialize("test.db")
+    ok("materialize → ent_", eid.startswith("ent_"))
+    ok("materialize persisted", s._get_meta(eid) is not None)
+    pm = s._get_meta("test.db") or {}
+    ok("materialize keeps path", pm.get("path") == "test.db", f"got {pm.get('path')}")
+    ok("materialize keeps file_size", "file_size" in pm, f"got keys: {list(pm.keys())}")
+    ok("materialize keeps db label", "db" in pm.get("_labels", []), f"got {pm.get('_labels')}")
+
+    s._set_meta("test.db", {"path": "WRONG_PATH", "detail": "manual"})
+    eid2 = ws.materialize("test.db")
+    ok("materialize idempotent", eid == eid2)
+    pm2 = s._get_meta("test.db") or {}
+    ok("virtual path overrides persisted path", pm2.get("path") == "test.db", f"got {pm2.get('path')}")
+    ok("non-virtual field survives rematerialize", pm2.get("detail") == "manual", f"got {pm2.get('detail')}")
 
     # discover_virtual for dirs
     dirs = s.discover_virtual("*", label="dir")
@@ -433,6 +456,124 @@ def test_virtual(s):
         f.write("a,b\n1,2\n")
     found_files = s.discover_virtual("*.csv")
     ok("discover new csv", len(found_files) > 0, f"got {len(found_files)}")
+
+    # closure materialization: materialize dir and persist virtual child edges
+    dir_id = ws.materialize("docs")
+    ok("dir materialize → ent_", dir_id.startswith("ent_"), f"got {dir_id}")
+    dir_neighbors = s._neighbors("docs")
+    ok("dir materialize persists child edge", len(dir_neighbors) > 0, f"got {dir_neighbors}")
+
+
+# ─── 6b. src binding ──────────────────────────────────────
+
+def test_src_binding():
+    print("\n[6b] src Binding")
+
+    p = empty_project()
+    db_path = os.path.join(p, "sample.sqlite")
+    conn = __import__("sqlite3").connect(db_path)
+    conn.execute("CREATE TABLE t (id INT, name TEXT)")
+    conn.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+    conn.commit()
+    conn.close()
+    txt_path = os.path.join(p, "notes.txt")
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write("hello\nworld\n")
+
+    ws = Workspace(project_path=p)
+    rows = ws.cypher("MATCH (f:file:db) RETURN f, f.src AS src")
+    ok("file:db rows found", len(rows) == 1, f"got {len(rows)}")
+    if rows:
+        src = rows[0]["src"]
+        ok("src handle type", type(src).__name__ == "SrcHandle", f"got {type(src).__name__}")
+        ok("src has path", src.has("path"))
+        ok("src has open", src.has("open"))
+        ok("src has db_connect", src.has("db_connect"))
+        ok("src path exists", os.path.isfile(src.get("path")))
+        dbc = src.get("db_connect")()
+        try:
+            n = dbc.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+            ok("db_connect works", n == 2, f"got {n}")
+        finally:
+            dbc.close()
+
+    rows2 = ws.cypher("MATCH (f:file) WHERE f.name = 'notes.txt' RETURN f.src AS src")
+    ok("text file src found", len(rows2) == 1, f"got {len(rows2)}")
+    if rows2:
+        src = rows2[0]["src"]
+        ok("text src has open", src.has("open"))
+        with src.get("open")("r", encoding="utf-8") as fh:
+            content = fh.read()
+        ok("text open works", content == "hello\nworld\n", f"got {content!r}")
+
+    shutil.rmtree(p, ignore_errors=True)
+
+
+# ─── 6c. graph-only project ───────────────────────────────
+
+def test_graph_only():
+    print("\n[6c] Graph-only Project")
+
+    root = tempfile.mkdtemp(prefix="pontis_graph_only_")
+    db_path = os.path.join(root, "store.db")
+    s = make_graph_store(db_path)
+    s._create_node("README", labels=["knowledge"], meta={"brief": "x", "detail": "y"})
+    ws = Workspace.__new__(Workspace)
+    ws._config = StoreConfig(
+        projects={"g": ProjectConfig(name="g", source=SourceConfig(type="graph"),
+                                      graph=GraphConfig(type="sqlite", path=db_path))}
+    )
+    ws._stores = {"g": s}
+
+    rows = ws.cypher("MATCH (n:knowledge) RETURN n")
+    ok("graph-only cypher", len(rows) == 1 and rows[0]["n"]["name"] == "README", f"got {rows}")
+    rows2 = ws.cypher("MATCH (n:knowledge) RETURN n.src AS src")
+    ok("graph-only src is None", len(rows2) == 1 and rows2[0]["src"] is None, f"got {rows2}")
+
+    shutil.rmtree(root, ignore_errors=True)
+
+
+def test_store_modules():
+    print("\n[6d] Store Modules")
+
+    p = empty_project()
+    db_path = os.path.join(p, "sample.sqlite")
+    conn = __import__("sqlite3").connect(db_path)
+    conn.execute("CREATE TABLE t (id INT)")
+    conn.commit()
+    conn.close()
+
+    s = make_store(p)
+    ok("fs store exposes module", len(s.modules) == 1, f"got {len(s.modules)}")
+    if s.modules:
+        mod = s.modules[0]
+        ok("module has stable name", getattr(mod, "name", "") == "fs", f"got {getattr(mod, 'name', None)}")
+        ok("module exposes match query",
+           isinstance(mod.match_query({"labels": ["file", "db"], "path": "sample.sqlite"}), MatchQuery))
+        q = mod.match_query({"labels": ["file", "db"], "path": "sample.sqlite"})
+        rows = s.cypher(q.query, params=q.params) if q else []
+        ok("match query unmaterialized count", len(rows) == 0, f"got {rows}")
+
+        s._create_node("sample.sqlite")
+        q2 = mod.match_query({"labels": ["file", "db"], "path": "sample.sqlite"})
+        rows2 = s.cypher(q2.query, params=q2.params) if q2 else []
+        names2 = [row["n"]["name"] for row in rows2]
+        ok("materialized file path match count", len(names2) == 1, f"got {names2}")
+        ok("materialized file path match target", names2 == ["sample.sqlite"], f"got {names2}")
+
+    ws = Workspace(project_path=p)
+    mods = ws.modules()
+    ok("workspace sees modules", len(mods) == 1, f"got {len(mods)}")
+    wq = mods[0].match_query({"labels": ["file", "db"], "path": "sample.sqlite"}) if mods else None
+    wrows = ws.cypher(wq.query, params=wq.params) if wq else []
+    wnames = [row["n"]["name"] for row in wrows]
+    ok("workspace file path match count", len(wnames) == 1, f"got {wnames}")
+    ok("workspace file path match target", wnames == ["sample.sqlite"], f"got {wnames}")
+    subgraph = ws.module_subgraph()
+    ok("workspace subgraph has nodes", len(subgraph["nodes"]) >= 2, f"got {len(subgraph['nodes'])}")
+    ok("workspace subgraph has edges", len(subgraph["edges"]) >= 1, f"got {len(subgraph['edges'])}")
+
+    shutil.rmtree(p, ignore_errors=True)
 
 
 # ─── 7. Cross-project ─────────────────────────────────────
@@ -452,7 +593,10 @@ def test_cross_project():
 
     ws = Workspace.__new__(Workspace)
     ws._config = StoreConfig(
-        projects={"p1": ProjectConfig(source=SourceConfig(path=p1_path)), "p2": ProjectConfig(source=SourceConfig(path=p2_path))})
+        projects={
+            "p1": ProjectConfig(source=SourceConfig(type="fs", path=p1_path)),
+            "p2": ProjectConfig(source=SourceConfig(type="fs", path=p2_path)),
+        })
     ws._stores = {"p1": s1, "p2": s2}
 
     # add cross-ref
@@ -610,6 +754,9 @@ def main():
         s = make_store(ctx_path)
         test_virtual(s)
         shutil.rmtree(ctx_path, ignore_errors=True)
+        test_src_binding()
+        test_graph_only()
+        test_store_modules()
 
         # Sections 7-9: independent
         test_cross_project()

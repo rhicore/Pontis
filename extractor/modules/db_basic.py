@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import List
 from storage.workspace import Workspace
 from extractor.modules.utils.refs import db_column_ref, db_table_ref, db_view_ref
+from extractor.modules.utils.src import file_exists, open_sqlite_db
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +71,11 @@ def generate(workspace: Workspace) -> None:
 
 def _process_database(rel_path: str, workspace: Workspace) -> None:
     """处理单个数据库：写入库属性（自动实体化文件节点）+ 展开表/视图/列实体"""
-    if not workspace.data_exists(rel_path):
+    if not file_exists(workspace, rel_path):
         return
     basename = os.path.basename(rel_path)
 
-    with workspace.open_db(rel_path) as conn:
+    with open_sqlite_db(workspace, rel_path) as conn:
         cursor = conn.cursor()
 
         # 写入库级属性（自动实体化文件节点）

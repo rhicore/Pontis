@@ -5,6 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from scripts.BIRD.common import get_db_base
 from extractor.engine import (
     RunOptions,
     file_log_handler,
@@ -37,6 +38,7 @@ AGENT_PIPELINE = [
     "agent_analyze",
     "agent_join_detect",
     "agent_disambiguate",
+    "agent_readme",
 ]
 
 _CONSOLE_FMT = "%(asctime)s %(levelname)-5s | %(message)s"
@@ -82,6 +84,7 @@ def extract_one(
         "agent": 0.0,
         "join_detect": 0.0,
         "disambiguate": 0.0,
+        "readme": 0.0,
     }
 
     with file_log_handler(str(pontis_dir / "extract.log")):
@@ -121,6 +124,7 @@ def extract_one(
             result["agent"] = agent_timings.get("agent_analyze", 0.0)
             result["join_detect"] = agent_timings.get("agent_join_detect", 0.0)
             result["disambiguate"] = agent_timings.get("agent_disambiguate", 0.0)
+            result["readme"] = agent_timings.get("agent_readme", 0.0)
 
             if result["ai_columns"]:
                 logger.info(f"AI columns phase done: {result['ai_columns']:.1f}s")
@@ -134,6 +138,8 @@ def extract_one(
                 logger.info(f"Join detect phase done: {result['join_detect']:.1f}s")
             if result["disambiguate"]:
                 logger.info(f"Disambiguate phase done: {result['disambiguate']:.1f}s")
+            if result["readme"]:
+                logger.info(f"README phase done: {result['readme']:.1f}s")
 
         logger.info(f"=== {name} done ===")
 
@@ -153,11 +159,12 @@ def main() -> None:
     agent_only = "--agent-only" in args
     force = "--force" in args
     debug = "--debug" in args
+    train = "--train" in args
 
     logging.basicConfig(level=logging.INFO, format=_CONSOLE_FMT, datefmt=_LOG_DATE)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    base = Path(__file__).resolve().parents[2] / "example_data" / "bird" / "dev_databases"
+    base = get_db_base(train)
     if not base.exists():
         print(f"Error: {base} does not exist")
         sys.exit(1)
@@ -175,11 +182,13 @@ def main() -> None:
         mode = "static + agent only" if not ai_only else "agent only"
     else:
         mode = "AI only" if ai_only else "static + AI"
-    print(f"=== BIRD Extract ({mode}) ===")
+    split = "train" if train else "dev"
+    print(f"=== BIRD Extract ({split}, {mode}) ===")
     print(f"Databases: {len(db_dirs)}\n")
 
     success, failed = [], []
-    total_static = total_ai_col = total_ai_tbl = total_ai_db = total_agent = 0.0
+    total_static = total_ai_col = total_ai_tbl = total_ai_db = 0.0
+    total_agent = total_join = total_disambig = total_readme = 0.0
 
     for i, db_dir in enumerate(db_dirs, 1):
         name = db_dir.name
@@ -199,6 +208,9 @@ def main() -> None:
             total_ai_tbl += result["ai_tables"]
             total_ai_db += result["ai_db"]
             total_agent += result["agent"]
+            total_join += result["join_detect"]
+            total_disambig += result["disambiguate"]
+            total_readme += result["readme"]
 
             parts = []
             if result["static"]:
@@ -211,6 +223,12 @@ def main() -> None:
                 parts.append(f"AI DB: {result['ai_db']:.1f}s")
             if result["agent"]:
                 parts.append(f"Agent: {result['agent']:.1f}s")
+            if result["join_detect"]:
+                parts.append(f"Join: {result['join_detect']:.1f}s")
+            if result["disambiguate"]:
+                parts.append(f"Disambig: {result['disambiguate']:.1f}s")
+            if result["readme"]:
+                parts.append(f"README: {result['readme']:.1f}s")
             print(f"  {', '.join(parts)}")
             success.append(name)
         except Exception as e:
@@ -222,11 +240,15 @@ def main() -> None:
 
     print("=" * 40)
     print(f"Done: {len(success)} ok, {len(failed)} failed")
-    total_all = total_static + total_ai_col + total_ai_tbl + total_ai_db + total_agent
+    total_all = (
+        total_static + total_ai_col + total_ai_tbl + total_ai_db +
+        total_agent + total_join + total_disambig + total_readme
+    )
     print(
         f"Time: static {total_static:.1f}s, AI cols {total_ai_col:.1f}s, "
         f"AI tables {total_ai_tbl:.1f}s, AI db {total_ai_db:.1f}s, "
-        f"agent {total_agent:.1f}s, total {total_all:.1f}s"
+        f"agent {total_agent:.1f}s, join {total_join:.1f}s, "
+        f"disambig {total_disambig:.1f}s, readme {total_readme:.1f}s, total {total_all:.1f}s"
     )
     if failed:
         print(f"Failed: {', '.join(failed)}")

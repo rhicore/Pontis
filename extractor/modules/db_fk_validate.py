@@ -12,6 +12,7 @@
 import logging
 
 from storage.workspace import Workspace
+from extractor.modules.utils.src import file_exists, open_sqlite_db
 
 logger = logging.getLogger(__name__)
 
@@ -92,14 +93,14 @@ def _validate_one(ref: str, workspace: Workspace) -> bool:
         return False
 
     abs_db_rel = _get_db_rel(ref, workspace)
-    if not abs_db_rel or not workspace.data_exists(abs_db_rel):
+    if not abs_db_rel or not file_exists(workspace, abs_db_rel):
         return False
 
     ft, fc = parsed["from_table"], parsed["from_col"]
     tt, tc = parsed["to_table"], parsed["to_col"]
 
     try:
-        with workspace.open_db(abs_db_rel) as conn:
+        with open_sqlite_db(workspace, abs_db_rel) as conn:
 
             # 总行数
             total = conn.execute(f'SELECT COUNT(*) FROM "{ft}"').fetchone()[0]

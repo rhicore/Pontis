@@ -13,6 +13,7 @@ import logging
 from storage.workspace import Workspace
 from extractor.modules.utils.loader import load_config
 from extractor.modules.utils.ai_utils import generate_detail_and_brief
+from extractor.modules.utils.src import file_exists, get_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,8 @@ def _generate_for_text(path: str, workspace: Workspace, llm) -> bool:
     if not source_rel:
         return False
 
-    source_path = workspace.resolve_data_path(source_rel)
-    if not workspace.data_exists(source_rel):
+    source_path = get_file_path(workspace, source_rel)
+    if not source_path or not file_exists(workspace, source_rel):
         return False
 
     preview = _read_preview(source_path, max_lines=30)

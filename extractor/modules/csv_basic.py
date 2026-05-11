@@ -9,6 +9,7 @@ import os
 import logging
 from datetime import datetime
 from storage.workspace import Workspace
+from extractor.modules.utils.src import file_exists, open_text_file
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def _infer_type(sample_rows: list, col_idx: int) -> str:
 
 def _process_table(rel_path: str, workspace: Workspace, delimiter: str = ',') -> None:
     """处理单个表格文件：写入属性（自动实体化）+ 展开列实体"""
-    if not workspace.data_exists(rel_path):
+    if not file_exists(workspace, rel_path):
         return
 
     basename = os.path.basename(rel_path)
@@ -65,7 +66,7 @@ def _process_table(rel_path: str, workspace: Workspace, delimiter: str = ',') ->
 
     # 读取表头并推断类型
     import csv
-    with workspace.open_file(rel_path, 'r', encoding='utf-8', errors='ignore') as f:
+    with open_text_file(workspace, rel_path, 'r', encoding='utf-8', errors='ignore') as f:
         reader = csv.reader(f, delimiter=delimiter)
         headers = next(reader, None)
         if not headers:

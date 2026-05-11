@@ -25,7 +25,9 @@ class SQLEntityCheck(Guardrail):
             sql = args.get("sql", "")
             if not sql:
                 continue
-            missing = self._check_missing(ctx.tool_history, sql, ctx.workspace)
+            missing = self._check_missing(
+                ctx.tool_history, sql, ctx.workspace, suppress_repeats=True
+            )
             if missing:
                 items = format_entity_list(ctx.workspace, missing[:12])
                 msg = ("⚠️ SQL 引用了以下尚未通过 meta 读取的实体，"
@@ -37,7 +39,9 @@ class SQLEntityCheck(Guardrail):
         if not ctx.pending_calls:
             sql = get_sql_from_messages(ctx.messages)
             if sql:
-                missing = self._check_missing(ctx.tool_history, sql, ctx.workspace)
+                missing = self._check_missing(
+                    ctx.tool_history, sql, ctx.workspace, suppress_repeats=False
+                )
                 if missing:
                     items = format_entity_list(ctx.workspace, missing[:12])
                     msg = ("🚫 最终 SQL 输出被拦截：以下实体尚未通过 meta 读取，"
@@ -48,7 +52,8 @@ class SQLEntityCheck(Guardrail):
 
         return result
 
-    def _check_missing(self, tool_history, sql, workspace=None) -> list:
+    def _check_missing(self, tool_history, sql, workspace=None,
+                       suppress_repeats: bool = True) -> list:
         tables, aliases = extract_tables(sql)
         if not tables:
             return []
@@ -59,18 +64,20 @@ class SQLEntityCheck(Guardrail):
                 ref = resolve_entity_ref(workspace, t)
                 if not ref:
                     continue
-                if ref in self._warned:
+                if suppress_repeats and ref in self._warned:
                     continue
                 missing.append(ref)
-                self._warned.add(ref)
+                if suppress_repeats:
+                    self._warned.add(ref)
         for table, col in extract_col_refs(sql, aliases):
             if not has_read(tool_history, col):
                 ref = resolve_entity_ref(workspace, table, col)
                 if not ref:
                     continue
-                if ref in self._warned:
+                if suppress_repeats and ref in self._warned:
                     continue
                 missing.append(ref)
-                self._warned.add(ref)
+                if suppress_repeats:
+                    self._warned.add(ref)
 
         return missing

@@ -13,6 +13,7 @@ from typing import List, Dict
 from storage.workspace import Workspace
 from extractor.modules.utils.refs import db_column_ref, db_table_ref
 from extractor.modules.utils.refs import get_entity_meta
+from extractor.modules.utils.src import file_exists, open_sqlite_db
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def _generate_for_table(table_ref: str, db_ref: str, workspace: Workspace) -> bo
     db_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": db_ref})
     db_meta = db_meta_rows[0].get("n") if db_meta_rows else None
     db_rel = db_meta.get("path", db_ref) if db_meta else db_ref
-    if not workspace.data_exists(db_rel):
+    if not file_exists(workspace, db_rel):
         return False
 
     columns = _get_table_columns(db_rel, raw_table, workspace)
@@ -72,7 +73,7 @@ def _generate_for_table(table_ref: str, db_ref: str, workspace: Workspace) -> bo
 def _get_table_columns(db_rel: str, table_name: str, workspace: Workspace) -> List[Dict]:
     """获取表的列信息"""
     try:
-        with workspace.open_db(db_rel) as conn:
+        with open_sqlite_db(workspace, db_rel) as conn:
             cursor = conn.cursor()
             cursor.execute(f'PRAGMA table_info("{table_name}")')
             columns = [
@@ -89,7 +90,7 @@ def _find_foreign_keys(db_rel: str, table_name: str, workspace: Workspace) -> Li
     """查找表的显式外键"""
     relations = []
     try:
-        with workspace.open_db(db_rel) as conn:
+        with open_sqlite_db(workspace, db_rel) as conn:
             cursor = conn.cursor()
 
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
@@ -123,7 +124,7 @@ def _find_naming_relations(db_rel: str, table_name: str, columns: List[Dict], wo
     relations = []
 
     try:
-        with workspace.open_db(db_rel) as conn:
+        with open_sqlite_db(workspace, db_rel) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
             all_tables = [row[0] for row in cursor.fetchall()]
@@ -187,19 +188,31 @@ def _create_relation_entity(table_ref: str, db_ref: str, from_table: str,
         workspace.cypher(f'CREATE (f:fk {{name: "{fkname}", created_at: "{ts}"}})')
 
         # 边: from_table → fk, to_table → fk
-        store = workspace._get_store()
         from_table_ref = db_table_ref(db_ref, raw_from_table)
         to_table_ref = db_table_ref(db_ref, safe_to_table)
-        store._add_edges([{"a": from_table_ref, "b": fkname}, {"a": to_table_ref, "b": fkname}])
+        workspace.cypher(
+            "MATCH (a {name: $a}),(b {name: $b}) CREATE (a)--(b)",
+            params={"a": from_table_ref, "b": fkname},
+        )
+        workspace.cypher(
+            "MATCH (a {name: $a}),(b {name: $b}) CREATE (a)--(b)",
+            params={"a": to_table_ref, "b": fkname},
+        )
 
         # 查找列实体并连接
         from_col_ref = db_column_ref(db_ref, raw_from_table, safe_from_col)
         to_col_ref = db_column_ref(db_ref, safe_to_table, safe_to_col)
 
-        if store._resolve_to_id(from_col_ref):
-            store._add_edges([{"a": from_col_ref, "b": fkname}])
-        if store._resolve_to_id(to_col_ref):
-            store._add_edges([{"a": to_col_ref, "b": fkname}])
+        if workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": from_col_ref}):
+            workspace.cypher(
+                "MATCH (a {name: $a}),(b {name: $b}) CREATE (a)--(b)",
+                params={"a": from_col_ref, "b": fkname},
+            )
+        if workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": to_col_ref}):
+            workspace.cypher(
+                "MATCH (a {name: $a}),(b {name: $b}) CREATE (a)--(b)",
+                params={"a": to_col_ref, "b": fkname},
+            )
 
         return True
 

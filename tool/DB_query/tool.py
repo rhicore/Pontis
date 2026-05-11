@@ -16,6 +16,21 @@ _DEFAULT_LIMIT = 100
 _MAX_RESULT_CHARS = 8000
 
 
+def _is_readonly_sql(sql: str) -> bool:
+    stripped = sql.strip()
+    if not stripped:
+        return False
+
+    upper = stripped.upper()
+    if upper.startswith("PRAGMA"):
+        return True
+    if upper.startswith("SELECT"):
+        return True
+    if upper.startswith("WITH"):
+        return True
+    return False
+
+
 def query_command(workspace, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -> str:
     """Execute a read-only SQL query on a database file.
 
@@ -25,22 +40,32 @@ def query_command(workspace, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -
         file: Database file path (relative to project root)
         limit: Max rows to return
     """
-    # 安全校验：只允许 SELECT / PRAGMA
+    # 安全校验：只允许只读 SELECT / PRAGMA（包括 WITH ... SELECT）
     stripped = sql.strip()
-    upper = stripped.upper()
-    if not (upper.startswith("SELECT") or upper.startswith("PRAGMA")):
-        return "错误：只允许 SELECT / PRAGMA 查询。不允许 INSERT、UPDATE、DELETE 等写操作。"
+    if not _is_readonly_sql(stripped):
+        return "错误：只允许只读 SELECT / PRAGMA 查询（WITH ... SELECT 也允许）。不允许 INSERT、UPDATE、DELETE 等写操作。"
 
     if _WRITE_PATTERN.search(stripped):
         return "错误：SQL 中包含写操作关键词，只允许 SELECT 查询。"
 
-        # 定位数据库文件（支持绝对路径）
     if os.path.isabs(file):
+        if not os.path.isfile(file):
+            return f"错误：数据库文件不存在: {file}"
         db_path = file
     else:
-        db_path = workspace.resolve_data_path(file)
-    if not os.path.isfile(db_path):
-        return f"错误：数据库文件不存在: {file}"
+        try:
+            rows = workspace.cypher(
+                "MATCH (f:file:db) WHERE f.name = $file OR f.path = $file RETURN f.src AS src",
+                params={"file": file},
+            )
+            if len(rows) != 1:
+                raise ValueError("not unique")
+            src = rows[0].get("src")
+            if src is None:
+                raise ValueError("not found")
+            db_path = src.get("path")
+        except Exception:
+            return f"错误：数据库文件不存在或不唯一: {file}"
 
     # 执行查询
     try:

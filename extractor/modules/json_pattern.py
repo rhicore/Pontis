@@ -17,6 +17,7 @@ import random
 import re
 import logging
 from storage.workspace import Workspace
+from extractor.modules.utils.src import file_exists, open_text_file
 
 logger = logging.getLogger(__name__)
 
@@ -333,9 +334,9 @@ def _load_json(path: str, workspace: Workspace):
     meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": path})
     meta = meta_rows[0].get("n") if meta_rows else None
     rel_path = meta.get("path") if meta else None
-    if rel_path and workspace.data_exists(rel_path):
+    if rel_path and file_exists(workspace, rel_path):
         try:
-            with workspace.open_file(rel_path, 'r', encoding='utf-8') as f:
+            with open_text_file(workspace, rel_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except (json.JSONDecodeError, Exception) as e:
             logger.debug(f"Failed to load JSON from {rel_path}: {e}")

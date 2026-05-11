@@ -1,0 +1,122 @@
+- 根原则
+  - `storage` 根目录只放通用图逻辑，不放任何 project source 类型逻辑，也不放实体类型逻辑。
+  - `workspace.cypher(...)` 是 storage 层唯一主入口。
+  - `ref` 只存在于 tool 层；storage / workspace 层只认 cypher。
+
+- `src`
+  - `src` 不是独立主接口，而是 cypher 的只读虚属性：`n.src`。
+  - `RETURN n.src AS src` 时，cypher 返回的是对象 `SrcHandle`，不是普通字典值。
+  - `src` 只做原生访问端口绑定，不做高阶数据访问抽象。
+  - `src` 应尽量复用现有系统、标准库、官方驱动提供的能力，不重复发明数据访问逻辑。
+  - 一个实体可以有多个 `src` 端口，不要求唯一端口。
+  - `file` 类型实体可以有 `path`、`open` 这类端口。
+  - `db` 类型实体可以有 `db_connect` 这类端口。
+  - `db` 既可以是一种 project type，也可以是一种能力来源；当前先把 db 相关复用逻辑抽到 utils。
+
+- 目录职责
+  - `storage/backends/` 只负责图数据持久化，不理解 source/project/module 语义。
+  - `storage/store.py` 是唯一主图实现，负责通用图语义、索引、边、名称解析、模块调度。
+  - `stores/` 顶层文件代表 project type 模块。
+  - `stores/` 下面不应该再出现主图 store 和 source/project 逻辑混杂的结构。
+
+- 主图与模块
+  - 主图写入统一落到主图持久化存储，不写回模块子图。
+  - 模块负责产出虚实体/虚边、`src` 绑定、匹配规则。
+  - 主图读取持久实体时不再调用模块补丁式 enrich；虚属性来自虚实体与持久实体的匹配合并。
+  - 模块匹配不靠全局唯一实体键。
+  - 模块可以自行定义匹配规则。
+  - 模块匹配规则优先用声明式 query/cypher 表达，而不是散落的 Python 猜测逻辑。
+  - 中心层只负责执行模块匹配 query，并统一处理 `0/1/N` 匹配结果。
+    - `0` 个匹配：不复用。
+    - `1` 个匹配：复用已有持久化实体。
+    - 多个匹配：不自动合并，不猜。
+
+- 中心化物化
+  - 虚实体默认只在修改元数据或发生写入前物化。
+  - 中心化物化逻辑放在 `Workspace.materialize(...)`。
+  - 物化时不是只物化当前节点，而是沿虚链闭包一起物化相关实体。
+  - 中心层物化时应同时补齐虚链上的边。
+  - 物化时虚属性优先级高于已物化内容。
+  - 当前规则先保持简单：虚属性覆盖旧值，`_labels` 取并集。
+  - 复杂 provenance / 冲突分层策略暂时不做。
+
+- 图结构表达
+  - 结构关系应该用边表达，不应该拍平成属性。
+  - 例如 `fk` 应该通过连接列、表的边来表达，而不是靠 `from_table/to_table` 这类属性当主建模。
+  - 对复杂结构实体，后续应让模块提供更强的结构匹配 query，而不是把结构压平。
+
+- 读路径
+  - `Workspace` 读查询时使用 merged read view，把主图和模块子图合并成统一只读视图。
+  - merged read view 中，虚属性覆盖持久化属性，`_labels` 取并集。
+  - `n.src` 在 merged read view 中优先由模块提供。
+
+- 旧接口与外层使用方式
+  - 旧的 `open_db/open_file/resolve_data_path/data_exists` 顶层接口已经废弃并删除，不再作为 storage 主线。
+  - tool 层和 extractor 层的数据访问应通过 `cypher + n.src` 走通，而不是重新发现实体。
+
+- 测试
+  - storage 综合测试需要持续覆盖：
+    - CRUD
+    - Cypher
+    - 虚实体
+    - `src`
+    - 模块匹配
+    - 中心物化
+    - 持久化
+    - 并发
+    - 跨项目边
+
+# TODO
+
+- source 更新同步应由 storage 维护，不交给外部手动清理，也不在 extractor 里做。
+- source module 需要为可物化虚实体提供稳定来源信息，例如 `_source_module`、`_source_ref`、`_source_fingerprint`、`_source_state`、`_source_seen_at`。
+- source 同步流程应基于当前虚实体 snapshot 与已物化 source-owned 实体对比：新增实体物化，变更实体更新 source metadata，消失实体标记 stale。
+- 默认策略应是软删除：source 消失时先设置 `_source_state = "stale"`，不直接物理删除节点。
+- 实体所有权需要区分 `source-owned`、`user-owned`、`mixed`；用户或 agent 补充过的知识内容不能被 source 同步自动删除。
+- `mixed` 实体在 source 消失时应保留用户字段和手工边，只标记 stale，并在展示或查询层暴露源已消失状态。
+- 纯 source 派生实体可以更激进清理，例如 fk、index、临时统计节点；表、列、文档等容易承载用户知识的实体应更保守。
+- 后续应提供显式 GC 入口，例如 `Workspace.gc_source(..., dry_run=True)`，只清理无用户内容、无跨项目引用、无手工边的 stale source-owned 实体。
+- Cypher 或 tool 展示层后续需要明确 stale 行为：默认是否过滤 stale、如何显式查询 stale、如何提示用户源实体已失效。
+- `Store` 主体不应写死 DB/schema 同步逻辑；统一同步框架放在中心层，具体 snapshot、fingerprint、ownership 判断由各 source module 提供。
+- 为可物化实体追加最小 provenance 字段：`_source_module` 表示来源模块，`_source_ref` 表示 source 内稳定身份，`_source_fingerprint` 表示源端内容摘要，`_source_state` 表示 active/stale，`_source_seen_at` 表示最近一次扫描时间。
+- 明确 `_source_ref` 的稳定性要求：同一个源实体跨扫描应保持相同 ref；rename、move、schema rename 是否保留身份由具体 module 决定，但必须显式写入模块规则。
+- 在 `Workspace.materialize(...)` 中保留 source provenance 字段，虚实体与持久实体合并时 source 字段应覆盖旧 source 字段，但不覆盖用户知识字段。
+- 在 `MergedStoreView` 中保留 source provenance 字段，读路径看到的 merged entity 应能反映当前 source 状态。
+- 给实体增加实体级 ownership 标记，例如 `_ownership = "source" | "user" | "mixed"`，用于 stale 和 GC 决策。
+- 定义用户触碰规则：当用户或 agent 写入 `brief`、`detail`、`rules`、经验性字段或手工边时，实体应从 `source-owned` 升级为 `mixed`。
+- 定义 source-owned 字段集合：source module 需要声明哪些字段由 source 管理，例如 `path`、`type`、`nullable`、`primary_key`、`_labels`、`_source_fingerprint`。
+- 定义 user-owned 字段集合：用户知识字段不应被 source sync 覆盖，例如 `brief`、`detail`、`note`、`rule`、`decision`、`examples`。
+- 为 `StoreModule` 增加 snapshot 约定：module 应能产出当前 source 可见的虚实体列表、虚边列表、fingerprint、ownership、source-owned keys。
+- 实现 `Workspace.sync_source(...)`：统一执行 source snapshot、匹配已物化实体、更新 active 实体、标记 stale 实体。
+- `sync_source` 默认只更新 source-owned 字段，不删除用户字段，不删除用户手工创建的实体。
+- `sync_source` 对新增 source 实体可以选择只记录为虚实体，也可以按参数物化；默认策略应保守，避免一次扫描把大 source 全量写入图。
+- `sync_source` 对变更实体应比较 `_source_fingerprint`，fingerprint 未变时跳过写入，减少版本号抖动和无意义 commit。
+- `sync_source` 对消失实体应设置 `_source_state = "stale"`，并记录 stale 时间，不直接物理删除。
+- `sync_source` 需要 dry-run 模式，返回将新增、更新、标记 stale、跳过的实体统计和样例。
+- 实现 `Workspace.gc_source(..., dry_run=True)`：只清理 stale 且无用户字段、无手工边、无跨项目引用的 source-owned 实体。
+- GC 默认必须 dry-run；真正删除需要显式参数，避免 source 临时不可用时误删知识图谱。
+- GC 需要区分实体类型：fk、index、临时 profile 这类纯派生实体可以更激进；table、column、file、document 这类可能承载用户知识的实体更保守。
+- Cypher 查询需要支持 stale 过滤，例如 `WHERE n._source_state != "stale"` 或后续提供默认过滤策略。
+- tool/meta 展示 stale 实体时应明确提示“源已消失”或“source stale”，避免用户把旧 schema 当成当前事实。
+- tool/search 或图查询默认是否隐藏 stale 需要单独决策；建议初期不隐藏，只展示状态，避免 silent missing。
+- 为 source lifecycle 增加测试：source 新增实体后能发现或物化，source 删除实体后标记 stale，source 恢复后重新 active。
+- 为 mixed 实体增加测试：用户补充过 `detail` 后，source 删除只标记 stale，不删除用户字段。
+- 为 GC 增加测试：纯 source-owned stale 实体可清理，mixed stale 实体不可清理，带跨项目引用的 stale 实体不可清理。
+- 为 match 冲突增加测试：一个虚实体匹配多个持久实体时不自动合并，sync/materialize 应报告冲突。
+- 为 source rename 增加测试：不同 module 可以选择 rename 视为同一实体或新实体，但行为必须可预测。
+- 把 DB schema 产出迁到 storage module：SQLite table、column、fk、index、view 应作为虚实体/虚边由 module 产出，而不是由 extractor 直接写入主图。
+- DB schema module 应复用 `n.src` 或模块内部连接能力读取 schema，不应把 DB 访问逻辑写入 `Store` 主体。
+- DB schema module 应把结构关系表达为边，例如 database--table、table--column、column--fk、fk--column，而不是只拍平成 `from_table` / `to_table` 属性。
+- DB schema module 应把轻量 schema 信息作为 source-owned 属性，例如 column type、nullable、default、pk、index unique。
+- DB schema module 不应默认计算昂贵 profile，例如全表 row_count、高基数统计、topk；这些应由 extractor/profile job 或显式 include 触发。
+- 为批量 schema 物化补 transaction 或 batch upsert，避免几千个 table/column/fk 节点逐条 commit。
+- GraphBackend 后续需要批量接口，例如 `write_nodes`、`delete_nodes`、`add_edges`、事务 begin/commit/rollback；这是性能和一致性的中长期改动。
+- 当前 `iter_virtual_nodes()` 是全量扫描接口，大 source 下会慢；后续需要懒加载、缓存、分页或 query-aware discovery。
+- source module 应能声明虚属性成本，例如 cheap、expensive、async；Cypher 默认只取 cheap 元数据，昂贵 profile 不应隐式触发。
+- 引入正式 `SourceIdentity` / `VirtualRef` 类型是中长期方向，用结构化 identity 替代 `name`、`path`、`--`、字符串 ref 的隐式约定。
+- `SourceIdentity` 至少应表达 source type、source instance、entity kind、hierarchical path，避免不同 DB/schema/table/column 同名冲突。
+- 对外仍可保留字符串 ref 作为 agent-facing 操作面，但 storage 内部匹配和同步不应长期依赖字符串拼接。
+- Cypher 作为 storage 公共 API 后续可能需要扩展 `MERGE`、`ORDER BY`、`LIMIT`、聚合、路径返回、批量删除；原则是 Cypher 不足时补 Cypher，不回退到外部私有接口。
+- 多 source 挂到同一个 project 是更大的架构议题，需要处理 source 命名空间、冲突优先级、跨 source entity resolution、统一展示。
+- 文档需要继续清理历史表述：新增 S3/DB/Kafka/DataHub 这类 source 应新增 `StoreModule`，不应继承或复制 `Store` 主图实现。
+- 推荐推进顺序：先落最小 provenance 和 stale 展示，再实现 `sync_source` dry-run，再实现保守 GC，再迁 SQLite schema module，最后根据实际规模决定是否做 SourceIdentity、懒加载和批量事务。

@@ -3,7 +3,7 @@
 不存储在 _meta.yml 中，而是在 store.get_meta() 时按需计算。
 只补充 meta 中缺失的字段，已有则跳过（尊重 extractor 预计算的值）。
 
-通过 store 实例的 prop_registry / dir_props / common_file_props 获取属性注册表，
+通过 provider 实例的 prop_registry / dir_props / common_file_props 获取属性注册表，
 不硬编码导入任何具体存储类型的模块。
 
 使用：
@@ -27,7 +27,7 @@ def enrich_meta(meta: dict, project_path: str, file_rel_path: str,
         entity_path: 实体名称
         include_props: 显式指定需要的虚属性。
             None = 全部，[] = 无（由 Store 层控制），["file_size", ...] = 指定
-        store: Store 实例，提供 prop_registry / dir_props / common_file_props
+        store: provider 实例，提供 prop_registry / dir_props / common_file_props
         _visiting: 运行时环路检测的访问状态集
     """
     result = dict(meta)

@@ -21,11 +21,12 @@ def db_column_ref(db_ref: str, table_name: str, column_name: str) -> str:
 
 
 def get_entity_meta(workspace: Workspace, ref: str) -> dict | None:
-    store = workspace._get_store()
-    return store._get_meta(ref) if store else None
+    rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": ref})
+    return rows[0].get("n") if rows else None
 
 
 def set_entity_meta(workspace: Workspace, ref: str, props: dict) -> None:
-    store = workspace._get_store()
-    if store:
-        store._set_meta(ref, props)
+    workspace.cypher(
+        "MATCH (n {name: $name}) SET n += $props",
+        params={"name": ref, "props": props},
+    )

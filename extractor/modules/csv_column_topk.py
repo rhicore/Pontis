@@ -12,6 +12,7 @@ import logging
 from typing import Optional, List, Dict, Any
 from collections import Counter
 from storage.workspace import Workspace
+from extractor.modules.utils.src import file_exists, get_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +49,8 @@ def _generate_for_column(col_ref: str, csv_ref: str, workspace: Workspace,
     csv_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": csv_ref})
     csv_meta = csv_meta_rows[0].get("n") if csv_meta_rows else None or {}
     csv_rel_path = csv_meta.get("path", csv_ref)
-    csv_path = workspace.resolve_data_path(csv_rel_path)
-    if not csv_path or not workspace.data_exists(csv_rel_path):
+    csv_path = get_file_path(workspace, csv_rel_path)
+    if not csv_path or not file_exists(workspace, csv_rel_path):
         return False
 
     topk = _calculate_topk(csv_path, col_name, delimiter, k)

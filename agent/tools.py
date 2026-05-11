@@ -479,10 +479,13 @@ def _exec_create_entity(workspace, arguments: dict) -> str:
 
 def _exec_update_meta(workspace, arguments: dict) -> str:
     from tool.update_meta.tool import update_meta_command
+    ref = arguments.get("ref") or arguments.get("path")
+    if not ref:
+        return "Error: missing required field 'ref'"
     return update_meta_command(
         workspace,
-        ref=arguments["ref"],
-        fields=arguments["fields"],
+        ref=ref,
+        fields=arguments.get("fields", {}),
     )
 
 

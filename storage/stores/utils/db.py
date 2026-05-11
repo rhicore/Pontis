@@ -1,12 +1,30 @@
-"""SQLite 虚属性 — 数据库文件 + 表/视图实体"""
+"""DB helpers reused by source modules.
+
+当前先只提供 SQLite/file-db 相关能力。
+"""
+
+from __future__ import annotations
+
 import os
 import sqlite3
-from typing import Callable, Dict, Optional
+from typing import Optional
 
-from .file import COMMON_FILE_PROPS
+DB_FILE_LABELS = {
+    ".db": ["file", "db"],
+    ".sqlite": ["file", "db"],
+    ".sqlite3": ["file", "db"],
+    ".duckdb": ["file", "db"],
+}
 
 
-# ── 数据库文件属性 ──
+def file_labels(path_or_name: str) -> list[str] | None:
+    ext = os.path.splitext(path_or_name)[1].lower()
+    return DB_FILE_LABELS.get(ext)
+
+
+def connect_sqlite(path: str, *args, **kwargs):
+    return sqlite3.connect(path, *args, **kwargs)
+
 
 def table_count(project_path: str, file_rel_path: str, entity_path: str = "") -> Optional[int]:
     db_path = os.path.join(project_path, file_rel_path)
@@ -16,9 +34,9 @@ def table_count(project_path: str, file_rel_path: str, entity_path: str = "") ->
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-        count = cur.fetchone()[0]
+        n = cur.fetchone()[0]
         conn.close()
-        return count
+        return n
     except Exception:
         return None
 
@@ -31,9 +49,9 @@ def view_count(project_path: str, file_rel_path: str, entity_path: str = "") -> 
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='view'")
-        count = cur.fetchone()[0]
+        n = cur.fetchone()[0]
         conn.close()
-        return count
+        return n
     except Exception:
         return None
 
@@ -46,14 +64,12 @@ def index_count(project_path: str, file_rel_path: str, entity_path: str = "") ->
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'")
-        count = cur.fetchone()[0]
+        n = cur.fetchone()[0]
         conn.close()
-        return count
+        return n
     except Exception:
         return None
 
-
-# ── 表/视图实体属性 ──
 
 def row_count(project_path: str, file_rel_path: str, entity_path: str = "") -> Optional[int]:
     table_name = entity_path.split("/")[-1] if "/" in entity_path else entity_path
@@ -64,9 +80,9 @@ def row_count(project_path: str, file_rel_path: str, entity_path: str = "") -> O
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         cur.execute(f'SELECT COUNT(*) FROM "{table_name}"')
-        count = cur.fetchone()[0]
+        n = cur.fetchone()[0]
         conn.close()
-        return count
+        return n
     except Exception:
         return None
 
@@ -80,26 +96,8 @@ def column_count(project_path: str, file_rel_path: str, entity_path: str = "") -
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         cur.execute(f'PRAGMA table_info("{table_name}")')
-        count = len(cur.fetchall())
+        n = len(cur.fetchall())
         conn.close()
-        return count
+        return n
     except Exception:
         return None
-
-
-DB_PROPS: Dict[str, Callable] = {
-    **COMMON_FILE_PROPS,
-    "table_count": table_count,
-    "view_count": view_count,
-    "index_count": index_count,
-}
-
-TABLE_PROPS: Dict[str, Callable] = {
-    "row_count": row_count,
-    "column_count": column_count,
-}
-
-VIEW_PROPS: Dict[str, Callable] = {
-    "row_count": row_count,
-    "column_count": column_count,
-}

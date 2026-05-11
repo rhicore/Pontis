@@ -11,6 +11,7 @@ import os
 import logging
 from typing import Optional, Dict, Any, Set
 from storage.workspace import Workspace
+from extractor.modules.utils.src import file_exists, get_file_path, open_text_file
 
 logger = logging.getLogger(__name__)
 
@@ -164,16 +165,18 @@ def _generate_for_text(path: str, workspace: Workspace) -> bool:
         return False
 
     rel_path = meta.get("path")
-    if not rel_path or not workspace.data_exists(rel_path):
+    if not rel_path or not file_exists(workspace, rel_path):
         return False
 
     try:
         # 检测编码
-        file_path = workspace.resolve_data_path(rel_path)
+        file_path = get_file_path(workspace, rel_path)
+        if not file_path:
+            return False
         encoding = _detect_encoding(file_path)
 
         # 读取内容
-        with workspace.open_file(rel_path, 'r', encoding=encoding, errors='ignore') as f:
+        with open_text_file(workspace, rel_path, 'r', encoding=encoding, errors='ignore') as f:
             content = f.read()
 
         # 基础文本统计

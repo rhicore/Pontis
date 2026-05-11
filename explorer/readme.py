@@ -2,9 +2,6 @@
 
 唯一职责：读取当前项目已经生成的数据库/表/列/fk 摘要，补充必要探索，
 然后将结果写入项目图谱中的 `README` 节点。
-
-独立执行:
-    python -m explorer.readme ./my_data
 """
 import logging
 import os
@@ -130,14 +127,3 @@ def generate(workspace: Workspace) -> None:
 
     agent.chat(PROMPT)
     logger.info("=== Agent README Writer done ===")
-
-
-if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) < 2:
-        print("Usage: python -m explorer.readme <project_path>")
-        raise SystemExit(1)
-
-    ws = Workspace(project_path=sys.argv[1])
-    generate(ws)

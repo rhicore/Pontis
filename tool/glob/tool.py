@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Tuple
 
 from tool.config import TOOL_PAGINATION
 from tool.utils.formatters import format_labels, get_info
-from tool.utils.entity_refs import row_display_ref, path_ref_to_internal
+from tool.utils.resolve import selector_match_pattern
 
 
 # ═══════════════════════════════════════════════════════════
@@ -253,6 +253,65 @@ def _get_project_name(workspace) -> str:
     return "local"
 
 
+def _display_ref_from_row(workspace, project: str | None, row: dict, main_var: str, main_info: dict) -> str:
+    labels = set(main_info.get("labels", []))
+    name = main_info.get("name", "?")
+
+    if "col" in labels:
+        table_name = None
+        file_name = None
+        for var, info in row.items():
+            if not isinstance(info, dict):
+                continue
+            var_labels = set(info.get("labels", []))
+            if table_name is None and ({"table", "view"} & var_labels):
+                table_name = info.get("name")
+            if file_name is None and "file" in var_labels:
+                file_name = info.get("name")
+        if file_name and table_name:
+            return f"{file_name}/{table_name}/{name}"
+        if table_name:
+            return f"{table_name}/{name}"
+
+        selector = {"project": project, "name": name, "labels": list(labels)}
+        match = selector_match_pattern(selector, "n")
+        rows = workspace.cypher(
+            f"MATCH (f:file)--(t)--{match} RETURN f, t",
+            params={"name": name},
+            project=project,
+        )
+        for extra in rows:
+            f = extra.get("f") or {}
+            t = extra.get("t") or {}
+            if "file" in set(f.get("labels", [])) and ({"table", "view"} & set(t.get("labels", []))):
+                return f"{f.get('name', '')}/{t.get('name', '')}/{name}"
+
+    if "table" in labels or "view" in labels:
+        file_name = None
+        for var, info in row.items():
+            if var == main_var or not isinstance(info, dict):
+                continue
+            if "file" in set(info.get("labels", [])):
+                file_name = info.get("name")
+                break
+        if file_name:
+            return f"{file_name}/{name}"
+
+        selector = {"project": project, "name": name, "labels": list(labels)}
+        match = selector_match_pattern(selector, "n")
+        rows = workspace.cypher(
+            f"MATCH (f:file)--{match} RETURN f",
+            params={"name": name},
+            project=project,
+        )
+        for extra in rows:
+            f = extra.get("f") or {}
+            if "file" in set(f.get("labels", [])):
+                return f"{f.get('name', '')}/{name}"
+
+    return name
+
+
 def glob_command(workspace, ref: str, offset: int = 0,
                  limit: Optional[int] = None, current_cwd: str = "") -> str:
     """URN 语法查询，翻译为标准 Cypher 执行。
@@ -285,8 +344,6 @@ def glob_command(workspace, ref: str, offset: int = 0,
     if not results:
         return "No objects found"
 
-    store = workspace._get_store(project)
-
     # 格式化：取最后一个变量的信息作为主结果
     all_items = []
     for row in results:
@@ -301,14 +358,9 @@ def glob_command(workspace, ref: str, offset: int = 0,
         if not main_info:
             continue
 
-        name = row_display_ref(store, row, main_var, main_info) if store else main_info.get("name", "?")
+        name = _display_ref_from_row(workspace, project, row, main_var, main_info)
         labels = main_info.get("labels", [])
-        meta = {}
-        if store:
-            eid = store._resolve_to_id(path_ref_to_internal(name))
-            if eid:
-                meta = store._get_meta(eid) or {}
-        info_str = get_info(labels, meta or {})
+        info_str = get_info(labels, main_info or {})
         label_str = format_labels(labels)
         all_items.append((name, label_str, info_str))
 

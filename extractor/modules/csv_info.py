@@ -9,6 +9,7 @@
 """
 import logging
 from storage.workspace import Workspace
+from extractor.modules.utils.src import file_exists, get_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +39,8 @@ def _generate_for_csv(path: str, workspace: Workspace, delimiter: str) -> bool:
         return False
 
     rel_path = meta.get("path")
-    csv_path = workspace.resolve_data_path(rel_path) if rel_path else None
-    if not csv_path or not workspace.data_exists(rel_path):
+    csv_path = get_file_path(workspace, rel_path) if rel_path else None
+    if not csv_path or not file_exists(workspace, rel_path):
         return False
 
     try:

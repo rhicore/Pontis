@@ -67,11 +67,18 @@ class SetClause:
 
 
 @dataclass
+class ReturnItem:
+    expr: str
+    alias: str
+
+
+@dataclass
 class CypherQuery:
     nodes: List[NodePattern] = field(default_factory=list)
     rels: List[RelPattern] = field(default_factory=list)
     where: List[WhereClause] = field(default_factory=list)
     return_vars: List[str] = field(default_factory=list)
+    return_items: List[ReturnItem] = field(default_factory=list)
     # 写操作
     action: str = "RETURN"   # RETURN | CREATE | DELETE | SET
     set_clauses: List[SetClause] = field(default_factory=list)
@@ -261,9 +268,21 @@ def parse_cypher(text: str, params: dict = None) -> CypherQuery:
 
     # 解析 RETURN
     return_vars = []
+    return_items = []
     rm = _RETURN_RE.search(text)
     if rm:
-        return_vars = [v.strip() for v in rm.group(1).split(',')]
+        for raw_item in rm.group(1).split(','):
+            item = raw_item.strip()
+            if not item:
+                continue
+            alias = item
+            expr = item
+            m = re.match(r'(.+?)\s+AS\s+(\w+)$', item, re.IGNORECASE)
+            if m:
+                expr = m.group(1).strip()
+                alias = m.group(2).strip()
+            return_items.append(ReturnItem(expr=expr, alias=alias))
+            return_vars.append(alias)
 
     # ── 解析 MATCH 部分 ──
     match_part = match_text
@@ -330,7 +349,8 @@ def parse_cypher(text: str, params: dict = None) -> CypherQuery:
                 create_rels.append((edge_nodes[0][0], edge_nodes[1][0]))
 
     return CypherQuery(nodes=nodes, rels=rels, where=wheres,
-                       return_vars=return_vars, action=action,
+                       return_vars=return_vars, return_items=return_items,
+                       action=action,
                        set_clauses=set_clauses, create_rels=create_rels,
                        params=params)
 
@@ -436,7 +456,7 @@ def _node_result(store, eid: str, *, _internal=False) -> Optional[dict]:
     if _internal:
         result["_eid"] = eid
 
-    # 补充虚属性（file_size, modified_at 等）
+    # MergedStoreView has already combined matching virtual node metadata.
     full_meta = store._get_meta(eid)
     if full_meta:
         for k, v in full_meta.items():
@@ -488,6 +508,7 @@ class CypherExecutor:
             else:
                 results = self._execute_traverse(query)
 
+        results = self._project_results(query, results)
         # 过滤内部字段 _eid
         return _strip_internal(results)
 
@@ -848,3 +869,30 @@ class CypherExecutor:
 
     def _adjacent_of(self, eid: str) -> Set[str]:
         return self.store._adjacent.get(eid, set())
+
+    def _project_results(self, query: CypherQuery, results: List[dict]) -> List[dict]:
+        """按 RETURN 投影结果。支持普通变量、变量属性、n.src 虚属性。"""
+        if not query.return_items:
+            return results
+
+        projected = []
+        for row in results:
+            out = {}
+            for item in query.return_items:
+                out[item.alias] = self._resolve_return_expr(item.expr, row)
+            projected.append(out)
+        return projected
+
+    def _resolve_return_expr(self, expr: str, row: dict):
+        if "." not in expr:
+            return row.get(expr)
+
+        var, prop = expr.split(".", 1)
+        base = row.get(var)
+        if not isinstance(base, dict):
+            return None
+
+        if prop == "src":
+            return self.store.bind_src(base)
+
+        return base.get(prop)

@@ -6,6 +6,9 @@
   - 不自动连边，通过 edges 参数显式指定
 """
 
+from tool.utils import execute_cypher
+from tool.utils.resolve import resolve_entity_selector, selector_match_pattern
+
 def _parse_ref(ref: str) -> tuple:
     """从 ref 中提取实体名和标签。
 
@@ -56,16 +59,19 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
     if not name:
         return "错误: 实体名不能为空"
 
-    target_store = workspace._get_store(project)
-    if not target_store:
-        return f"Error: project not available: {project or '(default)'}"
-
-    if workspace.cypher(
+    existing_rows = workspace.cypher(
         'MATCH (n {name: $name}) RETURN n',
         params={"name": name},
         project=project,
-    ):
-        return f"Entity already exists: {name}"
+    )
+    requested_labels = set(labels or [])
+    if existing_rows:
+        if not requested_labels:
+            return f"Entity already exists: {name}"
+        for row in existing_rows:
+            existing_labels = set(row.get("n", {}).get("labels", []))
+            if existing_labels == requested_labels:
+                return f"Entity already exists: {name}"
 
     meta = meta or {}
     props = dict(meta)
@@ -74,47 +80,53 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
         props["project"] = project
     prop_values = {k: v for k, v in props.items() if not k.startswith("_")}
 
-    target_store._create_node(
-        name,
-        meta=prop_values,
-        labels=labels or None,
-        edges=None,
+    label_str = "".join(f":{label}" for label in (labels or []))
+    created = execute_cypher(
+        workspace,
+        f"CREATE (n{label_str} {{name: $name}}) SET n += $props RETURN n",
+        params={"name": name, "props": prop_values},
+        project=project,
     )
+    if not created:
+        return f"Error: failed to create entity: {name}"
 
     # 创建显式 edges
     edge_results = []
     if edges:
-        resolved_edges = []
         for e in edges:
             a_name = e.get("a", "")
             b_name = e.get("b", "")
             if not a_name or not b_name:
                 continue
-            a_rows = workspace.cypher(
-                'MATCH (n {name: $name}) RETURN n',
-                params={"name": a_name},
-                project=project,
-            )
-            if not a_rows:
-                edge_results.append(f"  跳过: 端点不存在 '{a_name}'")
+            created_sel = {"project": project, "name": name, "labels": list(labels or [])}
+            a_sel = created_sel if a_name == name or a_name == ref else None
+            a_err = None
+            if a_sel is None:
+                a_sel, a_err = resolve_entity_selector(workspace, a_name)
+            if a_err:
+                edge_results.append(f"  跳过: {a_err}")
                 continue
-            b_rows = workspace.cypher(
-                'MATCH (n {name: $name}) RETURN n',
-                params={"name": b_name},
-                project=project,
-            )
-            if not b_rows:
-                edge_results.append(f"  跳过: 端点不存在 '{b_name}'")
+            b_sel = created_sel if b_name == name or b_name == ref else None
+            b_err = None
+            if b_sel is None:
+                b_sel, b_err = resolve_entity_selector(workspace, b_name)
+            if b_err:
+                edge_results.append(f"  跳过: {b_err}")
                 continue
-            a_id = a_rows[0]["n"].get("_eid")
-            b_id = b_rows[0]["n"].get("_eid")
-            if not a_id or not b_id:
+            if not a_sel or not b_sel:
                 edge_results.append(f"  跳过: 无法解析端点 '{a_name}' / '{b_name}'")
                 continue
-            resolved_edges.append({"a": a_id, "b": b_id})
+            workspace.materialize(a_sel["name"], project=project)
+            workspace.materialize(b_sel["name"], project=project)
+            a_match = selector_match_pattern(a_sel, "a", "a_name")
+            b_match = selector_match_pattern(b_sel, "b", "b_name")
+            execute_cypher(
+                workspace,
+                f"MATCH {a_match}, {b_match} CREATE (a)--(b)",
+                params={"a_name": a_sel["name"], "b_name": b_sel["name"]},
+                project=project,
+            )
             edge_results.append(f"  {a_name} ↔ {b_name}")
-        if resolved_edges:
-            target_store._add_edges(resolved_edges)
 
     lines = [f"Created: {name}"]
     if labels:

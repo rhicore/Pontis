@@ -1,6 +1,7 @@
 """Update meta tool — 更新实体元数据。"""
 
-from tool.utils.resolve import resolve_entity
+from tool.utils import execute_cypher
+from tool.utils.resolve import resolve_entity_selector, selector_match_pattern
 
 _ALLOWED_FIELDS = {"brief", "detail"}
 
@@ -23,21 +24,38 @@ def update_meta_command(workspace, ref: str, fields: dict) -> str:
     if not safe_fields:
         return "错误: 没有有效的字段可更新"
 
-    # 解析实体引用
-    eid, err = resolve_entity(workspace, ref)
+    selector, err = resolve_entity_selector(workspace, ref)
     if err:
         return f"Error: {err}"
 
-    project = ref.split("::", 1)[0] if "::" in ref else None
-    store = workspace._get_store(project)
-    if store is None:
-        return "Error: no active store"
+    project = selector["project"]
+    match = selector_match_pattern(selector, "n")
+    rows = execute_cypher(
+        workspace,
+        f"MATCH {match} RETURN n",
+        params={"name": selector["name"]},
+        project=project,
+    )
+    if not rows:
+        if not workspace.materialize(selector["name"], project=project):
+            return f"Error: entity disappeared before update (ref={ref})"
+        rows = execute_cypher(
+            workspace,
+            f"MATCH {match} RETURN n",
+            params={"name": selector["name"]},
+            project=project,
+        )
+        if not rows:
+            return f"Error: entity disappeared before update (ref={ref})"
 
-    if eid not in store._id_index:
-        return f"Error: entity disappeared before update (ref={ref})"
-
-    store._set_meta(eid, safe_fields)
-    name = store._id_index.get(eid, {}).get("name", ref)
+    set_parts = [f"n.{k} = ${k}" for k in safe_fields]
+    execute_cypher(
+        workspace,
+        f"MATCH {match} SET {', '.join(set_parts)} RETURN n",
+        params={"name": selector["name"], **safe_fields},
+        project=project,
+    )
+    name = rows[0]["n"].get("name", ref)
     written = []
     for k, v in safe_fields.items():
         if k == "detail":

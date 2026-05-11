@@ -21,6 +21,7 @@ from collections import defaultdict
 from itertools import combinations
 from storage.workspace import Workspace
 from extractor.modules.utils.refs import db_column_ref, get_entity_meta
+from extractor.modules.utils.src import file_exists, open_sqlite_db
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def _generate_for_database(path: str, workspace: Workspace) -> bool:
     db_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": path})
     db_meta = db_meta_rows[0].get("n") if db_meta_rows else None
     db_rel = db_meta.get("path", path) if db_meta else path
-    if not workspace.data_exists(db_rel):
+    if not file_exists(workspace, db_rel):
         return False
 
     # 收集所有列信息（通过 table → col 遍历）
@@ -193,7 +194,7 @@ def _detect_column_overlaps(db_rel: str, cols1: List[Dict], cols2: List[Dict], w
 def _calculate_overlap(db_rel: str, col1: Dict, col2: Dict, workspace: Workspace) -> Optional[Dict]:
     """计算两列的值重叠情况"""
     try:
-        with workspace.open_db(db_rel) as conn:
+        with open_sqlite_db(workspace, db_rel) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 f'SELECT DISTINCT "{col1["column"]}" FROM "{col1["table"]}" '
