@@ -56,35 +56,27 @@ def get_registry() -> Dict[str, object]:
     if _REGISTRY is not None:
         return _REGISTRY
 
-    from extractor.modules.csv_basic import generate as csv_basic
-    from extractor.modules.serialized_basic import generate as serialized_basic
     from extractor.modules.db_column_stats import generate as db_column_stats
     from extractor.modules.db_column_stats_approx import generate as db_column_stats_approx
     from extractor.modules.db_column_sample import generate as db_column_sample
     from extractor.modules.db_column_topk import generate as db_column_topk
-    from extractor.modules.csv_info import generate as csv_info
     from extractor.modules.csv_column_stats import generate as csv_column_stats
     from extractor.modules.csv_column_sample import generate as csv_column_sample
     from extractor.modules.csv_column_topk import generate as csv_column_topk
     from extractor.modules.json_pattern import generate as json_pattern
-    from extractor.modules.text_info import generate as text_info
     from extractor.modules.db_fk_validate import generate as db_fk_validate
     from extractor.modules.db_column_overlap import generate as db_column_overlap
     from extractor.modules.ai_db_column_summary import generate as ai_db_column_summary
 
     _REGISTRY = {
-        "csv_basic": csv_basic,
-        "serialized_basic": serialized_basic,
         "db_column_stats": db_column_stats,
         "db_column_stats_approx": db_column_stats_approx,
         "db_column_sample": db_column_sample,
         "db_column_topk": db_column_topk,
-        "csv_info": csv_info,
         "csv_column_stats": csv_column_stats,
         "csv_column_sample": csv_column_sample,
         "csv_column_topk": csv_column_topk,
         "json_pattern": json_pattern,
-        "text_info": text_info,
         "db_fk_validate": db_fk_validate,
         "db_column_overlap": db_column_overlap,
         "ai_db_column_summary": ai_db_column_summary,

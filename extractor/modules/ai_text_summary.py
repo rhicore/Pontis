@@ -14,7 +14,7 @@ from storage.workspace import Workspace
 from extractor.modules.utils.loader import load_config
 from extractor.modules.utils.ai_utils import generate_detail_and_brief
 from extractor.modules.utils.src import file_exists, get_file_path
-from extractor.modules.text_info import is_text_file
+from storage.stores.text import is_text_file
 
 logger = logging.getLogger(__name__)
 

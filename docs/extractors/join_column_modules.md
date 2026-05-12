@@ -2,7 +2,7 @@
 
 ## 模块概述
 
-基于 `docs/join_column_search_strategy.md` 设计，实现两阶段Join列检测：
+基于 `docs/extractors/join_column_search_strategy.md` 设计，实现两阶段Join列检测：
 
 1. **db_column_overlap.py** - 硬性规则检测（Jaccard相似度）
 2. **db_column_rel.py** - LLM打分软性筛选

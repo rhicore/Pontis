@@ -10,10 +10,11 @@ from dataclasses import replace
 from storage.config import ProjectConfig
 from storage.backends import create_backend
 from storage.stores.fs import FSModule
+from storage.stores.csv_schema import CSVSchemaModule
 from storage.stores.db_schema import SQLiteSchemaModule
 
 _MODULE_REGISTRY = {
-    "fs": [FSModule, SQLiteSchemaModule],
+    "fs": [FSModule, CSVSchemaModule, SQLiteSchemaModule],
 }
 
 
@@ -48,4 +49,4 @@ def register_module(name: str, module_cls):
     _MODULE_REGISTRY[name] = module_cls
 
 
-__all__ = ["FSModule", "create_store", "register_module"]
+__all__ = ["FSModule", "CSVSchemaModule", "create_store", "register_module"]

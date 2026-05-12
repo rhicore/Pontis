@@ -28,7 +28,7 @@ dbt 本质上是一个“以文件系统为载体的数据转换图谱（File-ba
 * **Seed (静态种子数据)**
   * **来源**：`seeds/**/*.csv` 文件。
   * **Pontis 实体映射**：`seeds/country_codes.csv::seed`
-  * **提取的 Meta**：利用 Pontis 现有的 `csv_info` 模块，直接提取列统计、数据类型和行数。
+  * **提取的 Meta**：复用 storage CSV source module 暴露的列、数据类型、列数和轻量行数信息。
 
 #### 3. 质量与治理实体 (Governance Entities)
 * **Test (数据质量测试)**

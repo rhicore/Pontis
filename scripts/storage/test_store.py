@@ -260,6 +260,18 @@ def test_virtual_and_src():
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write("hello\nworld\n")
 
+    csv_path = os.path.join(p, "people.csv")
+    with open(csv_path, "w", encoding="utf-8") as f:
+        f.write("id,name,score\n1,Ada,9.5\n2,Bob,8.0\n")
+
+    json_path = os.path.join(p, "config.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        f.write('{"users": [{"id": 1, "name": "Ada"}], "active": true}\n')
+
+    yaml_path = os.path.join(p, "settings.yml")
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        f.write("service:\n  name: pontis\n  enabled: true\n")
+
     ws = Workspace(project_path=p)
     db_rows = ws.cypher("MATCH (f:file:db) WHERE f.name = 'test.db' RETURN f, f.src AS src")
     ok("db file virtual row", len(db_rows) == 1, f"got {db_rows}")
@@ -292,9 +304,50 @@ def test_virtual_and_src():
             content = fh.read()
         ok("text src open", content == "hello\nworld\n", f"got {content!r}")
 
+    text_meta_rows = ws.cypher("MATCH (f:file:text {name: 'notes.txt'}) RETURN f")
+    text_meta = first(text_meta_rows, "f")
+    ok("text light meta", text_meta.get("line_count") == 2 and text_meta.get("char_count") == 12, f"got {text_meta}")
+
+    csv_rows = ws.cypher("MATCH (f:file:csv {name: 'people.csv'}) RETURN f")
+    csv_meta = first(csv_rows, "f")
+    ok("csv file light meta", (
+        csv_meta.get("delimiter") == ","
+        and csv_meta.get("column_count") == 3
+        and csv_meta.get("row_count") == 2
+    ), f"got {csv_meta}")
+
+    csv_col_rows = ws.cypher("MATCH (f:file:csv {name: 'people.csv'})--(c:col) RETURN c")
+    csv_cols = {row["c"]["name"]: row["c"].get("col_type") for row in csv_col_rows}
+    ok("csv schema virtual columns", csv_cols == {"id": "INT", "name": "TEXT", "score": "FLOAT"}, f"got {csv_cols}")
+    if csv_col_rows:
+        ok("csv column external fields", all(external_entity_shape(row["c"]) for row in csv_col_rows), f"got {csv_col_rows}")
+
+    score_rows = ws.cypher("MATCH (c:col) WHERE c.ref = 'people.csv--score' RETURN c")
+    ok("csv column ref lookup", len(score_rows) == 1 and first(score_rows, "c").get("source_column") == "score", f"got {score_rows}")
+
+    json_rows = ws.cypher("MATCH (f:file:json {name: 'config.json'}) RETURN f")
+    json_meta = first(json_rows, "f")
+    ok("json serialized light meta", (
+        json_meta.get("structure_type") == "object"
+        and json_meta.get("top_level_keys") == ["users", "active"]
+        and json_meta.get("key_count") == 2
+    ), f"got {json_meta}")
+
+    yaml_rows = ws.cypher("MATCH (f:file:yaml {name: 'settings.yml'}) RETURN f")
+    yaml_meta = first(yaml_rows, "f")
+    ok("yaml serialized light meta", (
+        yaml_meta.get("structure_type") == "mapping"
+        and yaml_meta.get("top_level_keys") == ["service"]
+        and yaml_meta.get("key_count") == 1
+    ), f"got {yaml_meta}")
+
     ws.cypher("MATCH (f:file {name: 'notes.txt'}) SET f.note = 'kept'")
     note_rows = ws.cypher("MATCH (f:file {name: 'notes.txt'}) RETURN f")
     ok("Cypher SET materializes virtual", first(note_rows, "f").get("note") == "kept", f"got {note_rows}")
+
+    ws.cypher("MATCH (c:col {ref: 'people.csv--score'}) SET c.note = 'numeric score'")
+    materialized_col = ws.cypher("MATCH (c:col) WHERE c.ref = 'people.csv--score' RETURN c")
+    ok("Cypher SET materializes csv column", first(materialized_col, "c").get("note") == "numeric score", f"got {materialized_col}")
 
     edge_rows = ws.cypher(
         "MATCH (a:file {name: 'notes.txt'}), (b:file:db {name: 'test.db'}) CREATE (a)--(b)"
@@ -305,8 +358,19 @@ def test_virtual_and_src():
     shutil.rmtree(p, ignore_errors=True)
 
 
+def test_extractor_registry_after_source_migration():
+    print("\n[6] Extractor Registry After Source Module Migration")
+
+    from extractor.engine import get_registry
+
+    registry = get_registry()
+    removed = {"csv_basic", "serialized_basic", "csv_info", "text_info"}
+    ok("removed source modules are absent", removed.isdisjoint(registry), f"got {sorted(removed & set(registry))}")
+    ok("profiling modules remain", {"csv_column_stats", "db_column_stats_approx", "json_pattern"}.issubset(registry))
+
+
 def test_graph_only():
-    print("\n[6] Graph-only Project")
+    print("\n[7] Graph-only Project")
 
     root = tempfile.mkdtemp(prefix="pontis_graph_only_")
     db_path = os.path.join(root, "store.db")
@@ -322,7 +386,7 @@ def test_graph_only():
 
 
 def test_concurrency_and_persistence():
-    print("\n[7] Persistence and Concurrent Visibility")
+    print("\n[8] Persistence and Concurrent Visibility")
 
     p = empty_project()
     a = make_store(p)
@@ -361,6 +425,7 @@ def main():
         shutil.rmtree(p, ignore_errors=True)
 
         test_virtual_and_src()
+        test_extractor_registry_after_source_migration()
         test_graph_only()
         test_concurrency_and_persistence()
 

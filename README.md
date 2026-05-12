@@ -1,316 +1,168 @@
-# Pontis — 项目数据知识图谱与 AI 分析系统
+<div align="center">
 
-> 让 AI 在理解数据结构的基础上回答问题，而非直接"阅读"原始文件。
+# Pontis
 
-Pontis 是一个面向项目数据的**知识图谱自动构建与智能分析系统**。系统扫描任意项目文件夹中的结构化/半结构化数据（数据库、CSV、JSON、文本等），提取为知识图谱，再由 LLM Agent 以自然语言交互方式完成数据分析任务。
+**A graph-native memory layer for data projects and AI agents.**
 
----
+Let AI understand the structure, relationships and accumulated knowledge of a data project before answering questions.
 
-## 目录
+![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=flat-square&logo=python&logoColor=white)
+![Storage](https://img.shields.io/badge/Storage-SQLite%20Graph-003B57?style=flat-square&logo=sqlite&logoColor=white)
+![Agent](https://img.shields.io/badge/Agent-Tool%20Calling-111827?style=flat-square)
+![Status](https://img.shields.io/badge/Status-Research%20Prototype-f59e0b?style=flat-square)
 
-- [为什么需要 Pontis](#为什么需要-pontis)
-- [快速开始](#快速开始)
-- [系统架构](#系统架构)
-- [逻辑实体类型](#逻辑实体类型)
-- [核心模块](#核心模块)
-- [Agent 工具](#agent-工具)
-- [Guardrails](#guardrails)
-- [技术亮点](#技术亮点)
-- [项目结构](#项目结构)
-- [路线图](#路线图)
+</div>
 
 ---
 
-## 为什么需要 Pontis
+Pontis is a knowledge graph workspace for data projects and AI agents. Instead of LLM using different api to access different types of data source, it organizes HETEROGENEOUS data into a queryable, updatable and reusable graph that can be explored through Cypher.
 
-### 痛点
+The graph describes the sources themselves and preserves the knowledge produced during analysis: tables and columns, files and directories, foreign keys and semantic relationships, statistical summaries, manual corrections and cross-project experience. Agents access this graph through tools and Cypher, then return to the original data only when precise execution is needed.
 
-| 痛点 | 说明 |
-|------|------|
-| **AI 直接读原始数据容易出错** | 大型数据库无法一次性读入上下文，CSV 列含义不清导致误判，JSON 嵌套层级深时 AI 容易丢失结构 |
-| **缺乏数据关系全局视图** | 多表之间的外键、列值重叠、语义关联等关系，人工梳理成本高且容易遗漏 |
-| **重复分析浪费资源** | 同一数据集的不同分析师每次都需要重新理解表结构、列含义、数据分布 |
-| **数据文档与数据本身脱节** | 人工维护的数据字典容易过时，且覆盖面有限 |
+## Why Pontis
 
-### 解决思路
+When an LLM reads a data project directly, three problems show up quickly:
 
-构建一个**结构化中间层** —— `.pontis/` 知识图谱，将原始数据转化为 AI 可精确消费的元数据网络：
+- Context is too coarse: large tables, long files and complex directories cannot fit cleanly into a prompt.
+- Relationships are too implicit: joins, column meanings, JSON structure and project conventions are scattered across the data.
+- Experience is too short-lived: conclusions from one analysis are rediscovered again in the next task.
 
-```
-原始数据 ──[Extractor 管线]──> 知识图谱(.pontis/) ──[Agent + 工具]──> 自然语言回答
+Pontis introduces a stable middle layer:
+
+```text
+Raw Project
+    -> Source Modules
+    -> Graph Workspace
+    -> Extractors / Tools / Agent
+    -> Reusable Project Knowledge
 ```
 
----
+Raw data stays where it is. Pontis builds a structured reasoning layer over it.
 
-## 快速开始
+## Architecture
 
-### 安装依赖
+```mermaid
+flowchart LR
+    W[Workspace<br/>multi-project / multi-source<br/>Cypher API]
+
+    subgraph Graph[Graph Layer]
+        G[(.pontis/store.db<br/>persistent graph)]
+    end
+
+    W --> G
+
+    subgraph Adapter[Source Modules]
+        SM[adapt source types<br/>into graph entities<br/>virtual nodes + src ports]
+    end
+
+    W --> SM
+
+    subgraph Raw[Raw Data Sources]
+        FS[Local files<br/>CSV / JSON / Text]
+        DB[SQLite databases<br/>tables / columns / foreign keys]
+        EXT[Future sources<br/>remote DB / object storage / SaaS]
+    end
+
+    SM --> FS
+    SM --> DB
+    SM --> EXT
+
+    EX[Extractor<br/>automated scripts analyze data<br/>and update the graph] --> W
+    EP[Explorer<br/>agent-driven exploration<br/>and graph refinement] --> W
+    T[Tools<br/>glob, meta, search, query, cypher] --> W
+    A[Pontis Agent<br/>LLM + guardrails] --> T
+```
+
+The important boundary is simple: **`Workspace.cypher(...)` is the graph API.**
+
+Source modules expose virtual entities and native source ports. The persistent store keeps user knowledge, extracted metadata and graph edges. Read queries can merge persisted graph data with live virtual entities; write queries materialize only the graph entities they touch.
+
+## Core Ideas
+
+**Graph first.** Files, tables, columns, foreign keys, summaries and learned rules are all graph nodes or edges. The agent does not need to memorize path conventions; it can ask the graph.
+
+**Virtual before persistent.** A project can expose live file system and SQLite schema nodes without eagerly writing everything into `.pontis/store.db`. Persistence is reserved for extracted facts, user knowledge and touched virtual entities.
+
+**Thin source access.** Storage does not try to become a universal data platform. A node can bind to native ports such as file path, `open(...)` or SQLite connection, while higher-level behavior stays in tools and extractors.
+
+**Agent with rails.** The agent is assembled from mode-specific prompts, tools and guardrails. Read-only analysis, writer workflows, sub-agent work and benchmark runs share the same loop but use different capabilities.
+
+## Main Components
+
+| Layer | Responsibility |
+| --- | --- |
+| `storage/` | Property graph, SQLite backend, Cypher execution, merged virtual/persistent read view |
+| `storage/stores/` | Source modules such as file system discovery and SQLite schema projection |
+| `extractor/` | Automated script-based analysis that profiles data projects and writes derived knowledge back to the graph |
+| `explorer/` | Agent-driven analysis that explores a data project, discovers higher-level structure and updates the graph |
+| `tool/` | Agent-facing operations: `glob`, `meta`, `search`, `query`, `cypher`, write tools |
+| `agent/` | Tool-calling loop, prompt assembly, mode presets and guardrails |
+| `docs/` | Design notes, refactor plans, benchmark analysis and deeper architecture records |
+
+## Quick Start
+
+Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
-### 配置 API Key
-
-在项目根目录创建 `.env`：
+Configure an LLM provider with environment variables or `~/.pontis/config.yml`:
 
 ```bash
-PONTIS_AGENT_API_KEY=sk-xxxx
-PONTIS_EXTRACTOR_API_KEY=sk-xxxx
+export PONTIS_AGENT_API_KEY=...
+export PONTIS_EXTRACTOR_API_KEY=...
 ```
 
-### 提取数据
+List extractor modules:
 
 ```bash
-# 显式指定要运行的模块
-python -m extractor run csv_basic,db_column_stats ./my_project
+python -m extractor list
 ```
 
-### 启动 CLI 交互
+Run selected extraction passes on a project:
 
 ```bash
-python pontis_cli.py ./my_project
+python -m extractor run db_column_stats,db_column_topk,db_fk_validate ./my_project
 ```
 
-### 启动 Web 前端
+Start an interactive agent session:
 
 ```bash
-python -m scripts.front-end
+pontis ./my_project
 ```
 
----
+Run direct graph/tool commands:
 
-## 系统架构
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                      用户项目文件夹                            │
-│         event.db, expense.csv, config.json, report.md        │
-└────────────────────────┬─────────────────────────────────────┘
-                         │  python -m extractor run <modules> ./
-                         ▼
-┌──────────────────────────────────────────────────────────────┐
-│              Extractor 管线 (9 Phase)                         │
-│  骨架 → 实体展开 → 统计 → 关系检测 → AI 总结                   │
-└────────────────────────┬─────────────────────────────────────┘
-                         ▼
-┌──────────────────────────────────────────────────────────────┐
-│                  .pontis/ 知识图谱                            │
-│   文件元数据 + 逻辑实体 + 统计信息 + 关系边 + AI 总结            │
-└────────────────────────┬─────────────────────────────────────┘
-                         │
-            ┌────────────┼────────────┐
-            ▼            ▼            ▼
-        CLI 交互     Web 前端     Writer Agent
-       (pontis)    (浏览器)     (自动化脚本)
-            │            │            │
-            ▼            ▼            ▼
-┌──────────────────────────────────────────────────────────────┐
-│              PontisAgent (LLM + Tool Calling)                 │
-│   只读工具: glob, grep, read, meta, lookup, search, bash      │
-│   写入工具: create_entity, update_meta                        │
-└──────────────────────────────────────────────────────────────┘
+```bash
+pontis ./my_project:glob "*.db"
+pontis ./my_project:meta "example.sqlite"
+pontis ./my_project:cypher "MATCH (n) RETURN n"
 ```
 
----
+## Project Layout
 
-## 逻辑实体类型
-
-Pontis 的核心设计是**类型后缀即语义**。所有逻辑实体名称均带有类型后缀，后缀决定了该路径下可用的操作和元数据模板。
-
-### 数据库相关实体
-
-```
-[数据库名].db::
-├── [表名].table                    # 表实体
-├── [表名].[列名].[类型].col        # 列实体（如 money.INT.col）
-├── [表名].[列名]__to__[表名].[列名].fk       # 物理外键
-├── [表名].[列名]__to__[表名].[列名].overlap  # Jaccard 重叠列
-├── [表名].[列名]__to__[表名].[列名].rel      # AI 推断语义关系
-├── [视图名].view                   # 视图
-├── [视图名].[列名].[类型].col      # 视图列
-└── [视图名].[列名]__to__[表名].[列名].flow   # 血缘关系
-```
-
-### 非结构化实体
-
-```
-[文档名].md/.txt/.pdf/代码文件::
-├── section_1.chunk     # 文本分片
-├── section_2.chunk
-
-[表名].csv/tsv::
-├── [列名].[类型].col
-
-[文件名].json/.yaml/.xml::
-├── $.[JSONPath].pattern
-```
-
-### 关系挂载
-
-若一个逻辑关系涉及两个物理文件（如跨库外键），该关系实体（`.fk`, `.rel`）会同时出现在两个物理文件的目录下，实现双向挂载。
-
----
-
-## 核心模块
-
-### 模块一：Extractor 数据提取管线
-
-9 个阶段顺序执行，从文件骨架到 AI 总结：
-
-| 阶段 | 职责 | 说明 |
-|------|------|------|
-| Phase 1 | 骨架扫描 | 扫描项目文件夹，建立初始文件节点 |
-| Phase 1.5 | 实体展开 | 按文件类型展开：DB 表/视图/列、CSV 列、JSON 模式、文本分片 |
-| Phase 2 | DB 统计 | 表行数、列类型推断、空值率、采样值、Top-K 高频值 |
-| Phase 3 | CSV 统计 | 与 Phase 2 并行，处理 CSV 文件列统计 |
-| Phase 4 | JSON 模式提取 | 递归探查 JSON 结构，检测 Map 类型、识别命名模式 |
-| Phase 5 | 文本统计 | 行数、字符数、编码检测 |
-| Phase 6 | 外键检测 | 物理 FK + 命名规则推断（如 `user_id → users.id`） |
-| Phase 7 | 列值重叠检测 | 基于 Jaccard 相似度检测潜在关联列 |
-| Phase 8 | 语义关系验证 | 启发式打分 + LLM 语义验证，确认列间关联 |
-| Phase 9 | AI 总结 | 两轮 LLM 调用：先生成详细描述，再压缩为 ≤50 字摘要 |
-
-### 模块二：Storage 存储抽象层
-
-- **Store 类**：统一的图节点/边操作接口，支持节点 CRUD、边管理、路径引用解析
-- **虚属性引擎**：按需计算属性（文件大小、行数、列数等），保持存储轻量
-- **统一引用语法**：`path::entity` 语法定位任意节点，支持 `**/*.db::*.table` 多跳遍历
-
-### 模块三：Agent 智能体
-
-- **双模式设计**：只读模式（CLI/Web，7 个工具）+ 写入模式（自动化，9 个工具）
-- **可注入架构**：同一核心循环通过 ToolRegistry 和 system_prompt 参数切换模式
-- **Prompt 策略**：引导 AI 按"glob → meta → read"的高效路径工作，减少 token 消耗
-
-### 模块四：Guardrails
-
-Agent 调用工具前后进行多层检查：
-
-| Guardrail | 触发时机 | 行为 |
-|-----------|---------|------|
-| `ToolAbuse` | query 工具调用 | 限制 query 调用次数，统计剩余次数 |
-| `SQLEntityCheck` | query 工具调用 / 文本输出 | 检查 SQL 引用的实体是否已通过 meta 读取 |
-| `BridgeTableCheck` | query 工具调用 / 文本输出 | 检查 JOIN 关系是否已确认 |
-| `SQLDisambigCheck` | query 工具调用 | 检查 SQL 是否涉及消歧义实体 |
-| `RoundLimit` | 每轮结束 | 限制最大对话轮数 |
-
----
-
-## Agent 工具
-
-| 工具 | 类型 | 功能 |
-|------|------|------|
-| `glob` | 只读 | 按模式搜索文件和实体，支持分页 |
-| `grep` | 只读 | 正则搜索文件内容（ripgrep 加速） |
-| `read` | 只读 | 读取文件/表数据/列数据 |
-| `meta` | 只读 | 查看节点元数据，按类型智能展示 |
-| `lookup` | 只读 | 按属性值查找实体（支持谓词：`> 100`、`="active"`） |
-| `search` | 只读 | 关键词搜索元数据 |
-| `query` | 只读 | 执行 SQL 查询 |
-| `bash` | 只读 | Shell 命令（兜底工具） |
-| `create_entity` | 写入 | 创建新实体节点并建边 |
-| `update_meta` | 写入 | 合并更新元数据字段 |
-
----
-
-## 技术亮点
-
-### Agent 与原始数据隔离
-
-Agent 不直接读取原始文件，仅通过 `.pontis/` 中的结构化元数据工作：
-
-- **防幻觉**：AI 不会因误读原始格式而生成错误结论
-- **控成本**：工具层精确控制 AI 看到的信息粒度，避免无效 token 消耗
-- **高质量**：元数据经过多轮统计检测和 AI 总结，质量高于 AI 单次全量阅读
-
-### 两轮 AI 总结策略
-
-```
-原始数据 ──> LLM Round 1 ──> 详细描述 (detail) ──> LLM Round 2 ──> 精简摘要 (brief ≤ 50字)
-```
-
-先生成完整 detail 保留信息量，再从 detail 压缩 brief，确保摘要不遗漏重要特征。
-
-### 多层关系发现
-
-```
-物理外键 ──> 命名规则推断 ──> Jaccard 列值重叠 ──> LLM 语义验证
-  (Phase 6)     (Phase 6)        (Phase 7)          (Phase 8)
-```
-
-从强信号到弱信号逐层递进，最终由 LLM 确认语义关联。
-
-### 模块化虚属性系统
-
-虚属性（如 row_count、file_size）不在磁盘存储，读取时按需计算。新文件类型只需添加一个计算模块并注册，无需修改核心逻辑。
-
----
-
-## 项目结构
-
-```
+```text
 Pontis/
-├── agent/              # Agent 核心
-│   ├── agent.py        # PontisAgent 主循环
-│   ├── tools.py        # ToolRegistry
-│   ├── guardrail/      # Guardrail 实现
-│   └── prompt/         # Prompt 组装层
-├── extractor/          # 数据提取管线
-│   ├── engine.py       # 提取引擎主入口
-│   └── modules/        # 各阶段提取模块
-├── storage/            # 存储抽象层
-│   └── store.py        # Store 类
-├── tool_use/           # Agent 工具实现
-│   ├── glob/           # 模式搜索
-│   ├── meta/           # 元数据读取
-│   ├── read/           # 数据读取
-│   ├── query/          # SQL 查询
-│   ├── create_entity/  # 实体创建
-│   └── ...             # 其他工具
-├── utils/              # 共享工具
-│   └── llm.py          # LLMClient + YAML 配置加载
-├── scripts/            # 脚本
-│   ├── BIRD/           # BIRD 数据集脚本
-│   └── front-end/      # Web 前端
-├── docs/               # 文档
-├── example_data/       # 示例数据集
-│   ├── bird_dev/       # BIRD dev 数据集
-│   ├── bird_train/     # BIRD train 数据集
-│   └── bird_global/    # BIRD 跨库知识图谱
-├── global_config.py    # 全局配置（API Key、模型参数）
-├── pontis_cli.py       # CLI 入口
-└── pyproject.toml      # 项目配置
+├── agent/          # Agent loop, mode config, prompts and guardrails
+├── extractor/      # Extraction engine and modular analysis passes
+├── storage/        # Graph store, Cypher engine, source modules and backend
+├── tool/           # CLI and agent tools over the workspace
+├── docs/           # Architecture notes and design records
+├── scripts/        # Benchmarks, migration helpers and web prototype
+├── pontis_cli.py   # CLI entry point
+├── pontis.yml      # Example project registry
+└── pyproject.toml
 ```
 
----
+## Current Shape
 
-## 路线图
+Pontis is still in an active design phase. The direction is already clear: a graph-first workspace with virtual source modules, Cypher as the public graph surface, and tools/agents as consumers.
 
-### 近期
+Some implementation areas are intentionally transitional:
 
-| 计划 | 说明 |
-|------|------|
-| 增量更新 | 当前每次全量重建，需支持文件变更后的增量提取 |
-| 语义搜索 | search 工具接入 BM25/向量检索 |
-| lookup 工具完善 | 补充 LSH 索引，提升大规模列值查找性能 |
-| 文本分片 (.chunk) | 实现长文档自动分段实体 |
+- Storage still carries a few compatibility paths while the Cypher boundary is being tightened.
+- Extractors are moving toward “derive knowledge” rather than “own schema modeling”.
+- More source lifecycle work is planned around stale entities, provenance and incremental sync.
 
-### 中期
-
-| 计划 | 说明 |
-|------|------|
-| 列式文件支持 | Parquet、ORC、Lance 等格式 |
-| 开放表格格式 | Delta Lake、Iceberg 等 |
-| 图像数据 | JPG/PNG/WebP 图像文件元数据提取 |
-| 远程存储 | AWS S3、阿里云 OSS 等对象存储接入 |
-
-### 远期
-
-| 计划 | 说明 |
-|------|------|
-| 多数据库支持 | PostgreSQL、MySQL 等主流数据库连接器 |
-| 数据脱敏 | AI 总结环节的敏感数据过滤机制 |
-| SaaS 连接器 | Notion、Slack、Jira 等第三方数据源 |
-| 协作与权限 | 多用户协作、项目级权限控制 |
-| 语义层定义 | 基于知识图谱自动生成业务友好的数据视图 |
+Detailed design discussion lives in `docs/`; the README is only the front door.

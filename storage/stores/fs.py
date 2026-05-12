@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import builtins
+import csv
+import json
 import fnmatch
 import os
 from typing import Callable, Dict, Optional
+import xml.etree.ElementTree as ET
 
 from storage.enricher import enrich_meta
 from storage.src import SrcHandle
 from storage.stores.base import MatchQuery, MatchResult, StoreModule
+from storage.stores.text import is_text_file
 from storage.stores.utils import db as db_utils
 
 
@@ -47,6 +51,10 @@ def subdir_count(project_path: str, file_rel_path: str, entity_path: str = "") -
                if not e.startswith('.') and os.path.isdir(os.path.join(full, e)))
 
 
+def csv_delimiter(project_path: str, file_rel_path: str, entity_path: str = "") -> str:
+    return "\\t" if file_rel_path.lower().endswith(".tsv") else ","
+
+
 COMMON_FILE_PROPS: Dict[str, Callable] = {
     "file_size": file_size,
     "modified_at": modified_at,
@@ -65,7 +73,10 @@ PROP_REGISTRY: Dict[str, Dict[str, Callable]] = {
         "view_count": db_utils.view_count,
         "index_count": db_utils.index_count,
     },
-    "csv": dict(COMMON_FILE_PROPS),
+    "csv": {
+        **COMMON_FILE_PROPS,
+        "delimiter": csv_delimiter,
+    },
     "json": dict(COMMON_FILE_PROPS),
     "text": dict(COMMON_FILE_PROPS),
     "yaml": dict(COMMON_FILE_PROPS),
@@ -94,6 +105,7 @@ class FSModule(StoreModule):
         self.store = store
         self._dirs_cache: Dict[str, str] = {}
         self._inode_index: Dict[int, str] = {}
+        self._light_meta_cache: Dict[str, tuple[tuple[int, int], dict]] = {}
 
     def discover_virtual(self, pattern: str, label: str = None):
         results = []
@@ -164,7 +176,9 @@ class FSModule(StoreModule):
             return None
         meta = dict(meta)
         meta.setdefault("path", key)
-        return enrich_meta(meta, self.store._project_path, key, "", store=self)
+        meta = enrich_meta(meta, self.store._project_path, key, "", store=self)
+        meta.update({k: v for k, v in self._file_light_meta(key, meta).items() if k not in meta})
+        return meta
 
     def get_virtual_neighbors(self, key: str):
         return self._dir_adjacent(key)
@@ -305,9 +319,144 @@ class FSModule(StoreModule):
                 ".toml": ["file", "toml"],
                 ".hcl": ["file", "hcl"],
             }
-            return {"_inode": stat.st_ino, "labels": db_utils.file_labels(name) or label_map.get(ext, ["file"])}
+            labels = db_utils.file_labels(name) or label_map.get(ext)
+            if labels is None:
+                labels = ["file", "text"] if is_text_file(os.path.basename(name)) else ["file"]
+            return {"_inode": stat.st_ino, "labels": labels}
         except OSError:
             return None
+
+    def _file_light_meta(self, rel_path: str, meta: dict) -> dict:
+        labels = set(meta.get("labels", []) or [])
+        if not labels.intersection({"csv", "json", "yaml", "xml", "toml", "hcl", "text"}):
+            return {}
+        full = self._source_path(rel_path)
+        try:
+            stat = os.stat(full)
+        except OSError:
+            return {}
+        sig = (stat.st_mtime_ns, stat.st_size)
+        cached = self._light_meta_cache.get(rel_path)
+        if cached and cached[0] == sig:
+            return dict(cached[1])
+
+        result: dict = {}
+        if "csv" in labels:
+            result.update(self._csv_file_meta(rel_path, stat.st_size))
+        if labels.intersection({"json", "yaml", "xml", "toml", "hcl"}):
+            result.update(self._serialized_file_meta(rel_path, stat.st_size))
+        if "text" in labels:
+            result.update(self._text_file_meta(rel_path, stat.st_size))
+
+        self._light_meta_cache[rel_path] = (sig, result)
+        return dict(result)
+
+    def _csv_file_meta(self, rel_path: str, file_size_bytes: int) -> dict:
+        full = self._source_path(rel_path)
+        delimiter = "\t" if rel_path.lower().endswith(".tsv") else ","
+        result = {"delimiter": "\\t" if delimiter == "\t" else ","}
+        try:
+            with open(full, "r", encoding="utf-8", errors="ignore", newline="") as f:
+                reader = csv.reader(f, delimiter=delimiter)
+                headers = next(reader, None)
+                result["column_count"] = len(headers or [])
+                if file_size_bytes <= 5 * 1024 * 1024:
+                    result["row_count"] = sum(1 for _ in reader)
+        except Exception:
+            return result
+        return result
+
+    def _serialized_file_meta(self, rel_path: str, file_size_bytes: int) -> dict:
+        if file_size_bytes > 2 * 1024 * 1024:
+            return {}
+        full = self._source_path(rel_path)
+        suffix = os.path.splitext(rel_path)[1].lower()
+        try:
+            with open(full, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+        except OSError:
+            return {}
+        result = {"line_count": len(content.splitlines()), "char_count": len(content)}
+
+        if suffix in (".json", ".jsonl"):
+            try:
+                data = json.loads(content)
+            except Exception:
+                return {**result, "structure_type": "invalid_json"}
+            return {**result, **self._top_structure_meta(data)}
+        if suffix in (".yaml", ".yml"):
+            try:
+                import yaml
+                data = yaml.safe_load(content)
+            except Exception:
+                return {**result, "structure_type": "invalid_yaml"}
+            return {**result, **self._top_structure_meta(data, mapping_name="mapping", sequence_name="sequence")}
+        if suffix == ".xml":
+            try:
+                root = ET.fromstring(content)
+            except Exception:
+                return {**result, "structure_type": "invalid_xml"}
+            root_tag = root.tag.split("}")[-1] if "}" in root.tag else root.tag
+            child_tags = sorted({
+                child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                for child in root
+            })[:20]
+            return {**result, "structure_type": "xml", "root_element": root_tag, "child_elements": child_tags}
+        if suffix == ".toml":
+            try:
+                import tomllib
+                with open(full, "rb") as f:
+                    data = tomllib.load(f)
+            except Exception:
+                return {**result, "structure_type": "invalid_toml"}
+            return {**result, **self._top_structure_meta(data, mapping_name="table")}
+        if suffix == ".hcl":
+            return {**result, "structure_type": "hcl"}
+        return result
+
+    @staticmethod
+    def _top_structure_meta(data, mapping_name: str = "object", sequence_name: str = "array") -> dict:
+        if isinstance(data, dict):
+            return {
+                "structure_type": mapping_name,
+                "top_level_keys": list(data.keys())[:20],
+                "key_count": len(data),
+            }
+        if isinstance(data, list):
+            return {"structure_type": sequence_name, "array_length": len(data)}
+        return {"structure_type": type(data).__name__}
+
+    def _text_file_meta(self, rel_path: str, file_size_bytes: int) -> dict:
+        if file_size_bytes > 2 * 1024 * 1024:
+            return {}
+        full = self._source_path(rel_path)
+        encoding = self._detect_encoding(full)
+        try:
+            with open(full, "r", encoding=encoding, errors="ignore") as f:
+                content = f.read()
+        except OSError:
+            return {}
+        return {
+            "encoding": encoding,
+            "line_count": len(content.splitlines()),
+            "char_count": len(content),
+        }
+
+    @staticmethod
+    def _detect_encoding(path: str) -> str:
+        try:
+            import chardet
+        except ImportError:
+            return "utf-8"
+        try:
+            with open(path, "rb") as f:
+                raw = f.read(10000)
+            if not raw:
+                return "utf-8"
+            result = chardet.detect(raw)
+            return result.get("encoding") or "utf-8"
+        except Exception:
+            return "utf-8"
 
     def _rebuild_inode_index(self):
         self._inode_index.clear()

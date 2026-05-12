@@ -90,7 +90,7 @@ Player 和 Country 之间没有直接外键，需通过 Match 表中转。
 - Predicted: Agent 用了 `home_player_1` 做 JOIN
 - **注意**：Golden SQL 本身的 JOIN 条件 `Player.id = Match.id` 语义上也很奇怪
 
-**现状**：query 工具让 agent 能主动探索 Match 表结构，部分找到了路径但 JOIN 方式不同。根因仍是隐含关系（详见 `docs/implicit_relationship_gap.md`）。
+**现状**：query 工具让 agent 能主动探索 Match 表结构，部分找到了路径但 JOIN 方式不同。根因仍是隐含关系（详见 `implicit_relationship_gap.md`）。
 
 ---
 

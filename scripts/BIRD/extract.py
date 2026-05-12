@@ -17,12 +17,9 @@ from extractor.engine import (
 logger = logging.getLogger(__name__)
 
 STATIC_PIPELINE = [
-    "csv_basic",
-    "text_info",
     "db_column_stats_approx",
     "db_column_sample",
     "db_column_topk",
-    "csv_info",
     "db_fk_validate",
     "db_column_overlap",
 ]
