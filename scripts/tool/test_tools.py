@@ -124,6 +124,12 @@ def main():
     glob_cols = glob_command(ws, "books.sqlite/*:table/*:col")
     ok("glob lists path-style columns", "books.sqlite/address_status/status_id" in glob_cols, glob_cols)
 
+    display_table_meta = meta_command(ws, "books.sqlite/address_status:table", all=True)
+    ok("meta accepts glob-style table display ref", "address_status" in display_table_meta and "Error:" not in display_table_meta, display_table_meta)
+
+    display_col_meta = meta_command(ws, "books.sqlite/address_status/status_id:INTEGER:col", all=True)
+    ok("meta accepts glob-style column display ref", "status_id" in display_col_meta and "Error:" not in display_col_meta, display_col_meta)
+
     query_out = query_command(ws, 'SELECT status_id, address_status FROM address_status ORDER BY status_id', "books.sqlite")
     ok("query reads sqlite through src/db_connect", "Active" in query_out and "Inactive" in query_out, query_out)
 
@@ -244,6 +250,26 @@ def main():
 
     search_out = search_command(ws, "*", "address status ambiguity")
     ok("search finds created knowledge", "status_id_domain" in search_out, search_out)
+
+    create_entity_command(
+        ws,
+        "knowledge_rule:knowledge:convention",
+        meta={"brief": "status id ambiguity", "detail": "shared status id ambiguity"},
+    )
+    create_entity_command(
+        ws,
+        "knowledge_case:knowledge:example",
+        meta={"brief": "status id ambiguity", "detail": "shared status id ambiguity"},
+    )
+    knowledge_glob = glob_command(ws, "*:knowledge")
+    rule_idx = knowledge_glob.find("knowledge_rule:knowledge:convention")
+    example_idx = knowledge_glob.find("knowledge_case:knowledge:example")
+    ok("glob orders abstract knowledge before examples", rule_idx != -1 and example_idx != -1 and rule_idx < example_idx, knowledge_glob)
+
+    knowledge_search = search_command(ws, "*:knowledge", "status id ambiguity")
+    rule_search_idx = knowledge_search.find("knowledge_rule:knowledge:convention")
+    example_search_idx = knowledge_search.find("knowledge_case:knowledge:example")
+    ok("search orders abstract knowledge before examples on tie", rule_search_idx != -1 and example_search_idx != -1 and rule_search_idx < example_search_idx, knowledge_search)
 
     print("\n[5] add_edge")
     add_edge_out = add_edge_command(

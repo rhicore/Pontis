@@ -107,17 +107,18 @@ class Workspace:
         store = self._get_store(project)
         if not store:
             return []
-        parsed = parse_cypher(query, params=params)
-        target_store = store
-        if parsed.action == "RETURN":
-            project_name = getattr(store, "_project_name", "")
-            modules = self.modules(project_name)
-            if modules:
-                target_store = MergedStoreView(store, modules)
-        else:
-            self._materialize_for_write(parsed, store, project=project)
-        executor = CypherExecutor(target_store)
-        return executor.execute(parsed)
+        with store.execution_lock:
+            parsed = parse_cypher(query, params=params)
+            target_store = store
+            if parsed.action == "RETURN":
+                project_name = getattr(store, "_project_name", "")
+                modules = self.modules(project_name)
+                if modules:
+                    target_store = MergedStoreView(store, modules)
+            else:
+                self._materialize_for_write(parsed, store, project=project)
+            executor = CypherExecutor(target_store)
+            return executor.execute(parsed)
 
     def _materialize_for_write(self, parsed, store, project: str = None):
         """Materialize virtual MATCH results as part of Cypher write execution."""

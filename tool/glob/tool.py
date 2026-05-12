@@ -253,6 +253,23 @@ def _get_project_name(workspace) -> str:
     return "local"
 
 
+def _knowledge_priority(labels: List[str]) -> int:
+    label_set = set(labels or [])
+    if "knowledge" not in label_set:
+        return 50
+    order = {
+        "convention": 0,
+        "pattern": 1,
+        "lesson": 2,
+        "term": 3,
+        "example": 9,
+    }
+    for label, priority in order.items():
+        if label in label_set:
+            return priority
+    return 5
+
+
 def _display_ref_from_row(workspace, project: str | None, row: dict, main_var: str, main_info: dict) -> str:
     labels = set(main_info.get("labels", []))
     name = main_info.get("name", "?")
@@ -359,11 +376,12 @@ def glob_command(workspace, ref: str, offset: int = 0,
         labels = main_info.get("labels", [])
         info_str = get_info(labels, main_info or {})
         entity_name = format_entity_name(name, labels)
-        all_items.append((entity_name, info_str))
+        all_items.append((_knowledge_priority(labels), entity_name.lower(), entity_name, info_str))
 
     if not all_items:
         return "No objects found"
 
+    all_items.sort(key=lambda x: (x[0], x[1]))
     total = len(all_items)
     page = all_items[offset:offset + limit]
 
@@ -371,7 +389,7 @@ def glob_command(workspace, ref: str, offset: int = 0,
         return f"No results at offset {offset}. Total results: {total}"
 
     lines = []
-    for entity_name, info in page:
+    for _, _, entity_name, info in page:
         lines.append(f"{entity_name}\t{info}")
     output = "\n".join(lines)
 

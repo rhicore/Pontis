@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import uuid
 from typing import Dict, Iterator, List, Optional, Tuple
 
@@ -12,10 +13,30 @@ from storage.config import SourceConfig
 logger = logging.getLogger(__name__)
 
 _BASE_INTERNAL_FIELDS = set()
+_STORE_LOCKS_GUARD = threading.Lock()
+_STORE_LOCKS: Dict[str, threading.RLock] = {}
 
 
 def _gen_id() -> str:
     return f"ent_{uuid.uuid4().hex[:8]}"
+
+
+def _lock_key_for_store(project_path: str, backend_db_path: str | None) -> str:
+    if backend_db_path:
+        return f"db:{os.path.abspath(backend_db_path)}"
+    if project_path:
+        return f"project:{os.path.abspath(project_path)}"
+    return "project:<anonymous>"
+
+
+def _get_store_lock(project_path: str, backend_db_path: str | None) -> threading.RLock:
+    key = _lock_key_for_store(project_path, backend_db_path)
+    with _STORE_LOCKS_GUARD:
+        lock = _STORE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _STORE_LOCKS[key] = lock
+        return lock
 
 
 class Store:
@@ -34,6 +55,7 @@ class Store:
         self._pontis_root = os.path.join(self._project_path, ".pontis") if self._project_path else ""
         self._backend_db_path = getattr(backend, "_db_path", None)
         self._project_name = ""
+        self._execution_lock = _get_store_lock(self._project_path, self._backend_db_path)
 
         self._meta_cache: Dict[str, Optional[dict]] = {}
         self._id_index: Dict[str, dict] = {}
@@ -72,6 +94,10 @@ class Store:
 
     def add_module(self, module):
         self._modules.append(module)
+
+    @property
+    def execution_lock(self):
+        return self._execution_lock
 
     # ==================== backend delegates ====================
 

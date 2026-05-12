@@ -31,16 +31,19 @@ def get_reflection_prompt() -> str:
 
 创建或更新全局知识前，必须先检查已有记忆：
 
-1. 用 `glob("bird::*:knowledge")` 或 `glob("bird::*:convention")` / `*:pattern` / `*:lesson` 查看已有知识
-2. 对可能相关的实体用 `meta` 查看 detail
-3. 如果已有相似知识：
+1. 先用 `glob("bird::*:knowledge")` 浏览总表，再优先定位**最相关**的抽象知识实体；不要一上来就准备新建
+2. 这里的“抽象知识实体”明确指：`knowledge:convention`（规则/约定）、`knowledge:pattern`（通用解法模式）、`knowledge:lesson`（反面教训）、`knowledge:term`（术语或概念说明）
+3. 阅读顺序上，先看这些抽象知识实体；只有当它们仍不足以支持判断时，才继续看 `knowledge:example`
+4. 对最相关的已有实体用 `meta` 查看 detail，先判断它是否已经覆盖当前结论
+5. 如果已有相似知识：
    - 内容相同：跳过，不重复创建
    - 内容互补：用 `update_meta` 补充 detail，并增加支持证据
    - 内容矛盾：只有在你能明确指出旧知识为何不成立时，才覆盖修正
-4. 只有在确认没有相似知识时才 `create_entity`
+6. 只有在确认没有合适的已有实体时才 `create_entity`
 
 默认策略是：**优先 update，谨慎 create**。  
 如果你拿不准“是不是新类型知识”，通常应先视为已有类型的补充，而不是新建实体。
+如果某个已有实体只差补一句边界、补一个反例或补一个支持证据，就应该修改它，而不是再造一个新实体。
 如果最后没有足够强、足够硬的跨库经验，允许本轮**什么都不写**。
 如果你确实要新建，`ref` 必须严格写成：
 - `bird::<short_name>:knowledge:convention`
@@ -96,6 +99,7 @@ def get_reflection_prompt() -> str:
 仅当某类错误极不直觉，且一个抽象规则不足以说明时才创建。
 - ref: `bird::<short_name>:knowledge:example`
 - 示例也要尽量抽象，避免直接把当前题抄进 bird
+- example 不能孤立存在；只要保留或新建 example，就必须把它与对应的 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term` 连起来
 
 唯一允许的类型只有：`convention / pattern / lesson / example`。  
 不要创建 `term`，不要创建任何其他自定义类型。
@@ -117,6 +121,8 @@ def get_reflection_prompt() -> str:
 5. **bird 不是事实源**：已有 bird 记忆可能过时；若与当前数据库事实冲突，以当前事实为准，并在 detail 中修正旧结论
 6. **不确定就不写**：缺少足够证据、无法跨库迁移、无法明确归类的内容，不进入 bird
 7. **单库保守**：如果证据只来自一个数据库，结论必须明显抽象且边界清楚，否则不要升格成 bird
+8. **优先修改现有实体**：能通过补充、澄清、修正现有知识解决的问题，不要新建平行实体
+9. **example 必须挂靠抽象知识**：不要留下无法回溯到 `convention / pattern / lesson / term` 的孤立案例
 
 ---
 
@@ -126,9 +132,11 @@ def get_reflection_prompt() -> str:
 2. 从错误案例中找“重复失误模式”
 3. 从正确案例中找“稳定成功模式”
 4. 读取当前数据库结构，确认这些模式到底是库内特例还是跨库经验
-5. 查 `bird` 里是否已有相似知识
-6. 仅把跨库经验写入或更新到 `bird`
-7. 写入前再次检查 `ref` 是否是 `bird::<short_name>:knowledge:<type>` 的精确格式；如果不是，就不要写
+5. 查 `bird` 里最相关的已有知识，优先读 `convention / pattern / lesson / term` 这些抽象知识实体，再决定是否需要看 example
+6. 能更新就更新；只有确认没有合适实体时才新建
+7. 若决定新建，先明确说出你检查过哪些相关实体、为什么它们不够
+8. 如果保留或新建 `knowledge:example`，把它与对应的 `convention / pattern / lesson / term` 连边；若缺少对应抽象知识，先补抽象知识，再连边
+9. 写入前再次检查 `ref` 是否是 `bird::<short_name>:knowledge:<type>` 的精确格式；如果不是，就不要写
 
 ---
 

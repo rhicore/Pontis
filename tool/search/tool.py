@@ -8,6 +8,7 @@ from collections import Counter
 from typing import List, Optional
 
 from tool.config import TOOL_PAGINATION
+from tool.glob.tool import _apply_post_filters, _build_cypher, parse_urn
 from tool.utils.formatters import format_entity_name, get_info
 
 
@@ -43,6 +44,57 @@ def _get_project_name(workspace) -> str:
     return "local"
 
 
+def _knowledge_priority(labels: List[str]) -> int:
+    label_set = set(labels or [])
+    if "knowledge" not in label_set:
+        return 50
+    order = {
+        "convention": 0,
+        "pattern": 1,
+        "lesson": 2,
+        "term": 3,
+        "example": 9,
+    }
+    for label, priority in order.items():
+        if label in label_set:
+            return priority
+    return 5
+
+
+def _candidate_nodes(workspace, ref: str) -> list[dict] | None:
+    ref = (ref or "").strip()
+    if ref in ("", "*"):
+        return None
+
+    project, segments = parse_urn(ref)
+    cypher, post_filters = _build_cypher(segments)
+    rows = workspace.cypher(cypher, project=project)
+    if post_filters:
+        rows = _apply_post_filters(rows, post_filters)
+
+    out = []
+    seen = set()
+    for row in rows:
+        main_info = None
+        for var_key in reversed(list(row.keys())):
+            info = row.get(var_key)
+            if info and isinstance(info, dict):
+                main_info = info
+                break
+        if not main_info:
+            continue
+        key = main_info.get("id") or (
+            main_info.get("project", ""),
+            tuple(main_info.get("labels", [])),
+            main_info.get("name", ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(main_info)
+    return out
+
+
 def _bm25_search(workspace, query: str, ref: str = "",
                  k1: float = 1.5, b: float = 0.75) -> List[tuple]:
     """BM25 检索，只搜索 brief 和 detail 字段。"""
@@ -51,16 +103,15 @@ def _bm25_search(workspace, query: str, ref: str = "",
         return []
 
     docs = []
-    rows = workspace.cypher("MATCH (n) RETURN n")
-    for row in rows:
-        n = row.get("n", {})
+    candidates = _candidate_nodes(workspace, ref)
+    if candidates is None:
+        rows = workspace.cypher("MATCH (n) RETURN n")
+        candidates = [row.get("n", {}) for row in rows]
+
+    for n in candidates:
         name = n.get("name", "")
         if not name:
             continue
-        if ref and ref.strip() not in ("", "*"):
-            import fnmatch
-            if not fnmatch.fnmatch(name.lower(), ref.lower()):
-                continue
 
         brief = n.get("brief", "") or ""
         detail = n.get("detail", "") or ""
@@ -109,7 +160,7 @@ def _bm25_search(workspace, query: str, ref: str = "",
         if score > 0:
             results.append((score, ref_name, info, labels))
 
-    results.sort(key=lambda x: -x[0])
+    results.sort(key=lambda x: (-x[0], _knowledge_priority(x[3]), x[1].lower()))
     return results
 
 

@@ -16,13 +16,20 @@ def build_project_context(project_path: str, spec=None) -> str:
     else:
         active = [os.path.basename(os.path.abspath(project_path))]
 
-    parts = ["## 当前项目"]
+    parts = [
+        "## 当前项目",
+        "",
+        "你当前不是在一个单一图里工作，而是在若干个并行打开的项目里工作。",
+        "每个项目都有自己的实体集合；跨项目关系只表示关联，不改变实体归属。",
+        "处理问题时，先判断当前问题主要依赖哪个项目，再判断是否需要读取其他项目来补充经验或背景。",
+    ]
 
     for name in active:
         path = config.resolve_source_path(name)
         parts.append(f"### {name}")
         if path:
             parts.append(f"- 路径: {path}")
+            parts.append("- 角色: 一个独立项目；其中的实体默认先理解为该项目内部事实")
             overview = _get_project_overview(path)
             if overview:
                 parts.append(overview)
@@ -31,6 +38,7 @@ def build_project_context(project_path: str, spec=None) -> str:
             parts.append("- 类型: graph-only project")
             if graph_path:
                 parts.append(f"- 图存储: {graph_path}")
+            parts.append("- 角色: 共享知识或纯图谱项目；其中的实体通常用于提供经验、约定或跨项目关联")
 
     return "\n".join(parts)
 

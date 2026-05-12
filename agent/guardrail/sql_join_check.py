@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 from agent.guardrail_api import Guardrail, GuardrailContext, CallVerdict
-from agent.guardrail.sql_utils import get_db_prefix, has_read, extract_join_col_pairs, get_sql_from_messages, format_entity_list
+from agent.guardrail.sql_utils import has_read, extract_join_col_pairs, get_sql_from_messages
 
 
 _ENTITY_PATTERN = re.compile(
@@ -55,11 +55,12 @@ class BridgeTableCheck(Guardrail):
         if not edge_map:
             return ""
 
-        prefix = get_db_prefix(ctx)
+        project = _get_query_project(ctx)
         history = ctx.tool_history
 
         # 按提取的列对分组，查找对应关系实体
         lines = []
+        suggested_refs = []
         for t1, c1, t2, c2 in col_pairs:
             pair_key = (t1, c1, t2, c2)
             if not strict and pair_key in self._warned_pairs:
@@ -70,6 +71,7 @@ class BridgeTableCheck(Guardrail):
 
             # 筛选与列对匹配的关系实体
             matched = []
+            already_confirmed = False
             for e, rtype in entities:
                 # 匹配列名（大小写不敏感）
                 col_pair = _parse_col_pair(e)
@@ -84,10 +86,11 @@ class BridgeTableCheck(Guardrail):
                 )
                 if not pair_match:
                     continue
-                full_ref = f"{prefix}{e}"
-                if not strict and full_ref in self._warned:
+                full_ref = _qualify_ref(project, e)
+                if has_read(history, e) or has_read(history, full_ref):
+                    already_confirmed = True
                     continue
-                if has_read(history, e):
+                if not strict and full_ref in self._warned:
                     continue
                 if not strict:
                     self._warned.add(full_ref)
@@ -95,6 +98,9 @@ class BridgeTableCheck(Guardrail):
 
             if not strict:
                 self._warned_pairs.add(pair_key)
+
+            if already_confirmed:
+                continue
 
             if matched:
                 types = {rtype for _, rtype in matched}
@@ -106,6 +112,7 @@ class BridgeTableCheck(Guardrail):
                 lines.append(f"  - {t1}.{c1} ↔ {t2}.{c2}（{hint}）：")
                 for full_ref, _ in matched:
                     lines.append(f"    - {full_ref}")
+                    suggested_refs.append(full_ref)
             else:
                 lines.append(
                     f"  - {t1}.{c1} ↔ {t2}.{c2}（"
@@ -116,14 +123,17 @@ class BridgeTableCheck(Guardrail):
             return ""
 
         body = "\n".join(lines)
+        hint = _format_meta_examples(suggested_refs)
         if strict:
             return ("🚫 最终 SQL 输出被拦截：以下 JOIN 关系尚未确认，"
                     "必须先读取相关实体确认后才能输出最终 SQL：\n"
                     + body
-                    + "\n\n请使用 meta 工具读取对应实体，确保理解数据库结构和SQL正确性后再输出。")
+                    + hint
+                    + "\n\n请读取这些关系实体后，再重新思考并输出最终 SQL。")
         return ("⚠️ 以下 JOIN 关系尚未确认，如果你对关联语义有信心可以继续执行，"
                 "但建议先读取确认：\n"
-                + body)
+                + body
+                + hint)
 
     # ──────────────── 邻接图构建（workspace 缓存）────────────────
 
@@ -184,3 +194,41 @@ def _parse_col_pair(entity: str) -> Optional[tuple]:
     if len(parts_r) != 2:
         return None
     return (parts_l[0], parts_l[1], parts_r[0], parts_r[1])
+
+
+def _get_query_project(ctx) -> str:
+    workspace = ctx.workspace
+    if workspace is None:
+        return ""
+    active = list(getattr(workspace, "active_projects", []) or [])
+    for project in active:
+        if project != "bird":
+            return project
+    return active[0] if active else ""
+
+
+def _qualify_ref(project: str, entity: str) -> str:
+    if not project or "::" in entity:
+        return entity
+    return f"{project}::{entity}"
+
+
+def _format_meta_examples(refs: List[str]) -> str:
+    unique = []
+    seen = set()
+    for ref in refs:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        unique.append(ref)
+
+    if not unique:
+        return ""
+
+    sample = unique[:3]
+    lines = ["", "", "可直接复制使用这些 meta 调用："]
+    for ref in sample:
+        lines.append(f'  - meta({{"ref": "{ref}"}})')
+    if len(unique) > len(sample):
+        lines.append("  - 其余同理，直接对上面列出的 ref 调用 meta")
+    return "\n".join(lines)

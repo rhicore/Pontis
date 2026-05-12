@@ -15,6 +15,12 @@ def _split_project_ref(ref: str) -> tuple[str | None, str]:
     return project, local_ref
 
 
+def _strip_display_label_suffix(segment: str) -> str:
+    if ":" not in segment:
+        return segment
+    return segment.split(":", 1)[0]
+
+
 def resolve_entity(workspace, ref: str) -> tuple[dict | None, str | None]:
     """将 ref 解析为唯一节点元数据。"""
     project, local_ref = _split_project_ref(ref)
@@ -138,6 +144,8 @@ def _lookup_exact_named_nodes(workspace, project: str | None, local_ref: str) ->
 
 def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple[dict | None, str | None]:
     parts = [p for p in local_ref.split("/") if p]
+    normalized_parts = [_strip_display_label_suffix(p) for p in parts]
+    normalized_ref = "/".join(normalized_parts)
 
     rows = workspace.cypher(
         "MATCH (n {name: $name}) RETURN n",
@@ -145,13 +153,20 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
         project=project,
     )
     direct = [row.get("n") for row in rows if row.get("n")]
+    if not direct and normalized_ref != local_ref:
+        rows = workspace.cypher(
+            "MATCH (n {name: $name}) RETURN n",
+            params={"name": normalized_ref},
+            project=project,
+        )
+        direct = [row.get("n") for row in rows if row.get("n")]
     if len(direct) == 1:
         return direct[0], None
     if len(direct) > 1:
         return None, f"匹配到多个实体: {local_ref}"
 
-    if len(parts) == 2:
-        file_name, table_name = parts
+    if len(normalized_parts) == 2:
+        file_name, table_name = normalized_parts
         rows = workspace.cypher(
             "MATCH (f:file {name: $file_name})--(t:table {name: $table_name}) RETURN t",
             params={"file_name": file_name, "table_name": table_name},
@@ -170,9 +185,9 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
             return None, f"匹配到多个实体: {local_ref}"
         return nodes[0], None
 
-    if len(parts) == 3:
-        if parts[1] == "fks":
-            file_name, _, fk_name = parts
+    if len(normalized_parts) == 3:
+        if normalized_parts[1] == "fks":
+            file_name, _, fk_name = normalized_parts
             rows = workspace.cypher(
                 "MATCH (f:file {name: $file_name})--(t)--(k:fk) "
                 "WHERE k.name = $fk_name "
@@ -190,7 +205,7 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
                 return None, f"匹配到多个实体: {local_ref}"
             return nodes[0], None
 
-        file_name, table_name, col_name = parts
+        file_name, table_name, col_name = normalized_parts
         rows = workspace.cypher(
             "MATCH (f:file {name: $file_name})--(t)--(c:col) "
             "WHERE t.name = $table_name AND c.name = $col_name "

@@ -39,14 +39,11 @@ DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
 def get_bird_shared_workflow() -> str:
     """BIRD 场景下共享的解题/审题入口。"""
     return """\
-如果当前同时打开了多个项目，先把这些项目里存在的 `README` 全部读完，再做任何其他操作。
-读取 README 时，推荐直接使用 `meta({"ref": "<project>::README", "property": ["detail"]})` 全量读取正文。
-不要先用 `glob("<project>::README")`、`search` 或其他试探式调用确认 README 是否存在。
-通常在 BIRD 场景下，这意味着先读 `bird::README`，再读当前数据库项目的 `README`。
-在所有相关 `README` 读完之前，不要先去读知识节点、schema 节点、跑 query 或做其他探索。
-严格遵循 `bird::README` 中的解题/审题工作流与常见错误约束。
-若 `bird` 中存在相关 `knowledge:example`，可把它们当作 BIRD benchmark 偏好案例阅读：重点吸收其中总结出的 BIRD 写法偏好、schema 背景、易错点与迁移提示，而不是机械照抄历史 SQL。
-其余经验性规则不要在这里重复展开，统一以 `bird::README` 为准。"""
+1. 如果当前同时打开了多个项目，先把这些项目里存在的 `README` 读完，再做任何其他操作。读取 README 时，推荐直接使用 `meta({"ref": "<project>::README", "property": ["detail"]})`；不要先用 `glob` 或 `search` 试探 README 是否存在。
+2. 读完 README 后，先理解当前数据库的 schema、列语义、关系和消歧信息；`query` 只用于验证，不要拿来代替 schema 探索。
+3. 在输出最终 SQL 之前，至少浏览一次 `bird` 里的知识实体总表，看看有没有相关经验；推荐先用 `glob("bird::*:knowledge")`。
+4. 先看“抽象知识实体”，再看案例。这里的“抽象知识实体”明确指四类：`knowledge:convention`（规则/约定）、`knowledge:pattern`（通用解法模式）、`knowledge:lesson`（反面教训）、`knowledge:term`（术语或概念说明）。优先读取这些实体；只有当这些抽象知识仍不足以支持判断时，才继续看 `knowledge:example`。
+5. 其余解题流程、审题约束和常见错误，统一遵循 `bird::README`。"""
 
 
 def assign_question_ids(questions: list[dict]) -> list[dict]:
@@ -124,13 +121,12 @@ QUERY_PROMPT_TEMPLATE = """\
 - 其余审题与纠错规则，统一遵循 `bird::README`
 
 关于 `bird` 经验的使用：
-- `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` 优先作为通用决策依据
-- `knowledge:example` 只应被当作“解释型 benchmark case”阅读：它的作用是说明 BIRD 在某类题上通常偏好怎么写、为什么这么写、模型最容易错在哪里
-- 阅读 `knowledge:example` 时，优先吸收其中总结出的 `bird_bias`、`schema_background`、`why_this_case_matters`、`transfer_hint`、`mistake_summary`
-- 如果命中某条 `knowledge:example`，应继续查看它相连的抽象知识节点；若抽象知识已存在，优先吸收抽象结论，再用 example 理解其证据和适用边界
-- 不要把 `knowledge:example` 当作可直接改名复用的 SQL 模板；不要机械复用其中的具体表名、列名、字面值
-- 如果当前题与某个 example 高度同型，允许参考其 golden SQL 的结构偏好和决策偏好，但最终 SQL 必须完全基于当前库 schema 和当前题 evidence 落地
-- `knowledge:example` 主要回答四件事：这题问什么、golden SQL 为什么这样写、它体现了哪种 BIRD 偏好、模型最容易在哪一步想错
+- 最终输出 SQL 前，至少先浏览一次 `bird` 的知识实体总表，确认是否存在相关经验
+- 优先读取抽象知识实体，也就是：`knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term`
+- 其中：`convention` 表示应遵循或避免的规则，`pattern` 表示可复用的通用解法，`lesson` 表示已经总结出的错误模式，`term` 表示辅助理解题意或知识节点的术语/概念说明
+- `knowledge:example` 放在后面；只有当抽象知识仍不足以支持判断时，才把它当作解释型案例阅读
+- 不要机械照抄 example 里的 SQL、表名、列名或字面值
+- 如果先看到某个 example，也要回头优先查看它相连的抽象知识，再决定是否参考这个案例
 
 输出协议：
 - 回复中只包含一个 ```sql``` 代码块和一条 SELECT 语句，代码块前后不要有任何文字
@@ -176,19 +172,21 @@ Guardrail / blocks：
 {trace_detail}
 
 你的任务：
-1. 先判断这道题的模式是否已被 `bird` 覆盖。
-2. 若已覆盖，不要重复 create；最多在确有新信息时 update。
-3. 若未覆盖，且结论明显可跨库迁移，再写入 `bird::<short_name>:knowledge:<type>`。
+1. 先在 `bird` 里找最相关的已有知识，优先看抽象知识实体；不要一上来就新建。
+2. 若找到相关实体，优先判断它是应保持不动、补充更新，还是局部修正；默认优先 `update`，不要重复 `create`。
+3. 只有在确认不存在合适的已有实体时，且结论明显可跨库迁移，才新建 `bird::<short_name>:knowledge:<type>`。
 4. 只允许写 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:example`。
 5. 若写 `knowledge:example`，它必须是“解释型 benchmark case”，不是裸 few-shot，也不是只存 question + golden SQL。
 6. `knowledge:example` 至少应包含：`question`、必要 `evidence`、`golden_sql`、`db_id`、`question_id`、`difficulty`、`schema_background`、`bird_bias`、`why_this_case_matters`、`transfer_hint`。
 7. 如果该题本轮做错了，但你仍决定沉淀为 `knowledge:example`，还应补：`predicted_sql`、`error_type`、`mistake_summary`、`wrong_assumption`、`fix_hint`。
 8. `knowledge:example` 允许包含具体数据库/表/列信息，但必须服务于“解释 BIRD 偏好”；不要让它退化成无解释的样题堆积。
 9. 不要写入完整推理过程、原始 chain-of-thought 或逐轮自言自语；如果需要保留思路，只保留高密度摘要，例如 `decision_summary`、`mistake_summary`、`verification_note`、`rejected_alternatives`。
-10. 写入 `knowledge:example` 后，应主动把它与相关的 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term` 建立普通图边；当前图是无向边，不需要表达方向，重点是保证后续可以从抽象知识导航到案例，也可以从案例导航回抽象知识。
-11. 若相关抽象知识节点尚不存在，先创建或更新抽象知识节点，再把 `knowledge:example` 与其连边；不要让 example 长期作为孤立节点存在。
-12. `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` 仍应尽量去 schema 化，不要把具体字段名直接写成通用规则。
-13. 如果只是执行流程失误、没有新的跨库经验缺口，也没有值得沉淀的 BIRD 偏好案例，明确说明“不写入任何知识实体”。
+10. `knowledge:example` 不能作为孤立案例存在。只要决定保留或新建 example，就必须把它与对应的抽象知识实体建立普通图边。
+11. 这里的“对应抽象知识实体”明确指与该 example 对应的 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term`。后续应该能从抽象知识导航到 example，也能从 example 导航回抽象知识。
+12. 如果相关抽象知识实体已经存在，优先直接连边；如果抽象知识还缺一层总结，先创建或更新抽象知识实体，再把 example 与它连边。
+13. `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` 仍应尽量去 schema 化，不要把具体字段名直接写成通用规则。
+14. 如果只是执行流程失误、没有新的跨库经验缺口，也没有值得沉淀的 BIRD 偏好案例，明确说明“不写入任何知识实体”。
+15. 写任何新实体前，先明确说明你检查过哪些最相关的已有实体、为什么它们不够、为什么必须新建；如果这个论证不成立，就不要新建。
 """
 
 
@@ -271,8 +269,6 @@ class TraceCollector:
                 args_full = json.dumps(entry["args"], ensure_ascii=False) if entry["args"] else "{}"
                 detail_lines.append(f"Round {entry['round']} | {entry['name']}({args_full})")
                 result = entry["result"] or "(no result)"
-                if len(result) > 500:
-                    result = result[:500] + "..."
                 detail_lines.append(f"  {result}")
             else:
                 detail_lines.append(self._format_block_header(entry))
@@ -299,19 +295,17 @@ class TraceCollector:
             if entry["type"] != "block":
                 continue
             label = f"{entry['name']}({_args_brief(entry['args'])})" if entry.get("name") else "text response"
-            msg = _truncate(_normalize_block_message(entry["msg"]), 180)
+            msg = _normalize_block_message(entry["msg"])
             parts.append(f"[{entry['source']}] {label}: {msg}")
         return "\n".join(parts) if parts else "(none)"
 
-    def detailed_trace_text(self, max_result_chars: int = 400) -> str:
+    def detailed_trace_text(self) -> str:
         lines = []
         for entry in self._entries:
             if entry["type"] == "call":
                 args_full = json.dumps(entry["args"], ensure_ascii=False) if entry["args"] else "{}"
                 lines.append(f"Round {entry['round']} | {entry['name']}({args_full})")
                 result = entry["result"] or "(no result)"
-                if len(result) > max_result_chars:
-                    result = result[:max_result_chars] + "..."
                 lines.append(f"  {result}")
             else:
                 lines.append(self._format_block_header(entry))
@@ -342,12 +336,6 @@ def _args_brief(args: dict) -> str:
 
 def _normalize_block_message(msg: str) -> str:
     return " ".join((msg or "").split())
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    return text[: max_chars - 3] + "..."
 
 
 # ═══════════════════════════════════════════════════════════
