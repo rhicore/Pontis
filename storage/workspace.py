@@ -17,6 +17,7 @@ class Workspace:
         self._config = load_config(config_path, project_path)
         self._stores: dict = {}  # project_name → Store
         self._modules: dict = {}  # project_name → [StoreModule, ...]
+        self._merged_views: dict = {}  # project_name -> (store_version, module_sig, MergedStoreView)
 
         # 确定要激活的项目列表
         if active_projects:
@@ -109,16 +110,33 @@ class Workspace:
             return []
         with store.execution_lock:
             parsed = parse_cypher(query, params=params)
+            project_name = getattr(store, "_project_name", "")
             target_store = store
             if parsed.action == "RETURN":
-                project_name = getattr(store, "_project_name", "")
                 modules = self.modules(project_name)
                 if modules:
-                    target_store = MergedStoreView(store, modules)
+                    target_store = self._get_merged_view(store, project_name, modules)
             else:
+                self._merged_views.pop(project_name, None)
                 self._materialize_for_write(parsed, store, project=project)
             executor = CypherExecutor(target_store)
-            return executor.execute(parsed)
+            rows = executor.execute(parsed)
+            if parsed.action != "RETURN":
+                self._merged_views.pop(project_name, None)
+            return rows
+
+    def _get_merged_view(self, store, project_name: str, modules: list):
+        module_sig = tuple(id(mod) for mod in modules)
+        store_version = store._read_version()
+        cached = self._merged_views.get(project_name)
+        if cached:
+            cached_version, cached_sig, cached_view = cached
+            if cached_version == store_version and cached_sig == module_sig:
+                return cached_view
+
+        view = MergedStoreView(store, modules)
+        self._merged_views[project_name] = (store_version, module_sig, view)
+        return view
 
     def _materialize_for_write(self, parsed, store, project: str = None):
         """Materialize virtual MATCH results as part of Cypher write execution."""

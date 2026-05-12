@@ -43,6 +43,12 @@ Raw data stays where it is. Pontis builds a structured reasoning layer over it.
 
 ```mermaid
 flowchart LR
+    subgraph Clients[Human / Automated Clients]
+        direction TB
+        U[User]
+        EP[Explorer<br/>agent-driven exploration <br/>and graph update]
+    end
+
     W[Workspace<br/>multi-project / multi-source<br/>Cypher API]
 
     subgraph Graph[Graph Layer]
@@ -67,10 +73,11 @@ flowchart LR
     SM --> DB
     SM --> EXT
 
-    EX[Extractor<br/>automated scripts analyze data<br/>and update the graph] --> W
-    EP[Explorer<br/>agent-driven exploration<br/>and graph refinement] --> W
+    EX[Extractor<br/>automated scripts analysis <br/>and graph update] --> W
     T[Tools<br/>glob, meta, search, query, cypher] --> W
     A[Pontis Agent<br/>LLM + guardrails] --> T
+    U <--> A
+    EP <--> A
 ```
 
 The important boundary is simple: **`Workspace.cypher(...)` is the graph API.**
@@ -123,7 +130,7 @@ python -m extractor list
 Run selected extraction passes on a project:
 
 ```bash
-python -m extractor run db_column_stats,db_column_topk,db_fk_validate ./my_project
+python -m extractor run db_column_stats_approx,db_fk_validate ./my_project
 ```
 
 Start an interactive agent session:

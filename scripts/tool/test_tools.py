@@ -18,6 +18,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 
 from storage.workspace import Workspace
+from agent.guardrail.sql_utils import get_meta_read
 from extractor.modules.utils.refs import get_entity_meta
 from tool.DB_query.tool import query_command
 from tool.FS_grep.tool import grep_command
@@ -118,6 +119,15 @@ def main():
     col_meta = meta_command(ws, "books.sqlite/address_status/status_id", all=True)
     ok("meta resolves path-style column ref", "status_id" in col_meta and "Error:" not in col_meta, col_meta)
 
+    short_col_meta = meta_command(ws, "address_status/status_id", all=True)
+    ok("meta resolves table/col exact path", "status_id" in short_col_meta and "Error:" not in short_col_meta, short_col_meta)
+
+    dotted_col_meta = meta_command(ws, "address_status.status_id", all=True)
+    ok("meta resolves dotted table.col ref", "status_id" in dotted_col_meta and "Error:" not in dotted_col_meta, dotted_col_meta)
+
+    file_dotted_col_meta = meta_command(ws, "books.sqlite/address_status.status_id", all=True)
+    ok("meta resolves file/table.col ref", "status_id" in file_dotted_col_meta and "Error:" not in file_dotted_col_meta, file_dotted_col_meta)
+
     print("\n[2] Read tools")
     glob_tables = glob_command(ws, "books.sqlite/*:table")
     ok("glob lists db tables", "books.sqlite/address_status" in glob_tables and "books.sqlite/order_status" in glob_tables, glob_tables)
@@ -130,6 +140,9 @@ def main():
 
     display_col_meta = meta_command(ws, "books.sqlite/address_status/status_id:INTEGER:col", all=True)
     ok("meta accepts glob-style column display ref", "status_id" in display_col_meta and "Error:" not in display_col_meta, display_col_meta)
+
+    typed_short_col_meta = meta_command(ws, "address_status/status_id:INTEGER:col", all=True)
+    ok("meta accepts typed table/col display ref", "status_id" in typed_short_col_meta and "Error:" not in typed_short_col_meta, typed_short_col_meta)
 
     query_out = query_command(ws, 'SELECT status_id, address_status FROM address_status ORDER BY status_id', "books.sqlite")
     ok("query reads sqlite through src/db_connect", "Active" in query_out and "Inactive" in query_out, query_out)
@@ -207,6 +220,18 @@ def main():
 
     bash_out = bash_command("printf 'tool-bash-ok'", cwd=project)
     ok("bash executes command", "tool-bash-ok" in bash_out, bash_out)
+
+    mixed_history = [
+        ("glob", {"ref": "books.sqlite/*:table"}, glob_tables),
+        ("search", {"ref": "*", "query": "status"}, "books.sqlite/address_status:table"),
+        ("meta", {"ref": "books.sqlite/address_status"}, table_meta),
+    ]
+    read_refs = get_meta_read(mixed_history)
+    ok(
+        "SQL guardrail ignores non-meta history when checking reads",
+        "books.sqlite/address_status" in read_refs and "address_status" in read_refs,
+        str(read_refs),
+    )
 
     print("\n[3] update_meta")
     detail_text = (
@@ -333,6 +358,10 @@ def main():
     ok("search indexes normalized bird knowledge instead of placeholder brief/detail", "placeholder_rule:knowledge:convention" in placeholder_search, placeholder_search)
     placeholder_glob = glob_command(bird_ws, "bird::placeholder_rule:knowledge:convention")
     ok("glob shows normalized bird knowledge info instead of placeholder text", "use row-level filtering" in placeholder_glob or "wrapped a direct condition" in placeholder_glob, placeholder_glob)
+
+    relaxed_knowledge_meta = meta_command(bird_ws, "evidence_literal_not_data:knowledge:convention", property=["brief"])
+    ok("meta tolerates knowledge sublabel mismatch when base knowledge name is unique", "证据字面条件值优先于数据库采样值" in relaxed_knowledge_meta and "Error:" not in relaxed_knowledge_meta, relaxed_knowledge_meta)
+
     delete_command(bird_ws, "bird::placeholder_rule:knowledge:convention")
 
     print("\n[5] add_edge")
@@ -348,7 +377,11 @@ def main():
     ok("add_edge accepts path ref endpoint", "已添加 1 条边" in add_edge_out, add_edge_out)
 
     disambig_meta = meta_command(ws, "status_id_domain", all=True)
-    ok("meta shows related columns after add_edge", "customer_address/status_id" in disambig_meta, disambig_meta)
+    ok(
+        "meta shows related columns after add_edge",
+        disambig_meta.count("status_id:INT:col") == 3 and "customer_address/status_id" not in disambig_meta,
+        disambig_meta,
+    )
 
     rel_meta = meta_command(ws, "books.sqlite/order_history.status_id->books.sqlite/order_status.status_id", all=True)
     ok("meta accepts path-style relation ref with db prefixes", "order_history.status_id->order_status.status_id" in rel_meta and "Error:" not in rel_meta, rel_meta)

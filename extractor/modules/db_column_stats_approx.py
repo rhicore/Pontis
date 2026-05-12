@@ -1,16 +1,19 @@
-"""Approximate Column Statistics Generator - 列近似统计生成器
+"""Approximate DB column profiler.
 
-职责：
-- 匹配所有 *.db 下的列节点
-- 使用一趟列扫描计算精确 null / min/max / avg 等轻量统计
-- 使用 datasketches CPC sketch 近似估算 cardinality
+This pass intentionally merges the old responsibilities of:
+- db_column_stats_approx
+- db_column_sample
+- db_column_topk
 
-独立执行：
-    python -m extractor.db_column_stats_approx ./my_data
+Each column is scanned once. The pass produces:
+- approximate cardinality via CPC sketch
+- lightweight null / numeric / text stats
+- small distinct sample
+- approximate top-k frequent values
 """
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from datasketches import cpc_sketch
 
@@ -23,11 +26,17 @@ logger = logging.getLogger(__name__)
 _NUMERIC_TYPES = {"INT", "INTEGER", "REAL", "FLOAT"}
 _TEXT_TYPES = {"TEXT", "VARCHAR", "CHAR"}
 _CPC_LG_K = 11
+_DEFAULT_SAMPLE_SIZE = 10
+_DEFAULT_TOPK = 5
 
 
-def generate(workspace: Workspace) -> None:
-    """为所有列节点生成近似统计信息。"""
-    logger.info("=== Generating approximate column statistics ===")
+def generate(
+    workspace: Workspace,
+    sample_size: int = _DEFAULT_SAMPLE_SIZE,
+    topk_size: int = _DEFAULT_TOPK,
+) -> None:
+    """Generate approximate profile fields for all DB columns."""
+    logger.info("=== Generating approximate DB column profiles ===")
 
     for ext_suffix in [".db", ".sqlite", ".sqlite3", ".duckdb"]:
         db_rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext_suffix}' RETURN n")
@@ -36,23 +45,44 @@ def generate(workspace: Workspace) -> None:
             tbl_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t:table) RETURN t')
             for tbl_row in tbl_rows:
                 table_ref = tbl_row["t"]["name"]
-                col_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
+                col_rows = workspace.cypher(
+                    f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c'
+                )
                 for col_row in col_rows:
                     col_name = col_row["c"]["name"]
                     col_ref = db_column_ref(db_ref, table_ref, col_name)
                     try:
-                        _generate_for_column(col_ref, db_ref, table_ref, workspace)
+                        _generate_for_column(
+                            col_ref,
+                            db_ref,
+                            table_ref,
+                            workspace,
+                            sample_size=sample_size,
+                            topk_size=topk_size,
+                        )
                     except Exception as e:
-                        logger.warning(f"Failed to generate approximate stats for {col_ref}: {e}")
+                        logger.warning(f"Failed to generate approximate profile for {col_ref}: {e}")
 
 
-def _generate_for_column(col_ref: str, db_ref: str, table_ref: str, workspace: Workspace) -> bool:
+def _needs_profile(meta: dict) -> bool:
+    required = ("cardinality_method", "sample", "topk")
+    return any(key not in meta for key in required)
+
+
+def _generate_for_column(
+    col_ref: str,
+    db_ref: str,
+    table_ref: str,
+    workspace: Workspace,
+    *,
+    sample_size: int,
+    topk_size: int,
+) -> bool:
     meta = get_entity_meta(workspace, col_ref)
     if not meta:
         return False
 
-    # 允许老的精确结果存在；如果已经有近似 cardinality 也不重复跑。
-    if meta.get("cardinality_method") == "cpc_sketch":
+    if not _needs_profile(meta):
         return False
 
     col_name = meta.get("name", col_ref)
@@ -63,25 +93,38 @@ def _generate_for_column(col_ref: str, db_ref: str, table_ref: str, workspace: W
     if not file_exists(workspace, db_rel):
         return False
 
-    stats = _calculate_stats_approx(db_rel, table_ref, col_name, data_type, workspace)
+    stats = _profile_column(
+        db_rel,
+        table_ref,
+        col_name,
+        data_type,
+        workspace,
+        sample_size=sample_size,
+        topk_size=topk_size,
+    )
     if not stats:
         return False
 
     set_entity_meta(workspace, col_ref, stats)
     logger.info(
-        "  Approx stats: %s (cardinality≈%s)",
+        "  Profiled: %s (cardinality≈%s, sample=%s, topk=%s)",
         col_ref,
         stats.get("cardinality"),
+        len(stats.get("sample", [])),
+        len(stats.get("topk", [])),
     )
     return True
 
 
-def _calculate_stats_approx(
+def _profile_column(
     db_rel: str,
     table: str,
     column: str,
     data_type: str,
     workspace: Workspace,
+    *,
+    sample_size: int,
+    topk_size: int,
 ) -> Optional[dict]:
     try:
         with open_sqlite_db(workspace, db_rel) as conn:
@@ -102,16 +145,23 @@ def _calculate_stats_approx(
             min_length = None
             max_length = None
 
+            sample = []
+            sample_seen = set()
+            topk_counter = _SpaceSavingCounter(max(topk_size * 4, 16))
+
             for (value,) in cursor:
                 total_rows += 1
                 if value is None:
                     null_count += 1
                     continue
 
-                if isinstance(value, (int, float, str)):
-                    sketch.update(value)
-                else:
-                    sketch.update(str(value))
+                sketch.update(_stable_token(value))
+                topk_counter.offer(_normalize_value(value))
+
+                sample_token = _sample_token(value)
+                if len(sample) < sample_size and sample_token not in sample_seen:
+                    sample_seen.add(sample_token)
+                    sample.append(_normalize_value(value))
 
                 if data_type in _NUMERIC_TYPES:
                     try:
@@ -138,6 +188,10 @@ def _calculate_stats_approx(
                     "cardinality_method": "cpc_sketch",
                     "null_count": 0,
                     "null_percentage": 0.0,
+                    "sample": [],
+                    "sample_method": "single_pass_distinct_prefix",
+                    "topk": [],
+                    "topk_method": "space_saving",
                 }
 
             stats = {
@@ -147,6 +201,10 @@ def _calculate_stats_approx(
                 "cardinality_method": "cpc_sketch",
                 "null_count": null_count,
                 "null_percentage": round((null_count / total_rows) * 100, 2),
+                "sample": sample,
+                "sample_method": "single_pass_distinct_prefix",
+                "topk": topk_counter.to_meta(topk_size, total_rows),
+                "topk_method": "space_saving",
             }
 
             if data_type in _NUMERIC_TYPES and numeric_count > 0:
@@ -160,8 +218,39 @@ def _calculate_stats_approx(
 
             return stats
     except Exception as e:
-        logger.debug(f"Could not calculate approximate stats: {e}")
+        logger.debug(f"Could not profile column: {e}")
         return None
+
+
+class _SpaceSavingCounter:
+    """Approximate heavy-hitter counter for one-pass top-k."""
+
+    def __init__(self, capacity: int):
+        self.capacity = max(1, capacity)
+        self._counts: dict[Any, int] = {}
+
+    def offer(self, value: Any) -> None:
+        if value in self._counts:
+            self._counts[value] += 1
+            return
+        if len(self._counts) < self.capacity:
+            self._counts[value] = 1
+            return
+
+        smallest_key = min(self._counts, key=self._counts.get)
+        smallest_count = self._counts.pop(smallest_key)
+        self._counts[value] = smallest_count + 1
+
+    def to_meta(self, k: int, total_rows: int) -> list[dict[str, Any]]:
+        rows = sorted(self._counts.items(), key=lambda item: (-item[1], str(item[0])))
+        out = []
+        for value, count in rows[:k]:
+            out.append({
+                "value": value,
+                "count": count,
+                "percentage": round((count / total_rows) * 100, 2),
+            })
+        return out
 
 
 def _normalize_number(value):
@@ -169,4 +258,22 @@ def _normalize_number(value):
         return None
     if float(value).is_integer():
         return int(value)
+    return value
+
+
+def _stable_token(value: Any) -> str:
+    if isinstance(value, bytes):
+        return f"bytes:{len(value)}:{value[:32]!r}"
+    return f"{type(value).__name__}:{value!r}"
+
+
+def _sample_token(value: Any) -> str:
+    if isinstance(value, bytes):
+        return f"bytes:{len(value)}:{value[:32]!r}"
+    return repr(value)
+
+
+def _normalize_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return f"<BLOB:{len(value)}bytes>"
     return value

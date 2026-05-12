@@ -23,6 +23,15 @@ def display_ref_for_node(
     """Build a display ref consistent with glob/meta outputs."""
     labels = set(node_meta.get("labels", []))
     name = node_meta.get("name", "?")
+    path = node_meta.get("path")
+    ref = node_meta.get("ref")
+
+    if path and ({"file", "dir"} & labels):
+        return path
+
+    inline_ref = _display_ref_from_ref(labels, ref)
+    if inline_ref:
+        return inline_ref
 
     if "col" in labels:
         table_name = None
@@ -79,3 +88,14 @@ def display_ref_for_node(
                 return f"{f.get('name', '')}/{name}"
 
     return name
+
+
+def _display_ref_from_ref(labels: set[str], ref: str | None) -> str | None:
+    if not ref or "--" not in ref:
+        return None
+    parts = [part for part in ref.split("--") if part]
+    if "col" in labels and len(parts) >= 3:
+        return f"{parts[0]}/{parts[1]}/{parts[2]}"
+    if ("table" in labels or "view" in labels) and len(parts) >= 2:
+        return f"{parts[0]}/{parts[1]}"
+    return None

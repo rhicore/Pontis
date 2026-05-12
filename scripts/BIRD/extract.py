@@ -18,8 +18,6 @@ logger = logging.getLogger(__name__)
 
 STATIC_PIPELINE = [
     "db_column_stats_approx",
-    "db_column_sample",
-    "db_column_topk",
     "db_fk_validate",
     "db_column_overlap",
 ]

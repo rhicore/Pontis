@@ -37,10 +37,10 @@ def _format_neighbor_list(workspace, project_name: str, project: str | None, nei
         return "No matching neighbors found"
     lines = []
     for meta in neighbors:
-        display_ref = display_ref_for_node(workspace, project, meta)
         labels = meta.get("labels", [])
+        short_name = meta.get("name") or display_ref_for_node(workspace, project, meta)
         info = get_info(labels, meta)
-        entity_name = format_entity_name(display_ref, labels)
+        entity_name = format_entity_name(short_name, labels)
         lines.append(f"{project_name}::\t{entity_name}\t{info}")
     return "\n".join(lines)
 
@@ -79,6 +79,29 @@ def meta_command(
     labels = meta.get("labels", [])
     display_ref = display_ref_for_node(workspace, project, meta)
 
+    props = None
+    if property:
+        if isinstance(property, str):
+            props = [property]
+        else:
+            props = list(property)
+
+    if props and not (set(props) & _ADJACENCY_KEYS):
+        from tool.utils.formatters import _format_meta_value
+        lines = []
+        missing = []
+        raw_meta = dict(meta)
+        for p in props:
+            value = get_display_property_value(raw_meta, labels, p)
+            if value is None:
+                missing.append(p)
+            else:
+                lines.append(f"{p}: {_format_meta_value(value, None)}")
+        if missing:
+            available = sorted(raw_meta.keys())
+            lines.append(f"未找到: {', '.join(missing)}. 可用字段: {', '.join(available)}")
+        return "\n".join(lines)
+
     neighbor_rows = workspace.cypher(
         f"MATCH {match}--(m) RETURN m",
         params=selector_params(selector),
@@ -106,17 +129,10 @@ def meta_command(
         group_key = _adjacency_group_key(adj_labels)
         if not group_key:
             continue
-        disp = display_ref_for_node(workspace, project, adj_meta)
+        short_name = adj_meta.get("name") or display_ref_for_node(workspace, project, adj_meta)
         info = get_info(adj_labels, adj_meta)
-        entity_name = format_entity_name(disp, adj_labels)
+        entity_name = format_entity_name(short_name, adj_labels)
         adjacency.setdefault(group_key, []).append(f"  {entity_name}\t{info}")
-
-    props = None
-    if property:
-        if isinstance(property, str):
-            props = [property]
-        else:
-            props = list(property)
 
     if props:
         from tool.utils.formatters import _format_meta_value

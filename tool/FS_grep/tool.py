@@ -114,6 +114,12 @@ def _run_ripgrep(params: GrepParams, search_path: str) -> List[str]:
 
     args.append(search_path)
 
+    if params.output_mode == 'content' and params.head_limit > 0:
+        try:
+            return _run_ripgrep_streaming(args, search_path, params.offset + params.head_limit + 1)
+        except FileNotFoundError:
+            return _python_grep_fallback(params, search_path)
+
     try:
         result = subprocess.run(
             args, capture_output=True, text=True, timeout=30,
@@ -124,6 +130,37 @@ def _run_ripgrep(params: GrepParams, search_path: str) -> List[str]:
         return []
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return _python_grep_fallback(params, search_path)
+
+
+def _run_ripgrep_streaming(args: List[str], search_path: str, max_lines: int) -> List[str]:
+    """Read enough rg output for pagination without buffering huge result sets."""
+    cwd = search_path if os.path.isdir(search_path) else os.path.dirname(search_path)
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            cwd=cwd,
+        )
+        lines: List[str] = []
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            lines.append(line.rstrip("\n"))
+            if len(lines) >= max_lines:
+                proc.terminate()
+                break
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return lines
+    except FileNotFoundError:
+        raise
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
 
 
 def _python_grep_fallback(params: GrepParams, search_path: str) -> List[str]:

@@ -7,6 +7,7 @@ This directory now keeps only the documents that still describe the current syst
 ### Architecture
 
 - [architecture/store_architecture.md](architecture/store_architecture.md): current storage-layer structure and boundaries.
+- [architecture/storage_performance_report.md](architecture/storage_performance_report.md): current storage performance findings and optimization plan.
 - [architecture/storage_flat_source_modules_plan.md](architecture/storage_flat_source_modules_plan.md): current plan for flattening `storage/stores/*` modules.
 
 ### Agent

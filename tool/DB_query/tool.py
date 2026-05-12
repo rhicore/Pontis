@@ -40,6 +40,8 @@ def query_command(workspace, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -
         file: Database file path (relative to project root)
         limit: Max rows to return
     """
+    limit = _DEFAULT_LIMIT if limit is None else max(0, int(limit))
+
     # 安全校验：只允许只读 SELECT / PRAGMA（包括 WITH ... SELECT）
     stripped = sql.strip()
     if not _is_readonly_sql(stripped):
@@ -84,16 +86,15 @@ def query_command(workspace, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -
         cursor.execute(sql)
 
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
-        rows = cursor.fetchall()
+        rows = cursor.fetchmany(max(0, limit) + 1)
+        has_more = len(rows) > limit
+        display_rows = rows[:limit]
         conn.close()
     except Exception as e:
         return f"SQL 执行错误: {type(e).__name__}: {e}"
 
     if not columns:
         return "(查询无结果)"
-
-    total = len(rows)
-    display_rows = rows[:limit]
 
     # 格式化输出
     lines = []
@@ -124,9 +125,9 @@ def query_command(workspace, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -
 
     # 截断过长结果
     if len(result) > _MAX_RESULT_CHARS:
-        result = result[:_MAX_RESULT_CHARS] + f"\n... (截断，共 {total} 行)"
+        result = result[:_MAX_RESULT_CHARS] + "\n... (截断)"
 
-    if total > limit:
-        result += f"\n(共 {total} 行，显示前 {limit} 行)"
+    if has_more:
+        result += f"\n(结果超过 {limit} 行，仅显示前 {limit} 行)"
 
     return result

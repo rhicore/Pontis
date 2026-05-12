@@ -21,6 +21,12 @@ def _strip_display_label_suffix(segment: str) -> str:
     return segment.split(":", 1)[0]
 
 
+def _strip_outer_quotes(text: str) -> str:
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1]
+    return text
+
+
 def _normalize_relation_endpoint(text: str) -> str:
     parts = [p for p in text.split("/") if p]
     if not parts:
@@ -30,8 +36,6 @@ def _normalize_relation_endpoint(text: str) -> str:
     last = parts[-1]
     dotted = [p for p in last.split(".") if p]
     if len(dotted) >= 3:
-        # Be lenient with malformed relation refs like `table.alias.column` and
-        # collapse them back to `table.column`.
         return f"{dotted[0]}.{dotted[-1]}"
     return last
 
@@ -47,15 +51,57 @@ def _normalize_relation_ref(local_ref: str) -> str | None:
     return f"{left_norm}->{right_norm}"
 
 
+def _query_projects(workspace, project: str | None) -> list[str | None]:
+    if project:
+        return [project]
+    active = list(getattr(workspace, "active_projects", []) or [])
+    return active or [None]
+
+
+def _run_cypher_projects(workspace, query: str, params: dict, project: str | None) -> list[dict]:
+    rows = []
+    for candidate in _query_projects(workspace, project):
+        rows.extend(workspace.cypher(query, params=params, project=candidate))
+    return rows
+
+
+def _candidate_structured_refs(local_ref: str) -> list[str]:
+    candidates: list[str] = []
+
+    def add(ref: str):
+        if ref and ref not in candidates:
+            candidates.append(ref)
+
+    add(local_ref)
+
+    if "->" in local_ref:
+        return candidates
+
+    if "/" in local_ref:
+        parts = [p for p in local_ref.split("/") if p]
+        if parts:
+            last = parts[-1]
+            dotted = [p for p in last.split(".") if p]
+            if len(dotted) == 2:
+                add("/".join(parts[:-1] + dotted))
+    else:
+        dotted = [p for p in local_ref.split(".") if p]
+        if len(dotted) == 2:
+            add(f"{dotted[0]}/{dotted[1]}")
+
+    return candidates
+
+
 def resolve_entity(workspace, ref: str) -> tuple[dict | None, str | None]:
     """将 ref 解析为唯一节点元数据。"""
     project, local_ref = _split_project_ref(ref)
-    local_ref = dotted_ref_to_path(local_ref)
+    local_ref = _strip_outer_quotes(dotted_ref_to_path(local_ref))
 
     has_wildcards = any(c in local_ref for c in "*?[]")
     is_path_like = "/" in local_ref
+    looks_structured = is_path_like or ("." in local_ref and "->" not in local_ref)
 
-    if not has_wildcards and not is_path_like:
+    if not has_wildcards and not looks_structured:
         nodes = _lookup_exact_named_nodes(workspace, project, local_ref)
         if not nodes:
             return None, f"未找到匹配的实体: {ref}"
@@ -63,34 +109,13 @@ def resolve_entity(workspace, ref: str) -> tuple[dict | None, str | None]:
             return None, f"匹配到多个实体: {ref}"
         return nodes[0], None
 
-    if not has_wildcards and is_path_like:
+    if not has_wildcards and looks_structured:
         node, err = _resolve_exact_path(workspace, project, local_ref)
         if err or not node:
             return None, err or f"未找到匹配的实体: {ref}"
         return node, None
 
-    from tool.glob.tool import glob_command
-
-    output = glob_command(workspace, ref)
-    if output.startswith("No objects"):
-        return None, f"未找到匹配的实体: {ref}"
-
-    lines = [l for l in output.strip().split("\n") if l.strip() and not l.startswith("(")]
-    matched = []
-    seen = set()
-    for line in lines:
-        parts = line.split("\t")
-        if not parts:
-            continue
-        display_ref = parts[0]
-        node, err = _resolve_exact_path(workspace, project, display_ref)
-        if err or not node:
-            continue
-        key = (node.get("project", ""), tuple(node.get("labels", [])), node.get("name", ""))
-        if key not in seen:
-            seen.add(key)
-            matched.append(node)
-
+    matched = _lookup_urn_nodes(workspace, ref)
     if not matched:
         return None, f"未找到匹配的实体: {ref}"
     if len(matched) > 1:
@@ -138,7 +163,8 @@ def selector_params(selector: dict, base: dict | None = None, name_param: str = 
 
 
 def _lookup_exact_named_nodes(workspace, project: str | None, local_ref: str) -> list[dict]:
-    rows = workspace.cypher(
+    rows = _run_cypher_projects(
+        workspace,
         "MATCH (n {name: $name}) RETURN n",
         params={"name": local_ref},
         project=project,
@@ -167,12 +193,14 @@ def _lookup_exact_named_nodes(workspace, project: str | None, local_ref: str) ->
         return nodes
     base_name = parts[0]
     requested_labels = set(parts[1:])
-    rows = workspace.cypher(
+    rows = _run_cypher_projects(
+        workspace,
         "MATCH (n {name: $name}) RETURN n",
         params={"name": base_name},
         project=project,
     )
     matched = []
+    fallback_knowledge = []
     for row in rows:
         node = row.get("n")
         if not node:
@@ -180,13 +208,22 @@ def _lookup_exact_named_nodes(workspace, project: str | None, local_ref: str) ->
         labels = set(node.get("labels", []))
         if requested_labels.issubset(labels):
             matched.append(node)
-    return _dedupe_nodes(matched)
+        if "knowledge" in requested_labels and "knowledge" in labels:
+            fallback_knowledge.append(node)
+    matched = _dedupe_nodes(matched)
+    if matched:
+        return matched
+    fallback_knowledge = _dedupe_nodes(fallback_knowledge)
+    if len(fallback_knowledge) == 1:
+        return fallback_knowledge
+    return matched
 
 
 def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple[dict | None, str | None]:
     normalized_relation_ref = _normalize_relation_ref(local_ref)
     if normalized_relation_ref:
-        rows = workspace.cypher(
+        rows = _run_cypher_projects(
+            workspace,
             "MATCH (n {name: $name}) RETURN n",
             params={"name": normalized_relation_ref},
             project=project,
@@ -197,37 +234,57 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
         if len(nodes) > 1:
             return None, f"匹配到多个实体: {local_ref}"
 
-    parts = [p for p in local_ref.split("/") if p]
+    parts = _split_structured_path(local_ref)
     normalized_parts = [_strip_display_label_suffix(p) for p in parts]
     normalized_ref = "/".join(normalized_parts)
+    requested_labels = _display_labels_from_last_segment(parts[-1] if parts else "")
 
-    rows = workspace.cypher(
-        "MATCH (n {name: $name}) RETURN n",
-        params={"name": local_ref},
-        project=project,
-    )
-    direct = [row.get("n") for row in rows if row.get("n")]
-    if not direct and normalized_ref != local_ref:
-        rows = workspace.cypher(
-            "MATCH (n {name: $name}) RETURN n",
-            params={"name": normalized_ref},
-            project=project,
+    candidates = []
+    for ref in _candidate_structured_refs(normalized_ref):
+        if ref not in candidates:
+            candidates.append(ref)
+    if normalized_ref != local_ref:
+        for ref in _candidate_structured_refs(local_ref):
+            if ref not in candidates:
+                candidates.append(ref)
+
+    for candidate in candidates:
+        direct = _resolve_direct_candidate(workspace, project, candidate, requested_labels)
+        if len(direct) == 1:
+            return direct[0], None
+        if len(direct) > 1:
+            return None, f"匹配到多个实体: {local_ref}"
+
+        urn = f"{project}::{candidate}" if project else candidate
+        nodes = _lookup_urn_nodes(workspace, urn)
+        if requested_labels:
+            nodes = _filter_by_requested_labels(nodes, requested_labels)
+        if len(nodes) == 1:
+            return nodes[0], None
+        if len(nodes) > 1:
+            return None, f"匹配到多个实体: {local_ref}"
+
+    if requested_labels and parts:
+        tail_name = _strip_display_label_suffix(parts[-1])
+        fallback = _lookup_exact_named_nodes(
+            workspace, project, f"{tail_name}:{':'.join(sorted(requested_labels))}"
         )
-        direct = [row.get("n") for row in rows if row.get("n")]
-    if len(direct) == 1:
-        return direct[0], None
-    if len(direct) > 1:
-        return None, f"匹配到多个实体: {local_ref}"
+        if len(fallback) == 1:
+            return fallback[0], None
+        if len(fallback) > 1:
+            return None, f"匹配到多个实体: {local_ref}"
 
     if len(normalized_parts) == 2:
         file_name, table_name = normalized_parts
-        rows = workspace.cypher(
+        rows = _run_cypher_projects(
+            workspace,
             "MATCH (f:file {name: $file_name})--(t:table {name: $table_name}) RETURN t",
             params={"file_name": file_name, "table_name": table_name},
             project=project,
         )
         if not rows:
-            rows = workspace.cypher(
+            rows = _run_cypher_projects(
+                workspace,
                 "MATCH (f:file {name: $file_name})--(t:view {name: $table_name}) RETURN t",
                 params={"file_name": file_name, "table_name": table_name},
                 project=project,
@@ -242,14 +299,12 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
     if len(normalized_parts) == 3:
         if normalized_parts[1] == "fks":
             file_name, _, fk_name = normalized_parts
-            rows = workspace.cypher(
+            rows = _run_cypher_projects(
+                workspace,
                 "MATCH (f:file {name: $file_name})--(t)--(k:fk) "
                 "WHERE k.name = $fk_name "
                 "RETURN k",
-                params={
-                    "file_name": file_name,
-                    "fk_name": fk_name,
-                },
+                params={"file_name": file_name, "fk_name": fk_name},
                 project=project,
             )
             nodes = _dedupe_nodes(row.get("k") for row in rows if row.get("k"))
@@ -260,18 +315,17 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
             return nodes[0], None
 
         file_name, table_name, col_name = normalized_parts
-        rows = workspace.cypher(
+        rows = _run_cypher_projects(
+            workspace,
             "MATCH (f:file {name: $file_name})--(t)--(c:col) "
             "WHERE t.name = $table_name AND c.name = $col_name "
             "RETURN c",
-            params={
-                "file_name": file_name,
-                "table_name": table_name,
-                "col_name": col_name,
-            },
+            params={"file_name": file_name, "table_name": table_name, "col_name": col_name},
             project=project,
         )
         nodes = _dedupe_nodes(row.get("c") for row in rows if row.get("c"))
+        if requested_labels:
+            nodes = _filter_by_requested_labels(nodes, requested_labels)
         if not nodes:
             return None, f"未找到匹配的实体: {local_ref}"
         if len(nodes) > 1:
@@ -279,6 +333,43 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
         return nodes[0], None
 
     return None, f"未找到匹配的实体: {local_ref}"
+
+
+def _resolve_direct_candidate(
+    workspace,
+    project: str | None,
+    candidate: str,
+    requested_labels: set[str],
+) -> list[dict]:
+    direct = []
+    rows = _run_cypher_projects(
+        workspace,
+        "MATCH (n {name: $name}) RETURN n",
+        params={"name": candidate},
+        project=project,
+    )
+    direct = [row.get("n") for row in rows if row.get("n")]
+    if not direct:
+        rows = _run_cypher_projects(
+            workspace,
+            "MATCH (n {path: $path}) RETURN n",
+            params={"path": candidate},
+            project=project,
+        )
+        direct = [row.get("n") for row in rows if row.get("n")]
+    candidate_parts = _split_structured_path(candidate)
+    candidate_ref = _ref_from_path_parts(candidate_parts)
+    if not direct and candidate_ref:
+        rows = _run_cypher_projects(
+            workspace,
+            "MATCH (n {ref: $ref}) RETURN n",
+            params={"ref": candidate_ref},
+            project=project,
+        )
+        direct = [row.get("n") for row in rows if row.get("n")]
+    if requested_labels:
+        direct = _filter_by_requested_labels(direct, requested_labels)
+    return _dedupe_nodes(direct)
 
 
 def _dedupe_nodes(nodes) -> list[dict]:
@@ -291,3 +382,58 @@ def _dedupe_nodes(nodes) -> list[dict]:
         seen.add(key)
         result.append(node)
     return result
+
+
+def _lookup_urn_nodes(workspace, ref: str) -> list[dict]:
+    from tool.glob.tool import _apply_post_filters, _build_cypher, parse_urn
+
+    project, segments = parse_urn(ref)
+    cypher, post_filters = _build_cypher(segments)
+
+    rows = []
+    for candidate in _query_projects(workspace, project):
+        project_rows = workspace.cypher(cypher, project=candidate)
+        if post_filters:
+            project_rows = _apply_post_filters(project_rows, post_filters)
+        rows.extend(project_rows)
+
+    nodes = []
+    for row in rows:
+        for var_key in reversed(list(row.keys())):
+            node = row.get(var_key)
+            if isinstance(node, dict):
+                nodes.append(node)
+                break
+    return _dedupe_nodes(nodes)
+
+
+def _ref_from_path_parts(parts: list[str]) -> str | None:
+    if len(parts) == 2:
+        return f"{parts[0]}--{parts[1]}"
+    if len(parts) == 3 and parts[1] == "fks":
+        return f"{parts[0]}--{parts[2]}"
+    if len(parts) == 3:
+        return f"{parts[0]}--{parts[1]}--{parts[2]}"
+    return None
+
+
+def _display_labels_from_last_segment(segment: str) -> set[str]:
+    if ":" not in segment:
+        return set()
+    parts = [p for p in segment.split(":")[1:] if p]
+    return set(parts)
+
+
+def _split_structured_path(local_ref: str) -> list[str]:
+    parts = [p for p in local_ref.split("/") if p]
+    if len(parts) > 3:
+        return [parts[0], parts[1], "/".join(parts[2:])]
+    return parts
+
+
+def _filter_by_requested_labels(nodes: list[dict], requested_labels: set[str]) -> list[dict]:
+    matched = [
+        node for node in nodes
+        if requested_labels.issubset(set(node.get("labels", [])))
+    ]
+    return matched or nodes

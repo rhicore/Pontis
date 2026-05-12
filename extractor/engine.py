@@ -3,6 +3,7 @@
 供全量提取、部分执行等脚本共用的基础设施。
 """
 import logging
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -38,9 +39,11 @@ def file_log_handler(
     datefmt: str = _DEFAULT_LOG_DATE,
 ) -> Iterator[logging.FileHandler]:
     """临时挂载文件日志 handler。"""
+    owner_thread_id = threading.get_ident()
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(level)
     fh.setFormatter(logging.Formatter(fmt, datefmt))
+    fh.addFilter(lambda record: record.thread == owner_thread_id)
     root = logging.getLogger()
     root.addHandler(fh)
     try:
@@ -56,10 +59,7 @@ def get_registry() -> Dict[str, object]:
     if _REGISTRY is not None:
         return _REGISTRY
 
-    from extractor.modules.db_column_stats import generate as db_column_stats
     from extractor.modules.db_column_stats_approx import generate as db_column_stats_approx
-    from extractor.modules.db_column_sample import generate as db_column_sample
-    from extractor.modules.db_column_topk import generate as db_column_topk
     from extractor.modules.csv_column_stats import generate as csv_column_stats
     from extractor.modules.csv_column_sample import generate as csv_column_sample
     from extractor.modules.csv_column_topk import generate as csv_column_topk
@@ -69,10 +69,7 @@ def get_registry() -> Dict[str, object]:
     from extractor.modules.ai_db_column_summary import generate as ai_db_column_summary
 
     _REGISTRY = {
-        "db_column_stats": db_column_stats,
         "db_column_stats_approx": db_column_stats_approx,
-        "db_column_sample": db_column_sample,
-        "db_column_topk": db_column_topk,
         "csv_column_stats": csv_column_stats,
         "csv_column_sample": csv_column_sample,
         "csv_column_topk": csv_column_topk,

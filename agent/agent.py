@@ -78,12 +78,14 @@ class PontusAgent:
     # ──────────────── LLM 调用 ────────────────
 
     def _call_llm(self):
+        tool_defs = self.tools.get_definitions()
         kwargs = {
             "model": self.config["model"],
             "messages": self.messages,
-            "tools": self.tools.get_definitions(),
             "max_tokens": self.config.get("max_tokens", 8192),
         }
+        if tool_defs:
+            kwargs["tools"] = tool_defs
         if self.config.get("thinking", False):
             kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
             kwargs["reasoning_effort"] = self.config.get("thinking_effort", "high")

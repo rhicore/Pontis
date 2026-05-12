@@ -107,10 +107,9 @@ def get_meta_read(tool_history: list) -> frozenset:
     """从 tool_history 提取所有已读 meta 实体路径。"""
     read = set()
     for name, args, _ in tool_history:
-        if name == "meta":
-            ref = args.get("ref", "")
-        if not ref:
-            ref = args.get("path", "")
+        if name != "meta":
+            continue
+        ref = args.get("ref", "") or args.get("path", "")
         for entity in _normalized_ref_variants(ref):
             read.add(entity)
     return frozenset(read)

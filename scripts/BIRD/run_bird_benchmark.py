@@ -138,6 +138,18 @@ QUERY_PROMPT_TEMPLATE = """\
 """
 
 
+SQL_FALLBACK_PROMPT = """\
+上一轮没有输出可解析的最终 SQL。
+
+现在禁止继续探索，基于当前对话里已经获得的 schema、样例、知识和查询结果，直接给出你能判断的最佳 SQLite 查询。
+
+输出协议：
+- 只输出一个 ```sql``` 代码块
+- 代码块里只放一条 SELECT 语句
+- 不要解释，不要调用工具
+"""
+
+
 REFLECTION_CASE_PROMPT_TEMPLATE = """\
 你现在仍在同一个对话上下文里：刚刚的 benchmark 消息、工具调用和最终 SQL 都还在。
 你不是新开一个会话，而是继续复盘这条已经完成并已验证结果的 benchmark case。
@@ -414,6 +426,24 @@ def run_reflection_for_case(db_id: str, q: dict,
     (bench_dir / f"q{qid}.reflection.log").write_text("\n".join(out), encoding="utf-8")
 
 
+def force_sql_response(agent, response: str) -> str:
+    """When the benchmark agent ends without SQL, force a no-tool final answer."""
+    from agent.tools import ToolRegistry
+
+    saved_tools = agent.tools
+    agent.tools = ToolRegistry()
+    try:
+        fallback = agent.chat(SQL_FALLBACK_PROMPT)
+    finally:
+        agent.tools = saved_tools
+
+    if not fallback:
+        return response or ""
+    if not response:
+        return fallback
+    return response.rstrip() + "\n\n" + fallback
+
+
 # ═══════════════════════════════════════════════════════════
 #  汇总日志
 # ═══════════════════════════════════════════════════════════
@@ -652,6 +682,8 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         t0 = time.time()
         try:
             response = agent.chat(prompt)
+            if extract_sql(response) is None:
+                response = force_sql_response(agent, response)
             elapsed = time.time() - t0
         except Exception as e:
             elapsed = time.time() - t0
@@ -727,7 +759,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="BIRD Text-to-SQL Benchmark")
     parser.add_argument("--train", action="store_true", help="跑 train 集（默认跑 dev）")
-    parser.add_argument("--db", help="只测试指定数据库")
+    parser.add_argument("--db", help="只测试指定数据库；多个库用逗号分隔")
     parser.add_argument("--skip-extract", action="store_true", help="跳过提取")
     parser.add_argument("--force-extract", action="store_true", help="强制重新提取")
     parser.add_argument("--extract-only", action="store_true", help="只提取不测试")
@@ -757,7 +789,8 @@ def main():
 
     data = assign_question_ids(json.loads(json_path.read_text(encoding="utf-8")))
     if args.db:
-        data = [q for q in data if q['db_id'] == args.db]
+        db_filter = {x.strip() for x in args.db.split(",") if x.strip()}
+        data = [q for q in data if q['db_id'] in db_filter]
     if args.qids:
         qid_set = {int(x.strip()) for x in args.qids.split(",")}
         data = [q for q in data if q["question_id"] in qid_set]

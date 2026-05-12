@@ -10,7 +10,6 @@ _SUB_AGENT_ADDITIONS = r"""## 子智能体须知
 1. **优先用 task 中的信息** — 如果 task 已提供数据信息，不要重复调工具获取
 2. **连续写入** — 为多个实体写 brief/detail 时，连续调用 update_meta，中间不要穿插任何读取操作
 3. **每个调用都要有价值** — 读数据是为了写数据。如果已经有足够信息写 summary，直接写
-4. **优先使用路径 ref** — 表使用 `file/table`，列使用 `file/table/column`，不要使用 `table.column`
 """
 
 

@@ -139,9 +139,8 @@ def _bm25_search(workspace, query: str, ref: str = "",
 
         labels = n.get("labels", [])
         info = get_info(labels, n)
-        display_ref = display_ref_for_node(workspace, n.get("project"), n)
 
-        docs.append((name, display_ref, tokens, info, labels, n.get("project")))
+        docs.append((name, n, tokens, info, labels, n.get("project")))
 
     if not docs:
         return []
@@ -161,7 +160,7 @@ def _bm25_search(workspace, query: str, ref: str = "",
         idf[t] = math.log((N - df.get(t, 0) + 0.5) / (df.get(t, 0) + 0.5) + 1)
 
     results = []
-    for ref_name, display_ref, tokens, info, labels, node_project in docs:
+    for ref_name, node_meta, tokens, info, labels, node_project in docs:
         tf = Counter(tokens)
         dl = len(tokens)
         score = 0.0
@@ -179,7 +178,7 @@ def _bm25_search(workspace, query: str, ref: str = "",
             continue
         if len(query_token_set) >= 3 and len(matched_terms) < 2:
             continue
-        results.append((score, ref_name, display_ref, info, labels, node_project))
+        results.append((score, ref_name, node_meta, info, labels, node_project))
 
     results.sort(key=lambda x: (-x[0], _knowledge_priority(x[4]), x[1].lower()))
     return results
@@ -211,7 +210,8 @@ def search_command(
         return f"No results at offset {offset}. Total results: {total}"
 
     lines = []
-    for score, ref_name, display_ref, info, labels, node_project in page:
+    for score, ref_name, node_meta, info, labels, node_project in page:
+        display_ref = display_ref_for_node(workspace, node_project, node_meta)
         entity_name = format_entity_name(display_ref, labels)
         project_name = node_project or _get_project_name(workspace)
         lines.append(f"{project_name}::\t{entity_name}\t{info}")
