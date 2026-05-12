@@ -14,6 +14,7 @@ from agent.prompt._readonly import get_readonly_additions
 from agent.prompt._writer import get_writer_additions
 from agent.prompt._sub_agent import get_sub_agent_additions
 from agent.prompt._project import build_project_context
+from agent.prompt._README import build_readme_context
 from agent.prompt._reflection import get_reflection_prompt
 
 # ──────────────────────────────────────────────────────────
@@ -33,6 +34,7 @@ PROMPT_PROVIDERS = {
     "sub_agent":  lambda s: get_sub_agent_additions(),
     "reflection": lambda s: get_reflection_prompt(),
     "project":    lambda s: build_project_context(s.project_path, spec=s),
+    "readme":     lambda s: build_readme_context(s.project_path, spec=s),
 }
 
 

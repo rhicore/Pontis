@@ -70,7 +70,12 @@ class SQLEntityCheck(Guardrail):
                 if suppress_repeats:
                     self._warned.add(ref)
         for table, col in extract_col_refs(sql, aliases):
-            if not has_read(tool_history, col):
+            # Reading the parent table meta usually exposes the relevant column list
+            # and table-level semantics, so do not force an extra column read on top
+            # of an already-read table.
+            if has_read(tool_history, table) or has_read(tool_history, col):
+                continue
+            else:
                 ref = resolve_entity_ref(workspace, table, col)
                 if not ref:
                     continue

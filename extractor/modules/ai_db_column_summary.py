@@ -16,7 +16,8 @@ from extractor.modules.utils.refs import db_column_ref, db_table_ref, get_entity
 
 logger = logging.getLogger(__name__)
 
-MAX_WORKERS = 4
+COL_MAX_WORKERS = 4
+TABLE_MAX_WORKERS = 4
 
 _ANALYSIS_INSTRUCTIONS = """\
 请用中文分析这个数据库列，重点关注以下方面：
@@ -51,7 +52,7 @@ def generate(workspace: Workspace, config=None) -> None:
 
 
 def _process_database(db_ref: str, workspace: Workspace, llm) -> None:
-    """处理一个数据库：按表分组，每组并行。"""
+    """处理一个数据库：按表分组，表与表之间也并行。"""
     # 按 table 分组
     table_groups = defaultdict(list)
     tbl_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t:table) RETURN t')
@@ -66,12 +67,18 @@ def _process_database(db_ref: str, workspace: Workspace, llm) -> None:
         return
 
     total = 0
-    for table_ref, col_refs in table_groups.items():
-        try:
-            n = _process_table(db_ref, table_ref, col_refs, workspace, llm)
-            total += n
-        except Exception as e:
-            logger.warning(f"Failed for {db_ref}::{table_ref}: {e}")
+    table_workers = min(TABLE_MAX_WORKERS, max(1, len(table_groups)))
+    with ThreadPoolExecutor(max_workers=table_workers) as executor:
+        futures = {
+            executor.submit(_process_table, db_ref, table_ref, col_refs, workspace, llm): table_ref
+            for table_ref, col_refs in table_groups.items()
+        }
+        for future in as_completed(futures):
+            table_ref = futures[future]
+            try:
+                total += future.result()
+            except Exception as e:
+                logger.warning(f"Failed for {db_ref}::{table_ref}: {e}")
 
     if total:
         logger.info(f"  AI column summary: {db_ref} ({total} cols)")
@@ -97,7 +104,7 @@ def _process_table(db_ref: str, table_ref: str, col_refs: list,
     ]
 
     done = 0
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=COL_MAX_WORKERS) as executor:
         futures = {}
         for ref, meta in pending:
             col_block = _build_column_block(ref, meta)

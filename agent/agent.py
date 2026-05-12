@@ -73,6 +73,7 @@ class PontusAgent:
         self.guardrails = guardrails or []
         self._tool_history: List[Tuple[str, dict, str]] = []
         self.messages = [{"role": "system", "content": self.system_prompt}]
+        self._empty_text_retries = 0
 
     # ──────────────── LLM 调用 ────────────────
 
@@ -173,6 +174,18 @@ class PontusAgent:
                 yield {"type": "blocked", "guardrail": sources, "content": message}
                 self.messages.append({"role": "user", "content": message})
                 return
+            if not (msg.content or "").strip():
+                self._empty_text_retries += 1
+                if self._empty_text_retries >= 3:
+                    self.logger.info("Empty assistant text response repeated; aborting empty loop")
+                    yield {"type": "done", "content": ""}
+                    return
+                repair = "请直接给出最终文本响应；不要留空。若任务要求 SQL，就只输出最终 SQL 代码块。"
+                self.logger.info("Empty assistant text response; reprompting")
+                yield {"type": "warning", "guardrail": "EmptyTextResponse", "content": repair}
+                self.messages.append({"role": "user", "content": repair})
+                return
+            self._empty_text_retries = 0
             if msg.content:
                 self.logger.info(f"Agent done: {msg.content}")
             yield {"type": "done", "content": msg.content or ""}
@@ -266,6 +279,7 @@ class PontusAgent:
     def chat(self, user_input: str) -> str:
         """Send user input and return the agent's final text response."""
         result = ""
+        self._empty_text_retries = 0
         for event in self._run_loop(user_input):
             if event["type"] == "tool_call":
                 print(f"  \033[90m[{event['name']}({event['arguments']})]\033[0m")
@@ -291,7 +305,43 @@ class PontusAgent:
         try:
             return json.loads(args_str)
         except (json.JSONDecodeError, TypeError):
-            return {}
+            if not isinstance(args_str, str):
+                return {}
+            repaired = []
+            in_string = False
+            escape = False
+            for ch in args_str:
+                if in_string:
+                    if escape:
+                        repaired.append(ch)
+                        escape = False
+                        continue
+                    if ch == "\\":
+                        repaired.append(ch)
+                        escape = True
+                        continue
+                    if ch == '"':
+                        repaired.append(ch)
+                        in_string = False
+                        continue
+                    if ch == "\n":
+                        repaired.append("\\n")
+                        continue
+                    if ch == "\r":
+                        repaired.append("\\r")
+                        continue
+                    if ch == "\t":
+                        repaired.append("\\t")
+                        continue
+                    repaired.append(ch)
+                    continue
+                repaired.append(ch)
+                if ch == '"':
+                    in_string = True
+            try:
+                return json.loads("".join(repaired))
+            except json.JSONDecodeError:
+                return {}
 
     def reset_conversation(self):
         """Clear conversation history (keep system prompt) for a fresh session."""

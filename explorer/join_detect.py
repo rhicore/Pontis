@@ -75,6 +75,7 @@ PROMPT = """\
 - 列使用路径 ref：`financial.sqlite/account/account_id`
 - 不要使用 `table.column` 或裸列名做写入或精确读取；只有在列名全局唯一时才可临时读取裸列名
 - 当你从 overlap / fk 的名字里看到 `table.column` 形式时，这只是名字展示；真正去 `meta` / `update_meta` / `add_edge` 时，必须改用路径 ref
+- 对已有 fk / rel 实体做 `meta` 时，优先直接复制 `glob` 返回的完整展示 ref；不要自己重新拼接关系 ref
 
 ### 2. 逐一评估 overlap 线索
 对每个 overlap 候选：
@@ -83,6 +84,7 @@ PROMPT = """\
 - 检查两端列的实际数据（用列路径 ref 读取 meta，必要时再查样本/统计）
 - 评估全局一致性：这两列是否应该关联？是否有矛盾？
 - 只有高置信度才创建 rel
+- 已有 fk 的数据库，默认先用 `glob("*:fk")` + `meta(fk)` 建立关系图，不要再自己拼关系名字做试探性 `meta`
 
 ### 3. 自主发现（谨慎进行）
 除了 overlap 线索，你也可以主动发现关系，但标准更高：
@@ -141,6 +143,10 @@ def generate(workspace: Workspace) -> None:
     logger.info("=== Agent Join Detect (high-confidence only) ===")
 
     spec = AgentSpec(mode="writer")
+    spec.tools = [
+        "glob", "meta", "search", "query",
+        "create_entity", "update_meta", "add_edge", "delete",
+    ]
     project_name = os.path.basename(os.path.abspath(workspace.project_path))
     spec.projects = [project_name]
     spec.guardrails = build_guardrails(spec, ["round_limit"])

@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 from tool.config import (
     MetaTypeConfig, resolve_meta_config, resolve_info as _resolve_info,
 )
+from tool.utils.knowledge_meta import derive_knowledge_brief
 
 
 # ========== 标签格式化 ==========
@@ -32,6 +33,155 @@ def format_entity_name(name: str, labels: List[str]) -> str:
 def get_info(labels: List[str], meta: dict) -> str:
     """按标签段叠加 info dict，返回显示字符串。"""
     return _resolve_info(labels, meta)
+
+
+def _generic_brief_fallback(meta_dict: Dict[str, Any], labels: List[str]) -> Optional[str]:
+    summary = get_info(labels, meta_dict)
+    if summary and summary != "-":
+        return summary
+
+    label_set = set(labels or [])
+    name = meta_dict.get("name")
+    if "table" in label_set or "view" in label_set:
+        row_count = meta_dict.get("row_count")
+        column_count = meta_dict.get("column_count")
+        primary_key = meta_dict.get("primary_key")
+        parts = []
+        if row_count is not None:
+            parts.append(f"{row_count} rows")
+        if column_count is not None:
+            parts.append(f"{column_count} cols")
+        if primary_key:
+            parts.append(f"pk={primary_key}")
+        if parts:
+            prefix = f"{name} " if name else ""
+            return prefix + ", ".join(parts)
+    if "col" in label_set:
+        type_labels = [label for label in labels if label in {"INT", "TEXT", "REAL", "BLOB", "DATETIME"}]
+        parts = []
+        if type_labels:
+            parts.append("/".join(type_labels))
+        if meta_dict.get("not_null") is True:
+            parts.append("not null")
+        if meta_dict.get("default_value") not in (None, ""):
+            parts.append(f"default={meta_dict.get('default_value')}")
+        if parts:
+            prefix = f"{name} " if name else ""
+            return prefix + ", ".join(parts)
+    return None
+
+
+def _relation_detail_fallback(meta_dict: Dict[str, Any], labels: List[str]) -> Optional[str]:
+    label_set = set(labels or [])
+    if not ({"fk", "rel", "overlap"} & label_set):
+        return None
+
+    brief = meta_dict.get("brief")
+    stats = meta_dict.get("stats")
+    lines: List[str] = []
+    if brief and str(brief).strip() not in ("", "-", "..."):
+        lines.append(str(brief).strip())
+
+    if "fk" in label_set:
+        if meta_dict.get("from_table") and meta_dict.get("from_column") and meta_dict.get("to_table") and meta_dict.get("to_column"):
+            lines.append(
+                f"关系: {meta_dict['from_table']}.{meta_dict['from_column']} -> "
+                f"{meta_dict['to_table']}.{meta_dict['to_column']}"
+            )
+        if meta_dict.get("match_count") is not None or meta_dict.get("violation_count") is not None:
+            match_count = meta_dict.get("match_count", "?")
+            violation_count = meta_dict.get("violation_count", "?")
+            lines.append(f"校验: match_count={match_count}, violation_count={violation_count}")
+
+    if "rel" in label_set and stats and isinstance(stats, dict):
+        parts = []
+        for key in ("jaccard", "coverage_A_in_B", "coverage_B_in_A"):
+            value = stats.get(key)
+            if value is None:
+                continue
+            if isinstance(value, float):
+                parts.append(f"{key}={value:.4f}")
+            else:
+                parts.append(f"{key}={value}")
+        if parts:
+            lines.append("统计: " + ", ".join(parts))
+
+    if "overlap" in label_set and stats and isinstance(stats, dict):
+        parts = []
+        for key in ("card_overlap", "jaccard", "coverage_A_in_B", "coverage_B_in_A"):
+            value = stats.get(key)
+            if value is None:
+                continue
+            if isinstance(value, float):
+                parts.append(f"{key}={value:.4f}")
+            else:
+                parts.append(f"{key}={value}")
+        if parts:
+            lines.append("重叠统计: " + ", ".join(parts))
+        lines.append("该关系仅表示值域重叠，不应直接当作 JOIN 条件；需结合 fk/rel/disambig 再判断。")
+
+    if not lines:
+        return None
+    return "\n".join(lines)
+
+
+def _knowledge_detail_fallback(meta_dict: Dict[str, Any], labels: List[str]) -> Optional[str]:
+    label_set = set(labels or [])
+    if "knowledge" not in label_set:
+        return None
+    detail = meta_dict.get("detail")
+    if detail is not None and str(detail).strip() and str(detail).strip() != "...":
+        return str(detail)
+
+    lines: List[str] = []
+    if "brief" in meta_dict and str(meta_dict.get("brief")).strip() not in ("", "-", "..."):
+        lines.append(f"brief: {meta_dict['brief']}")
+
+    ordered_fields = [
+        ("transfer_hint", "transfer_hint"),
+        ("why_this_case_matters", "why_this_case_matters"),
+        ("mistake_summary", "mistake_summary"),
+        ("decision_summary", "decision_summary"),
+        ("wrong_assumption", "wrong_assumption"),
+        ("fix_hint", "fix_hint"),
+        ("verification_note", "verification_note"),
+        ("schema_background", "schema_background"),
+        ("question", "question"),
+        ("evidence", "evidence"),
+        ("predicted_sql", "predicted_sql"),
+        ("golden_sql", "golden_sql"),
+        ("rejected_alternatives", "rejected_alternatives"),
+    ]
+    for key, title in ordered_fields:
+        value = meta_dict.get(key)
+        if value is None or str(value).strip() in ("", "-", "..."):
+            continue
+        lines.append(f"{title}: {value}")
+
+    if not lines:
+        return None
+    return "\n\n".join(lines)
+
+
+def get_display_property_value(
+    meta_dict: Dict[str, Any],
+    labels: List[str],
+    key: str,
+) -> Any:
+    value = meta_dict.get(key)
+    if key in ("detail", "brief") and value is not None and str(value).strip() in ("...", "-"):
+        value = None
+    if value is None and key == "brief":
+        value = derive_knowledge_brief(meta_dict) if "knowledge" in set(labels or []) else None
+        if value is None:
+            value = _generic_brief_fallback(meta_dict, labels)
+    if value is None and key == "detail":
+        value = _relation_detail_fallback(meta_dict, labels)
+        if value is None:
+            value = _knowledge_detail_fallback(meta_dict, labels)
+        if value is None:
+            value = _generic_brief_fallback(meta_dict, labels)
+    return value
 
 
 # ========== Meta 格式化 ==========
@@ -73,7 +223,7 @@ def format_meta_output(
 ) -> str:
     """格式化 meta 输出"""
     if specific_key:
-        value = meta_dict.get(specific_key)
+        value = get_display_property_value(meta_dict, meta_dict.get("labels", []), specific_key)
         if value is None:
             return f"{specific_key}: N/A"
         if specific_key in ("detail", "brief"):

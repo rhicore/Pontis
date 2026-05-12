@@ -86,8 +86,9 @@ class BridgeTableCheck(Guardrail):
                 )
                 if not pair_match:
                     continue
-                full_ref = _qualify_ref(project, e)
-                if has_read(history, e) or has_read(history, full_ref):
+                labeled_ref = f"{e}:{rtype}"
+                full_ref = _qualify_ref(project, labeled_ref)
+                if has_read(history, e) or has_read(history, labeled_ref) or has_read(history, full_ref):
                     already_confirmed = True
                     continue
                 if not strict and full_ref in self._warned:

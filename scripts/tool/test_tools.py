@@ -27,6 +27,7 @@ from tool.create_entity.tool import create_entity_command
 from tool.cypher.tool import cypher_command
 from tool.delete.tool import delete_command
 from tool.glob.tool import glob_command
+from tool.utils.knowledge_meta import normalize_knowledge_meta
 from tool.meta.tool import meta_command
 from tool.search.tool import search_command
 from tool.update_meta.tool import update_meta_command
@@ -148,6 +149,9 @@ def main():
         "table_name:",
     ]), table_meta)
 
+    table_summary = meta_command(ws, "books.sqlite/address_status", property=["brief", "detail"])
+    ok("table meta derives fallback brief/detail when absent", "rows" in table_summary and "cols" in table_summary, table_summary)
+
     column_meta = meta_command(ws, "books.sqlite/address_status/status_id", all=True)
     ok("column meta keeps useful column facts", "not_null:" in column_meta and "default_value:" in column_meta, column_meta)
     ok("column meta hides redundant context/type fields", all(s not in column_meta for s in [
@@ -157,6 +161,9 @@ def main():
         "table_name:",
         "col_type:",
     ]), column_meta)
+
+    column_summary = meta_command(ws, "books.sqlite/address_status/status_id", property=["brief", "detail"])
+    ok("column meta derives fallback brief/detail when absent", "INT" in column_summary or "default=" in column_summary, column_summary)
 
     fk_ref = "books.sqlite--order_history.status_id->order_status.status_id"
     ws.cypher(
@@ -248,8 +255,18 @@ def main():
     ok("create_entity creates disambig entity", "Created: status_id_domain" in create_out, create_out)
     ok("create_entity attaches path-ref edges", "books.sqlite/address_status/status_id" in create_out and "books.sqlite/order_status/status_id" in create_out, create_out)
 
+    create_entity_command(
+        ws,
+        "status_id:disambig",
+        meta={"brief": "status_id disambiguation", "detail": "use this node when the bare name is ambiguous"},
+    )
+    bare_disambig = meta_command(ws, "status_id", property=["detail"])
+    ok("bare ambiguous name resolves to unique disambig entity", "use this node when the bare name is ambiguous" in bare_disambig and "Error:" not in bare_disambig, bare_disambig)
+
     search_out = search_command(ws, "*", "address status ambiguity")
     ok("search finds created knowledge", "status_id_domain" in search_out, search_out)
+    path_search = search_command(ws, "*", "address status domain")
+    ok("search shows copyable path-style refs", "books.sqlite/" in path_search, path_search)
 
     create_entity_command(
         ws,
@@ -271,6 +288,53 @@ def main():
     example_search_idx = knowledge_search.find("knowledge_case:knowledge:example")
     ok("search orders abstract knowledge before examples on tie", rule_search_idx != -1 and example_search_idx != -1 and rule_search_idx < example_search_idx, knowledge_search)
 
+    create_entity_command(
+        ws,
+        "knowledge_case_sparse:knowledge:example",
+        meta={
+            "brief": "sparse example",
+            "question": "Which address status is active?",
+            "evidence": "active means address_status = 'Active'",
+            "predicted_sql": "SELECT address_status FROM address_status WHERE status_id = 1",
+            "golden_sql": "SELECT address_status FROM address_status WHERE address_status = 'Active'",
+            "mistake_summary": "used id instead of literal condition",
+            "transfer_hint": "evidence literal should override guessed id mapping",
+        },
+    )
+    sparse_meta = meta_command(ws, "knowledge_case_sparse:knowledge:example", property=["detail"])
+    ok("knowledge example detail falls back to structured fields", "transfer_hint:" in sparse_meta and "golden_sql:" in sparse_meta, sparse_meta)
+
+    normalized = normalize_knowledge_meta(
+        "bird",
+        ["knowledge", "example"],
+        {
+            "question": "Which address status is active?",
+            "evidence": "active means address_status = 'Active'",
+            "mistake_summary": "used id instead of literal condition",
+            "transfer_hint": "literal evidence should dominate guessed surrogate ids",
+            "golden_sql": "SELECT address_status FROM address_status WHERE address_status = 'Active'",
+        },
+    )
+    ok("bird knowledge helper auto-derives brief", bool(normalized.get("brief")), str(normalized))
+    ok("bird knowledge helper auto-derives detail", "mistake_summary:" in str(normalized.get("detail", "")), str(normalized))
+
+    bird_ws = Workspace(active_projects=["bird"])
+    create_entity_command(
+        bird_ws,
+        "placeholder_rule:knowledge:convention",
+        meta={
+            "brief": "-",
+            "detail": "...",
+            "transfer_hint": "use row-level filtering for explicit evidence conditions",
+            "mistake_summary": "wrapped a direct condition into NOT EXISTS",
+        },
+    )
+    placeholder_search = search_command(bird_ws, "bird::*:knowledge", "row-level filtering explicit evidence condition")
+    ok("search indexes normalized bird knowledge instead of placeholder brief/detail", "placeholder_rule:knowledge:convention" in placeholder_search, placeholder_search)
+    placeholder_glob = glob_command(bird_ws, "bird::placeholder_rule:knowledge:convention")
+    ok("glob shows normalized bird knowledge info instead of placeholder text", "use row-level filtering" in placeholder_glob or "wrapped a direct condition" in placeholder_glob, placeholder_glob)
+    delete_command(bird_ws, "bird::placeholder_rule:knowledge:convention")
+
     print("\n[5] add_edge")
     add_edge_out = add_edge_command(
         ws,
@@ -285,6 +349,18 @@ def main():
 
     disambig_meta = meta_command(ws, "status_id_domain", all=True)
     ok("meta shows related columns after add_edge", "customer_address/status_id" in disambig_meta, disambig_meta)
+
+    rel_meta = meta_command(ws, "books.sqlite/order_history.status_id->books.sqlite/order_status.status_id", all=True)
+    ok("meta accepts path-style relation ref with db prefixes", "order_history.status_id->order_status.status_id" in rel_meta and "Error:" not in rel_meta, rel_meta)
+
+    malformed_rel_meta = meta_command(ws, "books.sqlite/order_history.order_history.status_id->books.sqlite/order_status.status_id", all=True)
+    ok("meta tolerates malformed relation endpoint with duplicated table token", "order_history.status_id->order_status.status_id" in malformed_rel_meta and "Error:" not in malformed_rel_meta, malformed_rel_meta)
+
+    bare_rel_meta = meta_command(ws, "order_history.status_id->order_status.status_id", all=True)
+    ok("meta prefers labeled relation entity for bare relation ref", "order_history.status_id->order_status.status_id" in bare_rel_meta and "Error:" not in bare_rel_meta, bare_rel_meta)
+
+    fk_search = search_command(ws, "*:fk", "order_history status_id order_status foreign key")
+    ok("search can find fk entities by name tokens", "order_history.status_id->order_status.status_id" in fk_search, fk_search)
 
     print("\n[6] delete")
     delete_out = delete_command(ws, "books.sqlite/address_status/status_id")

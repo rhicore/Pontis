@@ -56,6 +56,7 @@ DETAIL = """\
 | `financial.sqlite/*:table/*:col` | 所有表的所有列 |
 | `financial.sqlite/*:table/*:col:INT` | 所有表的 INT 列 |
 | `financial.sqlite/*:table/*:fk` | 该数据库中所有表挂接到的 FK 实体 |
+| `*:fk` | 当前项目里的所有 FK 实体；当 `db/*:fk` 为空时可作为回退 |
 
 ## 项目路由示例
 

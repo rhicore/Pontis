@@ -14,6 +14,7 @@ from storage.workspace import Workspace
 from extractor.modules.utils.loader import load_config
 from extractor.modules.utils.ai_utils import generate_detail_and_brief
 from extractor.modules.utils.src import file_exists, get_file_path
+from extractor.modules.text_info import is_text_file
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +27,19 @@ def generate(workspace: Workspace) -> None:
         logger.warning("LLM not configured, skipping AI summary")
         return
 
-    # 匹配所有文本类型文件
-    for ext in ['.md', '.txt', '.log', '.sql']:
-        rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext}' RETURN n")
-        for row in rows:
-            path = row["n"]["name"]
-            try:
-                _generate_for_text(path, workspace, llm)
-            except Exception as e:
-                logger.warning(f"Failed for {path}: {e}")
+    rows = workspace.cypher("MATCH (n:file) RETURN n")
+    seen = set()
+    for row in rows:
+        meta = row.get("n", {}) or {}
+        path = meta.get("name", "")
+        basename = path.rsplit("/", 1)[-1]
+        if not path or path in seen or not is_text_file(basename):
+            continue
+        seen.add(path)
+        try:
+            _generate_for_text(path, workspace, llm)
+        except Exception as e:
+            logger.warning(f"Failed for {path}: {e}")
 
 
 def _generate_for_text(path: str, workspace: Workspace, llm) -> bool:

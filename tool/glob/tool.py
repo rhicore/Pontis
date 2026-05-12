@@ -21,6 +21,8 @@ from typing import Dict, List, Optional, Tuple
 
 from tool.config import TOOL_PAGINATION
 from tool.utils.formatters import format_entity_name, get_info
+from tool.utils.display_ref import display_ref_for_node
+from tool.utils.knowledge_meta import normalize_knowledge_meta
 from tool.utils.resolve import selector_match_pattern
 
 
@@ -270,65 +272,6 @@ def _knowledge_priority(labels: List[str]) -> int:
     return 5
 
 
-def _display_ref_from_row(workspace, project: str | None, row: dict, main_var: str, main_info: dict) -> str:
-    labels = set(main_info.get("labels", []))
-    name = main_info.get("name", "?")
-
-    if "col" in labels:
-        table_name = None
-        file_name = None
-        for var, info in row.items():
-            if not isinstance(info, dict):
-                continue
-            var_labels = set(info.get("labels", []))
-            if table_name is None and ({"table", "view"} & var_labels):
-                table_name = info.get("name")
-            if file_name is None and "file" in var_labels:
-                file_name = info.get("name")
-        if file_name and table_name:
-            return f"{file_name}/{table_name}/{name}"
-        if table_name:
-            return f"{table_name}/{name}"
-
-        selector = {"project": project, "name": name, "labels": list(labels)}
-        match = selector_match_pattern(selector, "n")
-        rows = workspace.cypher(
-            f"MATCH (f:file)--(t)--{match} RETURN f, t",
-            params={"name": name},
-            project=project,
-        )
-        for extra in rows:
-            f = extra.get("f") or {}
-            t = extra.get("t") or {}
-            if "file" in set(f.get("labels", [])) and ({"table", "view"} & set(t.get("labels", []))):
-                return f"{f.get('name', '')}/{t.get('name', '')}/{name}"
-
-    if "table" in labels or "view" in labels:
-        file_name = None
-        for var, info in row.items():
-            if var == main_var or not isinstance(info, dict):
-                continue
-            if "file" in set(info.get("labels", [])):
-                file_name = info.get("name")
-                break
-        if file_name:
-            return f"{file_name}/{name}"
-
-        selector = {"project": project, "name": name, "labels": list(labels)}
-        match = selector_match_pattern(selector, "n")
-        rows = workspace.cypher(
-            f"MATCH (f:file)--{match} RETURN f",
-            params={"name": name},
-            project=project,
-        )
-        for extra in rows:
-            f = extra.get("f") or {}
-            if "file" in set(f.get("labels", [])):
-                return f"{f.get('name', '')}/{name}"
-
-    return name
-
-
 def glob_command(workspace, ref: str, offset: int = 0,
                  limit: Optional[int] = None, current_cwd: str = "") -> str:
     """URN 语法查询，翻译为标准 Cypher 执行。
@@ -342,6 +285,9 @@ def glob_command(workspace, ref: str, offset: int = 0,
     page_conf = TOOL_PAGINATION["glob"]
     if limit is None:
         limit = page_conf.default_limit
+        # bird 知识总表常作为索引页使用，默认多展示一些，减少翻页和漏看。
+        if ref == "bird::*:knowledge":
+            limit = max(limit, 100)
     limit = min(limit, page_conf.max_limit)
 
     # 解析 URN → Cypher
@@ -371,8 +317,9 @@ def glob_command(workspace, ref: str, offset: int = 0,
                 break
         if not main_info:
             continue
+        main_info = normalize_knowledge_meta(main_info.get("project"), main_info.get("labels"), main_info)
 
-        name = _display_ref_from_row(workspace, project, row, main_var, main_info)
+        name = display_ref_for_node(workspace, project, main_info, row=row, main_var=main_var)
         labels = main_info.get("labels", [])
         info_str = get_info(labels, main_info or {})
         entity_name = format_entity_name(name, labels)

@@ -28,11 +28,13 @@ README 的目标不是营销文案，而是：
 
 - **优先复用现有摘要**：先读已经存在的 brief/detail，不要重复劳动
 - **只在必要时补充探索**：如果已有信息足够，就不要过度查询
+- **不要读取原始文件正文**：优先用 `meta(..., property=["detail"])` 读取已有摘要；不要为了 README 再去 `cat README` 或 `cat *.csv`
+- **不要把 CSV 当数据库去 query**：`database_description/*.csv` 是说明文件，不是数据库表
 - **用中文写 README**
 - **不要提及内部实现概念**：不要出现 Pontis、知识图谱、.pontis、实体节点、tool contract 等内部术语
 - **路径式引用**：读表/列时使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`
-- **最终必须写入图谱节点**：将内容写入名为 `README` 的节点
-- **README 标签要求**：README 只能使用 `knowledge` 标签，不要使用 `doc`
+- **最终必须写入现有 README 文件节点**：如果项目里已经有 `README` / `README.md` 这类文件节点，就把内容写回这个文件节点的 `brief/detail`
+- **不要把 README 另建成知识实体**：已有 README 文件节点时，禁止创建 `README:knowledge`、`README:doc` 等新节点
 - **写完要自检**：写入后用 `meta({"ref": "README", "property": ["detail"]})` 确认正文完整可读
 
 ## 推荐读取顺序
@@ -41,7 +43,7 @@ README 的目标不是营销文案，而是：
 2. 读取数据库文件本身的 meta
 3. 读取主要表的 meta
 4. 读取 fk / rel / disambig（如果有）
-5. 查看 `database_description/*.csv` 或其他说明文件（如果存在）
+5. 只在前面信息不足时，再查看 `database_description/*.csv` 或其他说明文件的 meta
 
 ## README 应包含的结构
 
@@ -76,18 +78,24 @@ README 的目标不是营销文案，而是：
 
 当你已经整理好 README 内容后：
 
-1. 先检查是否已存在 `README` 节点
-2. 若存在，优先 `update_meta`
-3. 若不存在，再 `create_entity`
+1. 先检查是否已存在 `README` 或 `README.md` 文件节点
+2. 若存在，直接 `update_meta` 该文件节点
+3. 只有在项目里完全不存在 README 文件节点时，才允许 `create_entity`
 
 推荐写法：
 
 ```text
-create_entity({"ref": "README:knowledge"})
 update_meta({"ref": "README", "fields": {"brief": "...", "detail": "..."}})
 ```
 
 如果 `README` 已存在，就不要重复创建，只更新 `brief/detail`。
+
+只有不存在 README 文件节点时，才可以创建一个最简单的 README 节点，例如：
+
+```text
+create_entity({"ref": "README"})
+update_meta({"ref": "README", "fields": {"brief": "...", "detail": "..."}})
+```
 
 写完后再用：
 
@@ -120,6 +128,10 @@ def generate(workspace: Workspace) -> None:
     logger.info("=== Agent README Writer ===")
 
     spec = AgentSpec(mode="writer")
+    spec.tools = [
+        "glob", "meta", "search", "query",
+        "create_entity", "update_meta", "add_edge", "delete",
+    ]
     project_name = os.path.basename(os.path.abspath(workspace.project_path))
     spec.projects = [project_name]
     spec.guardrails = build_guardrails(spec, ["round_limit"])

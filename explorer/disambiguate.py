@@ -31,7 +31,7 @@ PROMPT = """\
 ## 工作流程
 
 ### 1. 发现项目中的数据库
-用 glob '*.db', '*.sqlite', '*.sqlite3', '*.duckdb' 找到所有数据库。
+优先用 `glob("*:file:db")` 找数据库；如果项目里没有数据库文件，再考虑其他来源。
 
 ### 2. 对每个数据库建立全局认知
 a. glob 查看所有表
@@ -51,6 +51,7 @@ d. 查看已有的 fk、overlap、rel、disambig 实体
 - 按列名分组，找出出现在 >= 2 个表中的列名
 - 用列路径 ref 查看实际数据和 meta，判断语义是否真的不同
 - 如果同名列在不同表中含义完全相同，不需要消歧
+- 除非列的已有 sample/topk/detail 明显不够，否则不要额外对辅助文件或非数据库源做 query
 
 ### 4. 扫描表级歧义
 查看所有表，找出名称相近或用途重叠的表。
@@ -94,6 +95,10 @@ def generate(workspace: Workspace) -> None:
     logger.info("=== Agent Disambiguate ===")
 
     spec = AgentSpec(mode="writer")
+    spec.tools = [
+        "glob", "meta", "search", "query",
+        "create_entity", "update_meta", "add_edge", "delete",
+    ]
     project_name = os.path.basename(os.path.abspath(workspace.project_path))
     spec.projects = [project_name]
     spec.guardrails = build_guardrails(spec, ["round_limit"])

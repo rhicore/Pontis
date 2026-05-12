@@ -21,6 +21,32 @@ def _strip_display_label_suffix(segment: str) -> str:
     return segment.split(":", 1)[0]
 
 
+def _normalize_relation_endpoint(text: str) -> str:
+    parts = [p for p in text.split("/") if p]
+    if not parts:
+        return text
+    if len(parts) >= 2 and "." not in parts[-1]:
+        return f"{parts[-2]}.{parts[-1]}"
+    last = parts[-1]
+    dotted = [p for p in last.split(".") if p]
+    if len(dotted) >= 3:
+        # Be lenient with malformed relation refs like `table.alias.column` and
+        # collapse them back to `table.column`.
+        return f"{dotted[0]}.{dotted[-1]}"
+    return last
+
+
+def _normalize_relation_ref(local_ref: str) -> str | None:
+    if "->" not in local_ref:
+        return None
+    left, right = local_ref.split("->", 1)
+    left_norm = _normalize_relation_endpoint(left)
+    right_norm = _normalize_relation_endpoint(right)
+    if not left_norm or not right_norm:
+        return None
+    return f"{left_norm}->{right_norm}"
+
+
 def resolve_entity(workspace, ref: str) -> tuple[dict | None, str | None]:
     """将 ref 解析为唯一节点元数据。"""
     project, local_ref = _split_project_ref(ref)
@@ -117,7 +143,22 @@ def _lookup_exact_named_nodes(workspace, project: str | None, local_ref: str) ->
         params={"name": local_ref},
         project=project,
     )
-    nodes = [row.get("n") for row in rows if row.get("n")]
+    nodes = _dedupe_nodes(row.get("n") for row in rows if row.get("n"))
+    if len(nodes) > 1 and local_ref == "README":
+        file_nodes = [node for node in nodes if "file" in set(node.get("labels", []))]
+        if len(file_nodes) == 1:
+            return file_nodes
+    if len(nodes) > 1:
+        disambig_nodes = [node for node in nodes if "disambig" in set(node.get("labels", []))]
+        if len(disambig_nodes) == 1:
+            return disambig_nodes
+    if len(nodes) > 1 and "->" in local_ref:
+        relation_nodes = [
+            node for node in nodes
+            if {"fk", "rel", "overlap"} & set(node.get("labels", []))
+        ]
+        if len(relation_nodes) == 1:
+            return relation_nodes
     if nodes or ":" not in local_ref:
         return nodes
 
@@ -139,10 +180,23 @@ def _lookup_exact_named_nodes(workspace, project: str | None, local_ref: str) ->
         labels = set(node.get("labels", []))
         if requested_labels.issubset(labels):
             matched.append(node)
-    return matched
+    return _dedupe_nodes(matched)
 
 
 def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple[dict | None, str | None]:
+    normalized_relation_ref = _normalize_relation_ref(local_ref)
+    if normalized_relation_ref:
+        rows = workspace.cypher(
+            "MATCH (n {name: $name}) RETURN n",
+            params={"name": normalized_relation_ref},
+            project=project,
+        )
+        nodes = _dedupe_nodes(row.get("n") for row in rows if row.get("n"))
+        if len(nodes) == 1:
+            return nodes[0], None
+        if len(nodes) > 1:
+            return None, f"匹配到多个实体: {local_ref}"
+
     parts = [p for p in local_ref.split("/") if p]
     normalized_parts = [_strip_display_label_suffix(p) for p in parts]
     normalized_ref = "/".join(normalized_parts)

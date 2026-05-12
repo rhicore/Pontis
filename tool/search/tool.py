@@ -9,7 +9,9 @@ from typing import List, Optional
 
 from tool.config import TOOL_PAGINATION
 from tool.glob.tool import _apply_post_filters, _build_cypher, parse_urn
+from tool.utils.display_ref import display_ref_for_node, node_selector
 from tool.utils.formatters import format_entity_name, get_info
+from tool.utils.knowledge_meta import normalize_knowledge_meta
 
 
 # ========== Tokenizer ==========
@@ -61,6 +63,17 @@ def _knowledge_priority(labels: List[str]) -> int:
     return 5
 
 
+def _knowledge_score_factor(labels: List[str]) -> float:
+    label_set = set(labels or [])
+    if "knowledge" not in label_set:
+        return 1.0
+    if "example" in label_set:
+        return 0.7
+    if label_set & {"convention", "pattern", "lesson", "term"}:
+        return 1.15
+    return 1.0
+
+
 def _candidate_nodes(workspace, ref: str) -> list[dict] | None:
     ref = (ref or "").strip()
     if ref in ("", "*"):
@@ -109,13 +122,14 @@ def _bm25_search(workspace, query: str, ref: str = "",
         candidates = [row.get("n", {}) for row in rows]
 
     for n in candidates:
+        n = normalize_knowledge_meta(n.get("project"), n.get("labels"), n)
         name = n.get("name", "")
         if not name:
             continue
 
         brief = n.get("brief", "") or ""
         detail = n.get("detail", "") or ""
-        doc_text = f"{brief} {detail}"
+        doc_text = f"{name} {brief} {detail}"
         if not doc_text.strip():
             continue
 
@@ -125,18 +139,19 @@ def _bm25_search(workspace, query: str, ref: str = "",
 
         labels = n.get("labels", [])
         info = get_info(labels, n)
+        display_ref = display_ref_for_node(workspace, n.get("project"), n)
 
-        docs.append((name, tokens, info, labels))
+        docs.append((name, display_ref, tokens, info, labels, n.get("project")))
 
     if not docs:
         return []
 
     N = len(docs)
-    avgdl = sum(len(t) for _, t, _, _ in docs) / N
+    avgdl = sum(len(t) for _, _, t, _, _, _ in docs) / N
     query_token_set = set(query_tokens)
 
     df = Counter()
-    for _, tokens, _, _ in docs:
+    for _, _, tokens, _, _, _ in docs:
         seen = set(tokens) & query_token_set
         for t in seen:
             df[t] += 1
@@ -146,21 +161,27 @@ def _bm25_search(workspace, query: str, ref: str = "",
         idf[t] = math.log((N - df.get(t, 0) + 0.5) / (df.get(t, 0) + 0.5) + 1)
 
     results = []
-    for ref_name, tokens, info, labels in docs:
+    for ref_name, display_ref, tokens, info, labels, node_project in docs:
         tf = Counter(tokens)
         dl = len(tokens)
         score = 0.0
+        matched_terms = set()
         for t in query_token_set:
             if t not in tf:
                 continue
+            matched_terms.add(t)
             tf_val = tf[t]
             numerator = tf_val * (k1 + 1)
             denominator = tf_val + k1 * (1 - b + b * dl / avgdl)
             score += idf.get(t, 0) * numerator / denominator
-        if score > 0:
-            results.append((score, ref_name, info, labels))
+        score *= _knowledge_score_factor(labels)
+        if score <= 0:
+            continue
+        if len(query_token_set) >= 3 and len(matched_terms) < 2:
+            continue
+        results.append((score, ref_name, display_ref, info, labels, node_project))
 
-    results.sort(key=lambda x: (-x[0], _knowledge_priority(x[3]), x[1].lower()))
+    results.sort(key=lambda x: (-x[0], _knowledge_priority(x[4]), x[1].lower()))
     return results
 
 
@@ -189,11 +210,10 @@ def search_command(
     if not page:
         return f"No results at offset {offset}. Total results: {total}"
 
-    project_name = _get_project_name(workspace)
-
     lines = []
-    for score, ref_name, info, labels in page:
-        entity_name = format_entity_name(ref_name, labels)
+    for score, ref_name, display_ref, info, labels, node_project in page:
+        entity_name = format_entity_name(display_ref, labels)
+        project_name = node_project or _get_project_name(workspace)
         lines.append(f"{project_name}::\t{entity_name}\t{info}")
     output = '\n'.join(lines)
 

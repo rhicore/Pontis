@@ -13,3 +13,6 @@ dependencies = [
     "sse-starlette>=2.0.0",
     "datasketches>=5.0.0",
 ]
+
+[project.scripts]
+pontis = "pontis_cli:main"

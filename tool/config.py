@@ -61,6 +61,28 @@ def _v(d, key, default="-"):
     return val
 
 
+def _first_present(d, keys, default="-"):
+    for key in keys:
+        val = d.get(key)
+        if val is not None and str(val).strip() not in ("", "-"):
+            return str(val)
+    return default
+
+
+def _knowledge_brief(d):
+    return _first_present(
+        d,
+        [
+            "brief",
+            "mistake_summary",
+            "decision_summary",
+            "transfer_hint",
+            "why_this_case_matters",
+            "question",
+        ],
+    )
+
+
 def _c(d, suffix):
     """获取该实体与某类型邻接实体的数量，>0 返回 '2 rels'，否则返回 None。"""
     val = d.get(suffix)
@@ -99,12 +121,12 @@ INFO_TYPE_CONFIG = {
     "overlap":  InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     "disambig": InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     # 知识段
-    "knowledge":    InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
+    "knowledge":    InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
     "pattern":     InfoTypeConfig(info_fn=lambda m: {"pattern": _v(m, "pattern")}, max_str_len=80),
-    "convention":  InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
-    "term":        InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
-    "lesson":      InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
-    "example":     InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
+    "convention":  InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
+    "term":        InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
+    "lesson":      InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
+    "example":     InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
     # 其他
     "chunk":    InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m, 'char_count')} chars"}),
     "directory": InfoTypeConfig(info_fn=lambda m: {"path": _v(m, "path"), "stats": f"{_v(m, 'file_count')} files, {_v(m, 'subdir_count')} dirs"}),

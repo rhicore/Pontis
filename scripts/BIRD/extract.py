@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 STATIC_PIPELINE = [
     "csv_basic",
+    "text_info",
     "db_column_stats_approx",
     "db_column_sample",
     "db_column_topk",
@@ -28,6 +29,7 @@ STATIC_PIPELINE = [
 
 AI_PIPELINE = [
     "ai_db_column_summary",
+    "ai_text_summary",
 ]
 
 AGENT_PIPELINE = [

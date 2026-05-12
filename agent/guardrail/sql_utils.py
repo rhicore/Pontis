@@ -109,27 +109,72 @@ def get_meta_read(tool_history: list) -> frozenset:
     for name, args, _ in tool_history:
         if name == "meta":
             ref = args.get("ref", "")
-            if not ref:
-                ref = args.get("path", "")
-            entity = ref.split("::", 1)[1] if "::" in ref else ref
-            if entity:
-                read.add(entity)
+        if not ref:
+            ref = args.get("path", "")
+        for entity in _normalized_ref_variants(ref):
+            read.add(entity)
     return frozenset(read)
+
+
+def get_seen_entities(tool_history: list) -> frozenset:
+    """从 glob/search 结果中提取已经显式展示过的实体引用。"""
+    seen = set()
+    for name, _args, output in tool_history:
+        if name not in {"glob", "search"}:
+            continue
+        text = str(output or "")
+        if not text or text.startswith("No objects found") or text.startswith("Error:"):
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("("):
+                continue
+            head = line.split("\t", 1)[0].strip()
+            if not head or head in {".:dir", "."}:
+                continue
+            if "::\t" in line:
+                head = line.split("\t", 2)[1].strip()
+            for entity in _normalized_ref_variants(head):
+                seen.add(entity)
+    return frozenset(seen)
+
+
+def _normalized_ref_variants(entity: str) -> set[str]:
+    variants = set()
+    if not entity:
+        return variants
+    local = entity.split("::", 1)[1] if "::" in entity else entity
+    variants.add(local)
+
+    if "/" in local:
+        parts = [p for p in local.split("/") if p]
+        normalized_parts = [p.split(":", 1)[0] if ":" in p else p for p in parts]
+        normalized = "/".join(normalized_parts)
+        variants.add(normalized)
+        if normalized_parts:
+            variants.add(normalized_parts[-1])
+    elif ":" in local:
+        variants.add(local.split(":", 1)[0])
+
+    return {v for v in variants if v}
 
 
 def has_read(tool_history: list, entity: str) -> bool:
     """检查实体是否已被 meta 读取。"""
-    if "::" in entity:
-        entity = entity.split("::", 1)[1]
     read = get_meta_read(tool_history)
-    if entity in read:
+    seen = get_seen_entities(tool_history)
+    targets = _normalized_ref_variants(entity)
+    if any(target in read or target in seen for target in targets):
         return True
 
     # SQL 解析阶段常拿到裸 table/column 名，而实际 meta 读取常是
     # `db/table` 或 `db/table/column` 这种 scoped ref。这里做一个轻量后缀匹配，
     # 让“已读取 scoped ref”能够满足同名裸实体检查。
-    suffixes = (f"/{entity}", f".{entity}")
-    return any(r.endswith(suffixes) for r in read)
+    for target in targets:
+        suffixes = (f"/{target}", f".{target}")
+        if any(r.endswith(suffixes) for r in read) or any(r.endswith(suffixes) for r in seen):
+            return True
+    return False
 
 
 def resolve_entity_ref(workspace, table: str, column: str = None) -> str:
@@ -141,25 +186,34 @@ def resolve_entity_ref(workspace, table: str, column: str = None) -> str:
     """
     if workspace is None:
         return None
-    rows = workspace.cypher("MATCH (n) RETURN n")
     if column is None:
+        rows = workspace.cypher("MATCH (f:file)--(t) RETURN f, t")
         for row in rows:
-            n = row.get("n", {})
-            ename = n.get("name", "")
-            labels = n.get("labels", [])
-            if ename.lower() == table.lower() and any(
-                l == "table" or l == "view" for l in labels
-            ):
-                return ename
+            tmeta = row.get("t", {}) or {}
+            fmeta = row.get("f", {}) or {}
+            ename = tmeta.get("name", "")
+            labels = tmeta.get("labels", [])
+            if ename.lower() == table.lower() and any(l in {"table", "view"} for l in labels):
+                fname = fmeta.get("name", "")
+                return f"{fname}/{ename}" if fname else ename
     else:
+        rows = workspace.cypher("MATCH (f:file)--(t)--(c:col) RETURN f, t, c")
         for row in rows:
-            n = row.get("n", {})
-            ename = n.get("name", "")
-            labels = n.get("labels", [])
-            if "col" not in labels:
+            cmeta = row.get("c", {}) or {}
+            tmeta = row.get("t", {}) or {}
+            fmeta = row.get("f", {}) or {}
+            c_name = cmeta.get("name", "")
+            t_name = tmeta.get("name", "")
+            if c_name.lower() != column.lower():
                 continue
-            if ename.lower() == column.lower():
-                return ename
+            if t_name.lower() != table.lower():
+                continue
+            f_name = fmeta.get("name", "")
+            if f_name and t_name:
+                return f"{f_name}/{t_name}/{c_name}"
+            if t_name:
+                return f"{t_name}/{c_name}"
+            return c_name
     return None
 
 

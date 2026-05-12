@@ -4,16 +4,6 @@ from __future__ import annotations
 
 
 _SECTIONS = {
-    "readme_check": """## README 约束
-
-- 如果当前打开了多个项目，只要其中还有项目的 `README` 未读完，就不要做任何其他操作
-- 先把所有相关项目的 `README` 读完，再去读知识节点、schema 节点、跑 query 或做其他探索
-- 不要求固定顺序；多个项目里，先读哪个 `README` 都可以
-- 读取 README 时不要先 `glob("<project>::README")` 试探；推荐直接用 `meta({"ref": "<project>::README", "property": ["detail"]})` 全量读取正文
-- README 不存在时，这条约束不生效
-- 一般用 `meta({"ref": "<project>::README", "property": ["detail"]})` 先读，`detail` 就是 README 正文
-- 未先读 README 前，不要访问该项目下的其他实体，也不要在该项目上做 search / create / update / delete
-""",
     "query_abuse": """## Query 限制
 
 - query 工具总共最多调用 **5 次**

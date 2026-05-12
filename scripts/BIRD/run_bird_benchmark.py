@@ -39,11 +39,12 @@ DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
 def get_bird_shared_workflow() -> str:
     """BIRD 场景下共享的解题/审题入口。"""
     return """\
-1. 如果当前同时打开了多个项目，先把这些项目里存在的 `README` 读完，再做任何其他操作。读取 README 时，推荐直接使用 `meta({"ref": "<project>::README", "property": ["detail"]})`；不要先用 `glob` 或 `search` 试探 README 是否存在。
-2. 读完 README 后，先理解当前数据库的 schema、列语义、关系和消歧信息；`query` 只用于验证，不要拿来代替 schema 探索。
-3. 在输出最终 SQL 之前，至少浏览一次 `bird` 里的知识实体总表，看看有没有相关经验；推荐先用 `glob("bird::*:knowledge")`。
-4. 先看“抽象知识实体”，再看案例。这里的“抽象知识实体”明确指四类：`knowledge:convention`（规则/约定）、`knowledge:pattern`（通用解法模式）、`knowledge:lesson`（反面教训）、`knowledge:term`（术语或概念说明）。优先读取这些实体；只有当这些抽象知识仍不足以支持判断时，才继续看 `knowledge:example`。
-5. 其余解题流程、审题约束和常见错误，统一遵循 `bird::README`。"""
+1. 当前打开项目的 README 正文已经在系统提示词中给出；先按这些 README 理解项目角色、schema 探索纪律和 `bird` 的使用方式。
+2. 对数据库项目，先理解 schema、列语义、关系和消歧信息；`query` 只用于验证，不要拿来代替 schema 探索。
+3. 在输出最终 SQL 之前，至少浏览一次 `bird` 的知识实体总表；推荐先用 `glob("bird::*:knowledge")`，但把它当索引页，不要靠翻很多页硬扫。
+4. 优先读抽象知识实体：`knowledge:convention`、`knowledge:pattern`、`knowledge:lesson`、`knowledge:term`；只有当这些抽象知识仍不足以支持判断时，才继续看 `knowledge:example`。
+5. 如果 `bird` 总表候选很多，不要随机开 example，也不要顺着 offset 一页页扫；先用 `search(ref="bird::*:knowledge", query="...")` 缩到 1-3 个最相关实体，再用 `meta` 深读。搜索词优先用题目里的核心名词、evidence 里的公式词、以及你怀疑的错误模式词。
+6. 其余解题流程、审题约束和常见错误，统一遵循系统提示词中的项目 README，尤其是 `bird::README`。"""
 
 
 def assign_question_ids(questions: list[dict]) -> list[dict]:
@@ -112,18 +113,21 @@ QUERY_PROMPT_TEMPLATE = """\
 本题要求：
 - 只输出一条 SELECT 语句，用 ```sql ``` 代码块包裹
 - 不要解释，只输出 SQL
-- 注意 SQLite 语法：字符串用单引号，列名有特殊字符时用反引号或双引号
+- 注意 SQLite 语法：字符串用单引号，列名有特殊字符时用反引号或双引号；如果复合查询的每个分支都需要各自 `ORDER BY / LIMIT`，先放进 CTE / 子查询，再在外层 `UNION / UNION ALL`
 
 严格遵循 evidence：
 - evidence 给出的列名映射 → 优先使用
 - evidence 给出的计算公式 → **严格翻译为 SQL**，不要简化或改写
 - evidence 给出的条件值 → 直接使用，不要猜测其他值
-- 其余审题与纠错规则，统一遵循 `bird::README`
+- 若题目出现 `the X which is cited / used / ordered ... most/least` 这类限制性定语从句，先把候选集合限制为真正参与该关系的实体；不要为了找最少值而把 `0` 次实体拉进候选，除非题目明确要求包含 zero / none / never
+- `majority` / `most of` 这类“多数/大多数”表达，默认先理解为分布/占比，而不是单一极值；优先 `GROUP BY`，不要机械加 `ORDER BY COUNT(*) DESC LIMIT 1`
+- 其余审题与纠错规则，统一遵循系统提示词中的项目 README，尤其是 `bird::README`
 
 关于 `bird` 经验的使用：
 - 最终输出 SQL 前，至少先浏览一次 `bird` 的知识实体总表，确认是否存在相关经验
 - 优先读取抽象知识实体，也就是：`knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term`
 - 其中：`convention` 表示应遵循或避免的规则，`pattern` 表示可复用的通用解法，`lesson` 表示已经总结出的错误模式，`term` 表示辅助理解题意或知识节点的术语/概念说明
+- 如果总表过长，先用 `search(ref="bird::*:knowledge", query="...")` 缩小候选，再读 `meta`；不要把翻页扫完整个 `bird` 当成默认动作
 - `knowledge:example` 放在后面；只有当抽象知识仍不足以支持判断时，才把它当作解释型案例阅读
 - 不要机械照抄 example 里的 SQL、表名、列名或字面值
 - 如果先看到某个 example，也要回头优先查看它相连的抽象知识，再决定是否参考这个案例
@@ -138,7 +142,7 @@ REFLECTION_CASE_PROMPT_TEMPLATE = """\
 你现在仍在同一个对话上下文里：刚刚的 benchmark 消息、工具调用和最终 SQL 都还在。
 你不是新开一个会话，而是继续复盘这条已经完成并已验证结果的 benchmark case。
 
-先按 benchmark 的解题工作流回放这道题，再判断做对/做错的真正根因，然后只在必要时更新 `bird`。解题/审题工作流统一以 `bird::README` 为准，不在这里重复展开。
+先按 benchmark 的解题工作流回放这道题，再判断做对/做错的真正根因，然后只在必要时更新 `bird`。解题/审题工作流统一以系统提示词中的项目 README 为准，不在这里重复展开。
 
 回放信息：
 {shared_workflow}
@@ -175,18 +179,17 @@ Guardrail / blocks：
 1. 先在 `bird` 里找最相关的已有知识，优先看抽象知识实体；不要一上来就新建。
 2. 若找到相关实体，优先判断它是应保持不动、补充更新，还是局部修正；默认优先 `update`，不要重复 `create`。
 3. 只有在确认不存在合适的已有实体时，且结论明显可跨库迁移，才新建 `bird::<short_name>:knowledge:<type>`。
-4. 只允许写 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:example`。
+4. 只允许写 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:example`；不要新建 `knowledge:term`。
 5. 若写 `knowledge:example`，它必须是“解释型 benchmark case”，不是裸 few-shot，也不是只存 question + golden SQL。
 6. `knowledge:example` 至少应包含：`question`、必要 `evidence`、`golden_sql`、`db_id`、`question_id`、`difficulty`、`schema_background`、`bird_bias`、`why_this_case_matters`、`transfer_hint`。
 7. 如果该题本轮做错了，但你仍决定沉淀为 `knowledge:example`，还应补：`predicted_sql`、`error_type`、`mistake_summary`、`wrong_assumption`、`fix_hint`。
 8. `knowledge:example` 允许包含具体数据库/表/列信息，但必须服务于“解释 BIRD 偏好”；不要让它退化成无解释的样题堆积。
 9. 不要写入完整推理过程、原始 chain-of-thought 或逐轮自言自语；如果需要保留思路，只保留高密度摘要，例如 `decision_summary`、`mistake_summary`、`verification_note`、`rejected_alternatives`。
 10. `knowledge:example` 不能作为孤立案例存在。只要决定保留或新建 example，就必须把它与对应的抽象知识实体建立普通图边。
-11. 这里的“对应抽象知识实体”明确指与该 example 对应的 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term`。后续应该能从抽象知识导航到 example，也能从 example 导航回抽象知识。
-12. 如果相关抽象知识实体已经存在，优先直接连边；如果抽象知识还缺一层总结，先创建或更新抽象知识实体，再把 example 与它连边。
-13. `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` 仍应尽量去 schema 化，不要把具体字段名直接写成通用规则。
-14. 如果只是执行流程失误、没有新的跨库经验缺口，也没有值得沉淀的 BIRD 偏好案例，明确说明“不写入任何知识实体”。
-15. 写任何新实体前，先明确说明你检查过哪些最相关的已有实体、为什么它们不够、为什么必须新建；如果这个论证不成立，就不要新建。
+11. 这里的“对应抽象知识实体”明确指与该 example 对应的 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term`。如果对应抽象知识不存在，可以先补抽象知识，再连边；但新建类型仍然只允许 `convention / pattern / lesson / example`。
+12. `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` 仍应尽量去 schema 化，不要把具体字段名直接写成通用规则。
+13. 如果只是执行流程失误、没有新的跨库经验缺口，也没有值得沉淀的 BIRD 偏好案例，明确说明“不写入任何知识实体”。
+14. 写任何新实体前，先明确说明你检查过哪些最相关的已有实体、为什么它们不够、为什么必须新建；如果这个论证不成立，就不要新建。
 """
 
 

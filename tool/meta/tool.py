@@ -6,7 +6,8 @@
 from typing import List, Optional, Union
 
 from tool.config import resolve_meta_config
-from tool.utils.formatters import format_entity_name, format_meta_output, get_info
+from tool.utils.display_ref import display_ref_for_node, node_selector
+from tool.utils.formatters import format_entity_name, format_meta_output, get_display_property_value, get_info
 from tool.utils.resolve import resolve_entity_selector, selector_match_pattern, selector_params
 
 _ADJACENCY_KEYS = {"fk", "rel", "disambig", "col", "overlap", "table", "view"}
@@ -24,50 +25,6 @@ def _label_matches(entity_labels: List[str], query: str) -> bool:
     return label_matches(entity_labels, query)
 
 
-def _display_ref(workspace, project: str | None, selector: dict, node_meta: dict) -> str:
-    """尽量生成与 glob 一致的展示引用。"""
-    labels = set(node_meta.get("labels", []))
-    name = node_meta.get("name", selector["name"])
-    match = selector_match_pattern(selector, "n")
-
-    if "col" in labels:
-        rows = workspace.cypher(
-            f"MATCH (f:file)--(t)--{match} RETURN f, t",
-            params=selector_params(selector),
-            project=project,
-        )
-        for row in rows:
-            f = row.get("f") or {}
-            t = row.get("t") or {}
-            t_labels = set(t.get("labels", []))
-            if "file" in set(f.get("labels", [])) and ({"table", "view"} & t_labels):
-                return f"{f.get('name', '')}/{t.get('name', '')}/{name}"
-        return name
-
-    if "table" in labels or "view" in labels:
-        rows = workspace.cypher(
-            f"MATCH (f:file)--{match} RETURN f",
-            params=selector_params(selector),
-            project=project,
-        )
-        for row in rows:
-            f = row.get("f") or {}
-            if "file" in set(f.get("labels", [])):
-                return f"{f.get('name', '')}/{name}"
-
-    return name
-
-
-def _neighbor_selector(project: str | None, meta: dict) -> dict:
-    return {
-        "project": project,
-        "name": meta.get("name", ""),
-        "labels": list(meta.get("labels", [])),
-        "path": meta.get("path"),
-        "ref": meta.get("ref"),
-    }
-
-
 def _adjacency_group_key(labels: List[str]) -> str | None:
     for label in labels:
         if label in _ADJACENCY_KEYS:
@@ -80,8 +37,7 @@ def _format_neighbor_list(workspace, project_name: str, project: str | None, nei
         return "No matching neighbors found"
     lines = []
     for meta in neighbors:
-        selector = _neighbor_selector(project, meta)
-        display_ref = _display_ref(workspace, project, selector, meta)
+        display_ref = display_ref_for_node(workspace, project, meta)
         labels = meta.get("labels", [])
         info = get_info(labels, meta)
         entity_name = format_entity_name(display_ref, labels)
@@ -121,7 +77,7 @@ def meta_command(
         return f"Empty metadata for '{ref}'"
 
     labels = meta.get("labels", [])
-    display_ref = _display_ref(workspace, project, selector, meta)
+    display_ref = display_ref_for_node(workspace, project, meta)
 
     neighbor_rows = workspace.cypher(
         f"MATCH {match}--(m) RETURN m",
@@ -150,8 +106,7 @@ def meta_command(
         group_key = _adjacency_group_key(adj_labels)
         if not group_key:
             continue
-        adj_selector = _neighbor_selector(project, adj_meta)
-        disp = _display_ref(workspace, project, adj_selector, adj_meta)
+        disp = display_ref_for_node(workspace, project, adj_meta)
         info = get_info(adj_labels, adj_meta)
         entity_name = format_entity_name(disp, adj_labels)
         adjacency.setdefault(group_key, []).append(f"  {entity_name}\t{info}")
@@ -168,7 +123,7 @@ def meta_command(
         lines = []
         missing = []
         for p in props:
-            value = raw_meta.get(p)
+            value = get_display_property_value(raw_meta, labels, p)
             if value is None and p in adjacency:
                 value = "\n".join(adjacency[p])
             if value is None:

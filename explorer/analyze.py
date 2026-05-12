@@ -30,6 +30,7 @@ COORDINATOR_PROMPT = """\
 - **不要提及内部概念** — 回答中不要出现 Pontis、知识图谱、.pontis 等
 - **不要输出纯文本总结** — 任务完成后直接停止，不要输出"我已完成…"等总结性文字
 - **路径式引用** — 表和列优先使用路径 ref：表如 `financial.sqlite/account`，列如 `financial.sqlite/account/account_id`；不要使用 `table.column`
+- **文件优先读 meta** — README、CSV、JSON、文本文件优先读取已有 `brief/detail`，不要直接读取原始文件正文，除非确实没有现成摘要
 
 ## 总结质量要求
 
@@ -77,6 +78,8 @@ COORDINATOR_PROMPT = """\
 - JSON、CSV、文本等其他文件（如果文本过长可调用子智能体）
 
 - 如果你在总结过程中发现缺失的关系或歧义，只需在相关实体的 detail 中提及即可，不要创建新实体
+- 不要把 CSV 当数据库去 `query`；`database_description/*.csv` 这类说明文件默认只读它们已有的 meta
+- 如果 README / CSV / 其他辅助文件当前没有足够 detail，而且它们对表列理解不是必需，就先跳过，不要为了补文件摘要而发起失败的工具调用
 """
 
 
@@ -94,6 +97,10 @@ def generate(workspace: Workspace) -> None:
     logger.info("=== Agent Analyze (summaries only) ===")
 
     spec = AgentSpec(mode="writer")
+    spec.tools = [
+        "glob", "meta", "search", "query", "agent",
+        "create_entity", "update_meta", "add_edge", "delete",
+    ]
     project_name = os.path.basename(os.path.abspath(workspace.project_path))
     spec.projects = [project_name]
     spec.guardrails = build_guardrails(spec, ["round_limit"])

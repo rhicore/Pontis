@@ -7,6 +7,7 @@
 """
 
 from tool.utils import execute_cypher
+from tool.utils.knowledge_meta import is_bird_knowledge, normalize_knowledge_meta
 from tool.utils.resolve import resolve_entity_selector
 
 
@@ -79,7 +80,13 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
             if existing_labels == requested_labels:
                 return f"Entity already exists: {name}"
 
-    meta = meta or {}
+    meta = normalize_knowledge_meta(project, labels, meta or {})
+    if is_bird_knowledge(project, labels):
+        if not str(meta.get("brief", "")).strip():
+            return "错误: bird 知识实体必须提供非空 brief（可由结构化字段自动推导）"
+        if not str(meta.get("detail", "")).strip():
+            return "错误: bird 知识实体必须提供非空 detail（可由结构化字段自动推导）"
+
     props = dict(meta)
     props["name"] = name
     if project:
