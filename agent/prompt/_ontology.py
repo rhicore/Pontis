@@ -2,7 +2,7 @@
 
 
 def get_ontology_prompt() -> str:
-    return r"""## 数据源类型
+    return r"""## 数据源与实体类型参考
 
 当前最重要的数据源类型是：
 
@@ -31,7 +31,6 @@ def get_ontology_prompt() -> str:
 - 与数据库节点相连的是 `table/view`
 - `table/view` 下面是 `col`
 - `fk/rel/overlap/disambig` 围绕表和列展开
----
 
 ## 实体标签类型
 

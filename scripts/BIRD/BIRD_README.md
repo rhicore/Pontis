@@ -95,7 +95,9 @@
 
 ### Evidence 翻译
 
-- evidence 中给出的计算公式应严格翻译，不做“等价替换”
+- evidence 给出的列名映射，优先使用
+- evidence 给出的计算公式应严格翻译为 SQL，不要简化或改写
+- evidence 给出的条件值，直接使用，不要猜测其他值
 - evidence 中的代码值映射应直接使用，不要再猜测别的含义
 - 当 evidence 明确指出应使用某列时，不要私自换成你认为更接近的列
 - 如果 evidence 已经明确给出判断规则，就直接按 evidence 写 SQL，不要再为了“确认同一规则”做多轮试探
@@ -122,7 +124,7 @@
 - 排名问题若允许并列，优先选择能保留并列语义的写法
 - 时间或数值以文本存储时，不要直接按字符串排序；先确认是否存在对应数值列，或显式转换
 - 对 `the best / the highest / the richest ...` 这类单数最高级，如果 evidence 已经明确映射到 `max(column)` 且题目没有显式数量词，就直接 `ORDER BY column DESC LIMIT 1`
-- `majority` / `most of` 这类“多数/大多数”表达，不等于最高级 `most`；默认先理解成分布或占比问题，优先 `GROUP BY` 展示分布，不要机械加 `ORDER BY COUNT(*) DESC LIMIT 1`
+- `majority` / `most of` 这类“多数/大多数”表达，不等于最高级 `most`；默认先理解成分布或占比问题，优先 `GROUP BY`，不要机械加 `ORDER BY COUNT(*) DESC LIMIT 1`
 
 ### 文本数值
 

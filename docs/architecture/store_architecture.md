@@ -5,6 +5,7 @@ This document describes the current storage shape of Pontis at a high level.
 It is intentionally short. Detailed refactor planning lives in:
 
 - [storage_flat_source_modules_plan.md](storage_flat_source_modules_plan.md)
+- [neo4j_persistence_refactor_plan.md](neo4j_persistence_refactor_plan.md)
 
 ## Purpose
 

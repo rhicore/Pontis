@@ -21,7 +21,7 @@ from tool.utils.knowledge_meta import (
 
 OUTPUT_ROOT = PROJECT_ROOT / "example_data" / "bird_global"
 ENTRY_DIR = OUTPUT_ROOT / "entries"
-BIRD_README_PATH = PROJECT_ROOT / "scripts" / "BIRD" / "README.md"
+BIRD_README_PATH = PROJECT_ROOT / "scripts" / "BIRD" / "BIRD_README.md"
 
 
 def _safe_name(name: str) -> str:
@@ -59,7 +59,7 @@ def _fetch_neighbors(ws: Workspace, name: str) -> list[dict]:
 
 
 def sync_bird_readme(ws: Workspace) -> None:
-    """同步 scripts/BIRD/README.md 到 bird 项目的 README 节点。"""
+    """同步 scripts/BIRD/BIRD_README.md 到 bird 项目的 README 节点。"""
     detail = BIRD_README_PATH.read_text(encoding="utf-8").strip()
     brief = "BIRD 数据集跨库经验库使用说明"
     rows = ws.cypher(
