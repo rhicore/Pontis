@@ -10,9 +10,6 @@ from typing import Callable, Dict, List, Tuple
 # tool_name → directory name in agent/tool_use/ (when they differ)
 _TOOL_DIR_MAP = {
     "agent": "sub_agent",
-    "bash": "SH_bash",
-    "grep": "FS_grep",
-    "query": "DB_query",
 }
 
 
@@ -127,6 +124,60 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                         },
                     },
                     "required": ["pattern"],
+                },
+            },
+        },
+        "read": {
+            "type": "function",
+            "function": {
+                "name": "read",
+                "description": _load_prompt("read"),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Text file path or unique file name",
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "description": "Start line number, default 1",
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "description": "End line number, capped by tool limit",
+                        },
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        "jd": {
+            "type": "function",
+            "function": {
+                "name": "jd",
+                "description": _load_prompt("jd"),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "JSON VFS path, e.g. data.json#/records/0",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max child items to display, default 50",
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Starting child offset, default 0",
+                        },
+                        "max_value_chars": {
+                            "type": "integer",
+                            "description": "Max preview length for scalar values",
+                        },
+                    },
+                    "required": ["path"],
                 },
             },
         },
@@ -408,7 +459,7 @@ def _exec_glob(workspace, arguments: dict) -> str:
 
 
 def _exec_grep(workspace, arguments: dict) -> str:
-    from tool.FS_grep.tool import grep_command
+    from tool.grep.tool import grep_command
     return grep_command(
         workspace,
         pattern=arguments["pattern"],
@@ -418,6 +469,27 @@ def _exec_grep(workspace, arguments: dict) -> str:
         ignore_case=arguments.get("ignore_case", False),
         head_limit=arguments.get("head_limit", 250),
         offset=arguments.get("offset", 0),
+    )
+
+
+def _exec_read(workspace, arguments: dict) -> str:
+    from tool.read.tool import read_command
+    return read_command(
+        workspace,
+        path=arguments["path"],
+        start_line=arguments.get("start_line", 1),
+        end_line=arguments.get("end_line"),
+    )
+
+
+def _exec_jd(workspace, arguments: dict) -> str:
+    from tool.jd.tool import jd_command
+    return jd_command(
+        workspace,
+        path=arguments["path"],
+        limit=arguments.get("limit", 50),
+        offset=arguments.get("offset", 0),
+        max_value_chars=arguments.get("max_value_chars", 120),
     )
 
 
@@ -443,16 +515,17 @@ def _exec_search(workspace, arguments: dict) -> str:
 
 
 def _exec_bash(workspace, arguments: dict) -> str:
-    from tool.SH_bash.tool import bash_command
+    from tool.bash.tool import bash_command
     return bash_command(
         command=arguments["command"],
         cwd=workspace.project_path,
         timeout_ms=arguments.get("timeout", 120) * 1000,
+        workspace=workspace,
     )
 
 
 def _exec_query(workspace, arguments: dict) -> str:
-    from tool.DB_query.tool import query_command
+    from tool.query.tool import query_command
     return query_command(
         workspace,
         sql=arguments["sql"],
@@ -536,6 +609,8 @@ def _get_agent_schema() -> dict:
 _READONLY_EXECUTORS = {
     "glob": _exec_glob,
     "grep": _exec_grep,
+    "read": _exec_read,
+    "jd": _exec_jd,
     "meta": _exec_meta,
     "search": _exec_search,
     "bash": _exec_bash,

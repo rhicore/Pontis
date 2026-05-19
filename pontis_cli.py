@@ -147,7 +147,7 @@ def _run_direct_command(workspace, command: str, argv: list[str]) -> str:
             limit=args.limit,
         )
     if command == "query":
-        from tool.DB_query.tool import query_command
+        from tool.query.tool import query_command
         return query_command(
             workspace,
             sql=args.sql,

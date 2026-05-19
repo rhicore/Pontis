@@ -9,10 +9,41 @@ from __future__ import annotations
 
 import os
 import threading
+import time
+from pathlib import Path
 
 
 _DRIVERS_GUARD = threading.Lock()
 _DRIVERS = {}
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        if text.startswith("export "):
+            text = text[len("export "):]
+        if "=" not in text:
+            continue
+        key, value = text.split("=", 1)
+        values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+def _local_env() -> dict[str, str]:
+    """Load ignored local Neo4j env files without requiring shell sourcing."""
+    candidates = [
+        Path.cwd() / ".neo4j" / "neo4j.env",
+        Path(__file__).resolve().parents[2] / ".neo4j" / "neo4j.env",
+    ]
+    loaded: dict[str, str] = {}
+    for path in candidates:
+        loaded.update(_read_env_file(path))
+    return loaded
 
 
 def _node_to_dict(node) -> dict:
@@ -69,12 +100,14 @@ class Neo4jGraph:
         password_env: str = "",
         **_,
     ):
-        self.uri = uri or os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-        self.database = database or os.environ.get("NEO4J_DATABASE", "")
-        self.user = user or os.environ.get("NEO4J_USER", "neo4j")
+        local_env = _local_env()
+        self.uri = uri or os.environ.get("NEO4J_URI") or local_env.get("NEO4J_URI") or "bolt://localhost:7687"
+        self.database = database or os.environ.get("NEO4J_DATABASE") or local_env.get("NEO4J_DATABASE", "")
+        self.user = user or os.environ.get("NEO4J_USER") or local_env.get("NEO4J_USER") or "neo4j"
         self.password = password or (
-            os.environ.get(password_env) if password_env else ""
-        ) or os.environ.get("NEO4J_PASSWORD", "")
+            os.environ.get(password_env) or local_env.get(password_env, "") if password_env else ""
+        ) or os.environ.get("NEO4J_PASSWORD", "") or local_env.get("NEO4J_PASSWORD", "")
+        self.password_env = password_env
         self._driver = None
 
     @property
@@ -93,6 +126,15 @@ class Neo4jGraph:
                 "Neo4j storage requires the 'neo4j' Python package. "
                 "Install it with: pip install neo4j"
             ) from exc
+        if self.user and not self.password:
+            hint = (
+                f" env var {self.password_env!r}" if self.password_env
+                else " NEO4J_PASSWORD"
+            )
+            raise RuntimeError(
+                "Missing Neo4j password."
+                f" Set{hint}, or create .neo4j/neo4j.env with NEO4J_PASSWORD=..."
+            )
         auth = (self.user, self.password) if self.user else None
         key = (self.uri, self.user, self.password)
         with _DRIVERS_GUARD:
@@ -115,6 +157,26 @@ class Neo4jGraph:
         return self.driver.session(**kwargs)
 
     def execute_cypher(self, query: str, params: dict | None = None) -> list[dict]:
+        try:
+            from neo4j.exceptions import ServiceUnavailable, SessionExpired
+        except ImportError:
+            ServiceUnavailable = SessionExpired = ()  # type: ignore[assignment]
+
+        last_exc = None
+        for attempt in range(3):
+            try:
+                return self._execute_cypher_once(query, params=params)
+            except Exception as exc:
+                if not isinstance(exc, (ServiceUnavailable, SessionExpired)):
+                    raise
+                last_exc = exc
+                self.close()
+                if attempt < 2:
+                    time.sleep(0.25 * (attempt + 1))
+        assert last_exc is not None
+        raise last_exc
+
+    def _execute_cypher_once(self, query: str, params: dict | None = None) -> list[dict]:
         with self._session() as session:
             result = session.run(query, params or {})
             return [

@@ -93,9 +93,15 @@ def get_registry() -> Dict[str, object]:
         from explorer.join_detect import generate as agent_join_detect
         from explorer.disambiguate import generate as agent_disambiguate
         from explorer.readme import generate as agent_readme
+        from explorer.text_chunk import generate as agent_text_chunk
+        from explorer.json_pattern_summary import generate as agent_json_pattern_summary
+        from explorer.csv_summary import generate as agent_csv_summary
         _REGISTRY["agent_join_detect"] = agent_join_detect
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
         _REGISTRY["agent_readme"] = agent_readme
+        _REGISTRY["agent_text_chunk"] = agent_text_chunk
+        _REGISTRY["agent_json_pattern_summary"] = agent_json_pattern_summary
+        _REGISTRY["agent_csv_summary"] = agent_csv_summary
     except ImportError:
         pass
 
@@ -104,11 +110,9 @@ def get_registry() -> Dict[str, object]:
         from extractor.modules.ai_db_summary import generate as ai_db_summary
         from extractor.modules.ai_db_table_summary import generate as ai_db_table_summary
         from extractor.modules.ai_json_summary import generate as ai_json_summary
-        from extractor.modules.ai_text_summary import generate as ai_text_summary
         _REGISTRY["ai_db_summary"] = ai_db_summary
         _REGISTRY["ai_db_table_summary"] = ai_db_table_summary
         _REGISTRY["ai_json_summary"] = ai_json_summary
-        _REGISTRY["ai_text_summary"] = ai_text_summary
     except ImportError:
         pass
 

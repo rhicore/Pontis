@@ -13,6 +13,7 @@ dependencies = [
     "sse-starlette>=2.0.0",
     "datasketches>=5.0.0",
     "neo4j>=5.28.0",
+    "sqlglot>=28.0.0",
 ]
 
 [project.scripts]

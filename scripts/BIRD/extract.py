@@ -24,7 +24,6 @@ STATIC_PIPELINE = [
 
 AI_PIPELINE = [
     "ai_db_column_summary",
-    "ai_text_summary",
 ]
 
 AGENT_PIPELINE = [

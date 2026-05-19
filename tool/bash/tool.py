@@ -13,6 +13,8 @@ import sys
 import subprocess
 from typing import Optional
 
+from tool.utils.workspace_access import workspace_allows_direct_fs
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -24,6 +26,7 @@ def bash_command(
     command: str,
     cwd: Optional[str] = None,
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
+    workspace=None,
 ) -> str:
     """
     Execute a shell command.
@@ -36,6 +39,12 @@ def bash_command(
     Returns:
         Command output (stdout + stderr)
     """
+    if workspace is not None and not workspace_allows_direct_fs(workspace):
+        return (
+            "Error: bash requires a local fs workspace. "
+            "This workspace source must be accessed through storage-backed tools."
+        )
+
     timeout_s = min(timeout_ms, MAX_TIMEOUT_MS) / 1000.0
 
     try:
@@ -69,7 +78,7 @@ def bash_command(
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python -m tool.SH_bash.tool <command> [cwd] [timeout_ms]")
+        print("Usage: python -m tool.bash.tool <command> [cwd] [timeout_ms]")
         sys.exit(1)
 
     _cmd = sys.argv[1]

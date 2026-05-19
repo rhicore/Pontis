@@ -203,9 +203,9 @@ scripts/KDDCUP/
 
 | 能力 | 复用方式 |
 | --- | --- |
-| SQLite schema/query | 复用或仿照 `tool/DB_query` |
+| SQLite schema/query | 复用或仿照 `tool/query` |
 | 文件发现 | 复用或仿照 `tool/glob` |
-| 文档搜索 | 复用或仿照 `tool/search` / `FS_grep` |
+| 文档搜索 | 复用或仿照 `tool/search` / `tool/grep` |
 | agent loop | 可以复用 `agent/agent.py`，但需要结构化 answer 工具 |
 | guardrails | 保留 SQL 只读、路径限制、轮数限制 |
 | extractor 思路 | 每题启动前生成轻量 schema/profile |

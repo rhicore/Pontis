@@ -39,8 +39,8 @@ These were fixed before writing this report:
 - `resolve_entity(...)` no longer calls `glob_command(...)` and reparses formatted text output for wildcard refs.
 - `meta(property=[...])` returns ordinary properties without querying all neighbors.
 - `search` delays display-ref formatting until after ranking and pagination.
-- `DB_query` fetches only `limit + 1` rows instead of `fetchall()`.
-- `FS_grep` streams `rg` output for content mode and stops after enough lines for the requested page.
+- `query` fetches only `limit + 1` rows instead of `fetchall()`.
+- `grep` streams search output for content mode and stops after enough lines for the requested page.
 
 Observed tool timings on `codebase_community` after fixes:
 

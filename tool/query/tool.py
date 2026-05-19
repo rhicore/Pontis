@@ -4,6 +4,8 @@ import os
 import re
 import sqlite3
 
+from tool.utils.workspace_access import workspace_allows_direct_fs
+
 logger = logging.getLogger(__name__)
 
 # 匹配非 SELECT 的写操作关键词
@@ -51,6 +53,12 @@ def query_command(workspace, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -
         return "错误：SQL 中包含写操作关键词，只允许 SELECT 查询。"
 
     if os.path.isabs(file):
+        if not workspace_allows_direct_fs(workspace):
+            return "错误：当前 workspace 不允许绕过 storage 直接访问数据库文件。请使用图中已投影的数据库文件路径。"
+        root = os.path.abspath(getattr(workspace, "project_path", "") or "")
+        abs_file = os.path.abspath(file)
+        if root and not (abs_file == root or abs_file.startswith(root + os.sep)):
+            return "错误：数据库文件路径不在当前 workspace source 根目录内。"
         if not os.path.isfile(file):
             return f"错误：数据库文件不存在: {file}"
         db_path = file
@@ -59,7 +67,9 @@ def query_command(workspace, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -
         project_root = getattr(workspace, "project_path", "") or ""
         direct_path = os.path.realpath(os.path.join(project_root, file)) if project_root else ""
         if (
-            direct_path
+            workspace_allows_direct_fs(workspace)
+            and project_root
+            and direct_path
             and os.path.commonpath([os.path.realpath(project_root), direct_path]) == os.path.realpath(project_root)
             and os.path.isfile(direct_path)
         ):

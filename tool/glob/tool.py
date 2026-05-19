@@ -15,7 +15,6 @@
   seg1/seg2 → MATCH (a:lbl)--(b:lbl) RETURN a, b
   **       → MATCH (a)-[*1..]-(b) 变长遍历
 """
-import os
 import json
 from fnmatch import fnmatch
 from typing import Dict, List, Optional, Tuple

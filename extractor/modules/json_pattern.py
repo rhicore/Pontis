@@ -6,13 +6,15 @@
 - 提取重复模式（ARRAY 2+ 元素，DICT 2+ key）
 - 在 _entity/ 下创建 .pattern 子节点
 
-.pattern 节点的 _meta.yml 包含四个元属性：
-  name:        $.users.[v]                                          # 路径名称
+.pattern 节点包含：
+  source_path: context/json/users.json
+  json_path:   $.users.[v]
   type:        DICT                                                  # DICT 或 ARRAY
   pattern:     each pair patterns "user_...": {role: STR}           # 模式描述
-  ai_summary:                                                         # AI 总结（预留）
 """
 import json
+import hashlib
+import os
 import random
 import re
 import logging
@@ -20,6 +22,19 @@ from storage.workspace import Workspace
 from extractor.modules.utils.src import file_exists, open_text_file
 
 logger = logging.getLogger(__name__)
+
+
+def pattern_name_prefix(source_path: str) -> str:
+    """Return a short, stable prefix for pattern entities from one JSON file."""
+    base = os.path.basename(source_path.rstrip("/")) or "json"
+    safe_base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._-") or "json"
+    digest = hashlib.sha1(source_path.encode("utf-8")).hexdigest()[:8]
+    return f"{safe_base}.{digest}"
+
+
+def pattern_entity_name(source_path: str, json_path: str) -> str:
+    safe_path = re.sub(r"[^A-Za-z0-9._$\[\]-]+", "_", json_path).strip("._") or "$"
+    return f"{pattern_name_prefix(source_path)}.{safe_path}.pattern"
 
 
 # ============ 类型推导 ============
@@ -331,7 +346,10 @@ def _generate_for_json(path: str, workspace: Workspace) -> bool:
 
 def _load_json(path: str, workspace: Workspace):
     """从源文件加载 JSON 数据"""
-    meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": path})
+    meta_rows = workspace.cypher(
+        "MATCH (n:file) WHERE n.path = $path OR n.name = $path RETURN n",
+        params={"path": path},
+    )
     meta = meta_rows[0].get("n") if meta_rows else None
     rel_path = meta.get("path") if meta else None
     if rel_path and file_exists(workspace, rel_path):
@@ -346,23 +364,26 @@ def _load_json(path: str, workspace: Workspace):
 
 def _write_pattern(file_path: str, pat: dict, workspace: Workspace) -> None:
     """写入单个 .pattern 实体"""
-    safe_name = pat["name"].replace("/", "_").replace("\\", "_")
-    entity_name = f"{safe_name}.pattern"
+    entity_name = pattern_entity_name(file_path, pat["name"])
 
     workspace.cypher(
-        "CREATE (p:pattern {name: $name}) SET p += $props",
+        "MERGE (p:pattern {name: $name}) SET p += $props",
         params={
             "name": entity_name,
             "props": {
                 "labels": ["pattern"],
+                "path": entity_name,
+                "source_path": file_path,
+                "json_path": pat["name"],
                 "source_pattern_name": pat["name"],
                 "type": pat["type"],
                 "pattern": pat["pattern"],
-                "ai_summary": "",
             },
         },
     )
     workspace.cypher(
-        "MATCH (f {name: $file_path}), (p {name: $entity_name}) CREATE (f)--(p)",
+        "MATCH (f:file), (p:pattern {name: $entity_name}) "
+        "WHERE f.path = $file_path OR f.name = $file_path "
+        "MERGE (f)-[:RELATED_TO]->(p)",
         params={"file_path": file_path, "entity_name": entity_name},
     )

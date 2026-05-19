@@ -9,6 +9,7 @@ DETAIL = """\
 
 注意：
 - 工作目录已设为项目路径，命令中的路径相对于项目根目录
+- 只有 local fs workspace 才允许执行；非本地 source 必须使用 storage-backed 工具
 - 只进行只读操作（如 ls, cat, head, wc等），不要修改数据
 - 如果 README / CSV / JSON / 文本文件已经能通过 `meta(..., property=["detail"])` 读到内容，就不要再用 `bash` 读取原文件
 - 如果其他工具能完成任务，尽量不要使用 bash\

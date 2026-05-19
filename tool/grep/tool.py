@@ -1,8 +1,8 @@
 """
 Grep tool - Search content in files and entities.
 
-Extends Claude Code's GrepTool design with entity support (.chunk).
-Uses subprocess ripgrep for physical files, custom logic for entities.
+Uses storage-owned open_file handles for :text files. For a single local file,
+it may use ripgrep as an optimization after the handle has been resolved.
 
 Output formats follow CC spec:
 - content mode: file:line:content
@@ -17,8 +17,13 @@ from typing import Optional, List, Tuple
 from dataclasses import dataclass
 
 from tool.config import TOOL_PAGINATION
-
-MAX_RESULT_SIZE_CHARS = 20_000
+from tool.utils.workspace_access import (
+    OpenFileSource,
+    normalize_rel_path,
+    physical_path_for_open_file,
+    resolve_file_sources,
+    workspace_allows_direct_fs,
+)
 
 # VCS dirs to exclude from search
 VCS_EXCLUDE = ['.git', '.svn', '.hg', '.bzr', '.jj', '.sl']
@@ -278,30 +283,51 @@ def _sort_by_mtime(files: List[str]) -> List[str]:
     return sorted(files, key=mtime_key)
 
 
-def _source_path_for(workspace, rel_path: str = ".") -> Optional[str]:
-    root = getattr(workspace, "project_path", "") or ""
-    if rel_path in ("", "."):
-        return root if root and os.path.isdir(root) else None
+def _compile_pattern(params: GrepParams):
+    flags = re.IGNORECASE if params.case_insensitive else 0
+    if params.multiline:
+        flags |= re.MULTILINE
+    return re.compile(params.pattern, flags)
 
-    rows = workspace.cypher(
-        "MATCH (n:file {path: $path}) RETURN coalesce(n._file_open, n.file_open) AS open_file",
-        params={"path": rel_path},
-    )
-    if not rows and rel_path not in ("", "."):
-        rows = workspace.cypher(
-            "MATCH (n:file {name: $name}) RETURN coalesce(n._file_open, n.file_open) AS open_file",
-            params={"name": os.path.basename(rel_path)},
-        )
-    if len(rows) == 1:
-        path = getattr(rows[0].get("open_file"), "path", None)
-        if path:
-            return path
 
-    if root and not os.path.isabs(rel_path):
-        path = os.path.join(root, rel_path)
-        if os.path.exists(path):
-            return path
-    return rel_path if os.path.isabs(rel_path) and os.path.exists(rel_path) else None
+def _grep_open_sources(params: GrepParams, sources: list[OpenFileSource]) -> list[str]:
+    """Search storage-opened text files without requiring physical paths."""
+    pattern = _compile_pattern(params)
+    results: list[str] = []
+    stop_after = None
+    if params.output_mode == "content" and params.head_limit > 0:
+        stop_after = params.offset + params.head_limit + 1
+
+    for src in sources:
+        match_count = 0
+        matched_file = False
+        try:
+            with src.open_file("r", encoding="utf-8", errors="ignore") as fh:
+                for lineno, line in enumerate(fh, 1):
+                    text = line.rstrip("\n")
+                    if not pattern.search(text):
+                        continue
+                    match_count += 1
+                    matched_file = True
+                    if params.output_mode == "content":
+                        results.append(f"{src.path}:{lineno}:{text}")
+                        if stop_after and len(results) >= stop_after:
+                            return results
+                    elif params.output_mode == "files_with_matches":
+                        results.append(src.path)
+                        break
+            if params.output_mode == "count" and match_count:
+                results.append(f"{src.path}:{match_count}")
+        except Exception:
+            continue
+        if params.output_mode == "files_with_matches" and not matched_file:
+            continue
+    return results
+
+
+def _physical_path_for_unique_source(source: OpenFileSource) -> str:
+    path = physical_path_for_open_file(source.open_file)
+    return path if path and os.path.exists(path) else ""
 
 
 def grep_command(
@@ -351,20 +377,38 @@ def grep_command(
         offset=offset,
     )
 
-    # Resolve search path through storage handle properties only.
+    # Resolve search path through storage handles. grep/read only operate on
+    # files marked :text; the local filesystem path is only used as an optional
+    # ripgrep optimization after storage has returned an open_file handle.
     if params.path:
-        search_rel = os.path.join(current_cwd, params.path) if current_cwd and not os.path.isabs(params.path) else params.path
+        search_rel = normalize_rel_path(params.path, current_cwd)
     else:
         search_rel = current_cwd or "."
-    search_base = search_rel if os.path.isabs(search_rel) else _source_path_for(workspace, search_rel)
 
-    if not search_base or not os.path.exists(search_base):
-        return f"Path does not exist: {params.path or '.'}"
+    sources = resolve_file_sources(
+        workspace,
+        search_rel,
+        labels=("text",),
+        current_cwd="",
+        allow_directory=True,
+        glob=params.glob,
+    )
 
-    root_path = _source_path_for(workspace, ".") or (search_base if os.path.isdir(search_base) else os.path.dirname(search_base))
+    if not sources:
+        return f"Path does not exist or is not a text file: {params.path or '.'}"
 
-    # Physical file grep via ripgrep
-    raw_results = _run_ripgrep(params, search_base)
+    root_path = getattr(workspace, "project_path", "") or "."
+    raw_results = None
+
+    # For a single local file, ripgrep is the fast path after storage has proven
+    # the file exists and is allowed for text access.
+    if len(sources) == 1 and workspace_allows_direct_fs(workspace):
+        physical = _physical_path_for_unique_source(sources[0])
+        if physical:
+            raw_results = _run_ripgrep(params, physical)
+
+    if raw_results is None:
+        raw_results = _grep_open_sources(params, sources)
 
     if params.output_mode == 'content':
         limited, applied_limit = _apply_head_limit(raw_results, params.head_limit, params.offset)
@@ -387,7 +431,7 @@ if __name__ == "__main__":
     import json
     import sys
     if len(sys.argv) < 3:
-        print("Usage: python -m tool.FS_grep.tool <project_name> <json_params> [cwd]")
+        print("Usage: python -m tool.grep.tool <project_name> <json_params> [cwd]")
         sys.exit(1)
 
     from storage.workspace import Workspace

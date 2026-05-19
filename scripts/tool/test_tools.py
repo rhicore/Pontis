@@ -10,6 +10,7 @@ Usage: python3 scripts/tool/test_tools.py
 """
 
 import os
+import json
 import sqlite3
 import sys
 import tempfile
@@ -21,9 +22,11 @@ from storage.workspace import Workspace
 from agent.agent import PontusAgent
 from agent.guardrail.sql_utils import get_meta_read
 from extractor.modules.utils.refs import get_entity_meta
-from tool.DB_query.tool import query_command
-from tool.FS_grep.tool import grep_command
-from tool.SH_bash.tool import bash_command
+from tool.query.tool import query_command
+from tool.grep.tool import grep_command
+from tool.bash.tool import bash_command
+from tool.read.tool import read_command
+from tool.jd.tool import jd_command
 from tool.add_edge.tool import add_edge_command
 from tool.create_entity.tool import create_entity_command
 from tool.cypher.tool import cypher_command
@@ -62,6 +65,18 @@ def make_books_project():
     os.makedirs(os.path.join(tmp, "notes"), exist_ok=True)
     with open(os.path.join(tmp, "notes", "glossary.txt"), "w", encoding="utf-8") as fh:
         fh.write("address status domain\norder status domain\n")
+
+    with open(os.path.join(tmp, "records.json"), "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "table": "status_records",
+                "records": [
+                    {"id": 1, "name": "Active", "kind": "address"},
+                    {"id": 2, "name": "Pending Delivery", "kind": "order"},
+                ],
+            },
+            fh,
+        )
 
     db_path = os.path.join(tmp, "books.sqlite")
     conn = sqlite3.connect(db_path)
@@ -245,7 +260,16 @@ def main():
     grep_missing = grep_command(ws, pattern="address", path="missing.txt")
     ok("grep reports missing path", "Path does not exist" in grep_missing, grep_missing)
 
-    bash_out = bash_command("printf 'tool-bash-ok'", cwd=project)
+    read_out = read_command(ws, path="README.md", start_line=1, end_line=3)
+    ok("read returns line-numbered text through open_file", "README.md:L1-L3" in read_out and "1 | # Books" in read_out, read_out)
+
+    jd_root = jd_command(ws, path="records.json", limit=10)
+    ok("jd browses JSON root through open_file", "records" in jd_root and "records.json#/records" in jd_root, jd_root)
+
+    jd_records = jd_command(ws, path="records.json#/records", limit=1)
+    ok("jd paginates JSON arrays", "schema keys:" in jd_records and "records.json#/records/0" in jd_records, jd_records)
+
+    bash_out = bash_command("printf 'tool-bash-ok'", cwd=project, workspace=ws)
     ok("bash executes command", "tool-bash-ok" in bash_out, bash_out)
 
     mixed_history = [

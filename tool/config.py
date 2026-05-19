@@ -122,13 +122,19 @@ INFO_TYPE_CONFIG = {
     "disambig": InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     # 知识段
     "knowledge":    InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
-    "pattern":     InfoTypeConfig(info_fn=lambda m: {"pattern": _v(m, "pattern")}, max_str_len=80),
+    "pattern":     InfoTypeConfig(info_fn=lambda m: {
+                    "path": _v(m, "json_path"),
+                    "brief": _v(m, "brief") or _v(m, "pattern"),
+                }, max_str_len=80),
     "convention":  InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
     "term":        InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
     "lesson":      InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
     "example":     InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
     # 其他
-    "chunk":    InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m, 'char_count')} chars"}),
+    "chunk":    InfoTypeConfig(info_fn=lambda m: {
+                    "range": f"L{_v(m, 'start_line')}-L{_v(m, 'end_line')}",
+                    "brief": _v(m, "brief"),
+                }),
     "directory": InfoTypeConfig(info_fn=lambda m: {"path": _v(m, "path"), "stats": f"{_v(m, 'file_count')} files, {_v(m, 'subdir_count')} dirs"}),
 }
 
@@ -162,10 +168,10 @@ META_TYPE_CONFIG = {
         adjacency_keys={"table", "view"},
     ),
     "csv": MetaTypeConfig(
-        default_keys=["row_count", "column_count", "delimiter", "line_count", "char_count", "file_size"],
+        default_keys=["row_count", "column_count", "delimiter", "line_count", "char_count", "file_size", "brief", "detail"],
     ),
     "tsv": MetaTypeConfig(
-        default_keys=["row_count", "column_count", "line_count", "char_count", "file_size"],
+        default_keys=["row_count", "column_count", "line_count", "char_count", "file_size", "brief", "detail"],
     ),
     "json": MetaTypeConfig(
         default_keys=["structure_type", "key_count", "array_length", "top_level_keys", "line_count", "char_count", "file_size", "brief", "detail"],
@@ -235,7 +241,7 @@ META_TYPE_CONFIG = {
         max_detail_lines=None,
     ),
     "pattern": MetaTypeConfig(
-        default_keys=["name", "pattern"],
+        default_keys=["source_path", "json_path", "type", "pattern", "brief", "detail"],
     ),
     "convention": MetaTypeConfig(
         default_keys=["brief", "detail"],
@@ -251,7 +257,7 @@ META_TYPE_CONFIG = {
     ),
     # 其他
     "chunk": MetaTypeConfig(
-        default_keys=["char_count"],
+        default_keys=["source_path", "start_line", "end_line", "brief", "detail"],
     ),
     "directory": MetaTypeConfig(
         default_keys=["path", "child_count", "file_count", "subdir_count"],
