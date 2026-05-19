@@ -70,11 +70,13 @@ def _parse_fk_entity(entity_name: str) -> dict | None:
 def _get_db_rel(ref: str, workspace: Workspace) -> str | None:
     """从 FK ref 获取数据库相对路径（fk -> table -> file 两跳）。"""
     file_rows = workspace.cypher(
-        f'MATCH (f {{name: "{ref}"}})--(x)--(y:file:db) RETURN y'
+        "MATCH (f {name: $ref})--(x)--(y:file:db) RETURN y",
+        params={"ref": ref},
     )
     if not file_rows:
         file_rows = workspace.cypher(
-            f'MATCH (f {{name: "{ref}"}})--(x)--(y:file) RETURN y'
+            "MATCH (f {name: $ref})--(x)--(y:file) RETURN y",
+            params={"ref": ref},
         )
     if not file_rows:
         return None
@@ -87,11 +89,13 @@ def _get_db_rel(ref: str, workspace: Workspace) -> str | None:
 
 def _get_db_name(ref: str, workspace: Workspace) -> str | None:
     rows = workspace.cypher(
-        f'MATCH (f {{name: "{ref}"}})--(x)--(y:file:db) RETURN y'
+        "MATCH (f {name: $ref})--(x)--(y:file:db) RETURN y",
+        params={"ref": ref},
     )
     if not rows:
         rows = workspace.cypher(
-            f'MATCH (f {{name: "{ref}"}})--(x)--(y:file) RETURN y'
+            "MATCH (f {name: $ref})--(x)--(y:file) RETURN y",
+            params={"ref": ref},
         )
     if not rows:
         return None

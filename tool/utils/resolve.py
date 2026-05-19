@@ -6,6 +6,7 @@
 """
 
 from tool.utils.entity_refs import dotted_ref_to_path
+from storage.query_inspector import cypher_label_clause
 
 
 def _split_project_ref(ref: str) -> tuple[str | None, str]:
@@ -61,8 +62,23 @@ def _query_projects(workspace, project: str | None) -> list[str | None]:
 def _run_cypher_projects(workspace, query: str, params: dict, project: str | None) -> list[dict]:
     rows = []
     for candidate in _query_projects(workspace, project):
-        rows.extend(workspace.cypher(query, params=params, project=candidate))
+        for row in workspace.cypher(query, params=params, project=candidate):
+            rows.append(_tag_row_project(row, candidate))
     return rows
+
+
+def _tag_row_project(row: dict, project: str | None) -> dict:
+    if not project:
+        return row
+    tagged = {}
+    for key, value in row.items():
+        if isinstance(value, dict):
+            copy = dict(value)
+            copy.setdefault("__project", project)
+            tagged[key] = copy
+        else:
+            tagged[key] = value
+    return tagged
 
 
 def _candidate_structured_refs(local_ref: str) -> list[str]:
@@ -129,25 +145,27 @@ def resolve_entity_selector(workspace, ref: str) -> tuple[dict | None, str | Non
     if err:
         return None, err
     return {
-        "project": node.get("project") or None,
+        "project": node.get("__project") or None,
         "name": node.get("name", ref),
         "labels": list(node.get("labels", [])),
         "path": node.get("path"),
-        "ref": node.get("ref"),
+        "ref": node.get("_ref") or node.get("ref"),
+        "ref_key": "_ref" if node.get("_ref") else ("ref" if node.get("ref") else None),
     }, None
 
 
 def canonical_ref(node: dict, fallback: str = "") -> str:
     """Return the most stable writable ref for a resolved node."""
-    return node.get("ref") or node.get("path") or node.get("name") or fallback
+    return node.get("_ref") or node.get("ref") or node.get("path") or node.get("name") or fallback
 
 
 def selector_match_pattern(selector: dict, var: str = "n", name_param: str = "name") -> str:
-    labels = "".join(f":{label}" for label in selector.get("labels", []))
+    labels = cypher_label_clause(selector.get("labels", []))
     if selector.get("path"):
         return f"({var}{labels} {{path: $path}})"
     if selector.get("ref"):
-        return f"({var}{labels} {{ref: $ref}})"
+        ref_key = selector.get("ref_key") or "_ref"
+        return f"({var}{labels} {{{ref_key}: $ref}})"
     return f"({var}{labels} {{name: ${name_param}}})"
 
 
@@ -170,6 +188,14 @@ def _lookup_exact_named_nodes(workspace, project: str | None, local_ref: str) ->
         project=project,
     )
     nodes = _dedupe_nodes(row.get("n") for row in rows if row.get("n"))
+    if not nodes:
+        rows = _run_cypher_projects(
+            workspace,
+            "MATCH (n:file) WHERE n.name = $name OR n.path = $name RETURN n",
+            params={"name": local_ref},
+            project=project,
+        )
+        nodes = _dedupe_nodes(row.get("n") for row in rows if row.get("n"))
     if len(nodes) > 1 and local_ref == "README":
         file_nodes = [node for node in nodes if "file" in set(node.get("labels", []))]
         if len(file_nodes) == 1:
@@ -352,8 +378,24 @@ def _resolve_direct_candidate(
     if not direct:
         rows = _run_cypher_projects(
             workspace,
+            "MATCH (n) WHERE n._ref = $ref OR n.ref = $ref RETURN n",
+            params={"ref": candidate},
+            project=project,
+        )
+        direct = [row.get("n") for row in rows if row.get("n")]
+    if not direct:
+        rows = _run_cypher_projects(
+            workspace,
             "MATCH (n {path: $path}) RETURN n",
             params={"path": candidate},
+            project=project,
+        )
+        direct = [row.get("n") for row in rows if row.get("n")]
+    if not direct:
+        rows = _run_cypher_projects(
+            workspace,
+            "MATCH (n:file) WHERE n.name = $value OR n.path = $value RETURN n",
+            params={"value": candidate},
             project=project,
         )
         direct = [row.get("n") for row in rows if row.get("n")]
@@ -362,7 +404,7 @@ def _resolve_direct_candidate(
     if not direct and candidate_ref:
         rows = _run_cypher_projects(
             workspace,
-            "MATCH (n {ref: $ref}) RETURN n",
+            "MATCH (n) WHERE n._ref = $ref OR n.ref = $ref RETURN n",
             params={"ref": candidate_ref},
             project=project,
         )
@@ -376,7 +418,10 @@ def _dedupe_nodes(nodes) -> list[dict]:
     result = []
     seen = set()
     for node in nodes:
-        key = node.get("id") or (node.get("project", ""), node.get("ref"), node.get("path"), node.get("name"))
+        key = (
+            node.get("__project", ""),
+            node.get("id") or node.get("_ref") or node.get("ref") or node.get("path") or node.get("name"),
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -385,17 +430,14 @@ def _dedupe_nodes(nodes) -> list[dict]:
 
 
 def _lookup_urn_nodes(workspace, ref: str) -> list[dict]:
-    from tool.glob.tool import _apply_post_filters, _build_cypher, parse_urn
+    from tool.glob.tool import _apply_post_filters, _build_cypher, _execute_projects, parse_urn
 
     project, segments = parse_urn(ref)
     cypher, post_filters = _build_cypher(segments)
 
-    rows = []
-    for candidate in _query_projects(workspace, project):
-        project_rows = workspace.cypher(cypher, project=candidate)
-        if post_filters:
-            project_rows = _apply_post_filters(project_rows, post_filters)
-        rows.extend(project_rows)
+    rows = _execute_projects(workspace, cypher, project)
+    if post_filters:
+        rows = _apply_post_filters(rows, post_filters)
 
     nodes = []
     for row in rows:

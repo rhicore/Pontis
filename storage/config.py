@@ -1,7 +1,6 @@
 """Store 配置 — 三层结构：项目信息 / 数据源 / 图存储。"""
 import os
 from dataclasses import dataclass, field
-from fnmatch import fnmatch
 from typing import Dict, List, Optional
 
 import yaml
@@ -20,9 +19,12 @@ class SourceConfig:
 
 @dataclass
 class GraphConfig:
-    """图存储配置 — 决定图数据库存在哪、用什么引擎。"""
-    type: str = "sqlite"      # sqlite | neo4j | memory
-    path: str = ""            # 空 = 从 source.path 推导
+    """Neo4j 连接配置。"""
+    uri: str = ""             # Neo4j bolt URI
+    database: str = ""        # Neo4j database name
+    user: str = ""            # Neo4j username
+    password: str = ""        # Neo4j password, prefer password_env
+    password_env: str = ""    # Env var containing Neo4j password
 
 
 @dataclass
@@ -36,18 +38,8 @@ class ProjectConfig:
 
 
 @dataclass
-class RoutingRule:
-    pattern: str
-    project: str
-
-
-@dataclass
 class StoreConfig:
     projects: Dict[str, ProjectConfig] = field(default_factory=dict)
-    routing: List[RoutingRule] = field(default_factory=list)
-
-    def default_project(self) -> Optional[str]:
-        return next(iter(self.projects)) if self.projects else None
 
     def resolve_source_path(self, project: str) -> Optional[str]:
         entry = self.projects.get(project)
@@ -58,27 +50,11 @@ class StoreConfig:
             p = os.path.abspath(p)
         return p
 
-    def resolve_graph_path(self, project: str) -> Optional[str]:
-        """解析图存储路径。空则从 source.path 推导。"""
+    def resolve_graph_uri(self, project: str) -> Optional[str]:
         entry = self.projects.get(project)
         if not entry:
             return None
-        if entry.graph.path:
-            p = os.path.expanduser(entry.graph.path)
-            if not os.path.isabs(p):
-                p = os.path.abspath(p)
-            return p
-        # 默认：{source.path}/.pontis/store.db
-        src = self.resolve_source_path(project)
-        if src:
-            return os.path.join(src, ".pontis", "store.db")
-        return None
-
-    def route_entity(self, entity_name: str) -> Optional[str]:
-        for rule in self.routing:
-            if fnmatch(entity_name, rule.pattern):
-                return rule.project
-        return None
+        return entry.graph.uri or os.environ.get("NEO4J_URI", "bolt://localhost:7687")
 
     def project_groups(self, project: str) -> List[str]:
         entry = self.projects.get(project)
@@ -97,8 +73,11 @@ def _parse_project(name: str, pdata) -> ProjectConfig:
     )
     graph = pdata.get("graph", {})
     graph_cfg = GraphConfig(
-        type=graph.get("type", "sqlite"),
-        path=graph.get("path", ""),
+        uri=graph.get("uri", ""),
+        database=graph.get("database", ""),
+        user=graph.get("user", ""),
+        password=graph.get("password", ""),
+        password_env=graph.get("password_env", ""),
     )
     return ProjectConfig(
         name=name,
@@ -129,18 +108,11 @@ def load_config(config_path: str = None, project_path: str = None) -> StoreConfi
         sources.append(builtin_cfg)
 
     merged_projects: Dict[str, ProjectConfig] = {}
-    merged_routing: List[RoutingRule] = []
-
     for src in sources:
         with open(src, "r") as f:
             data = yaml.safe_load(f) or {}
         for name, pdata in data.get("projects", {}).items():
             merged_projects[name] = _parse_project(name, pdata)
-        for rdata in data.get("routing", []):
-            merged_routing.append(RoutingRule(
-                pattern=rdata["pattern"],
-                project=rdata["project"],
-            ))
 
     if project_path:
         pname = os.path.basename(os.path.abspath(project_path))
@@ -151,4 +123,4 @@ def load_config(config_path: str = None, project_path: str = None) -> StoreConfi
             )
             logger.info("Registered project '%s' from project_path", pname)
 
-    return StoreConfig(projects=merged_projects, routing=merged_routing)
+    return StoreConfig(projects=merged_projects)

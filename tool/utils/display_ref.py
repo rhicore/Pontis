@@ -9,7 +9,7 @@ def node_selector(project: str | None, node_meta: dict) -> dict:
         "name": node_meta.get("name", ""),
         "labels": list(node_meta.get("labels", [])),
         "path": node_meta.get("path"),
-        "ref": node_meta.get("ref"),
+        "ref": node_meta.get("_ref") or node_meta.get("ref"),
     }
 
 
@@ -24,7 +24,7 @@ def display_ref_for_node(
     labels = set(node_meta.get("labels", []))
     name = node_meta.get("name", "?")
     path = node_meta.get("path")
-    ref = node_meta.get("ref")
+    ref = node_meta.get("_ref") or node_meta.get("ref")
 
     if path and ({"file", "dir"} & labels):
         return path

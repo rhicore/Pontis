@@ -1,142 +1,141 @@
 """Store module protocol.
 
-这个文件是给 source/project 模块作者看的最小协议说明。
-
-设计目标：
-- `storage.store.Store` 负责通用图逻辑
-- `storage.stores.*` 下面的模块只负责某一种 project/source 语义
-- 模块通过下面这组钩子，把“虚子图 / src / 匹配规则 / 虚属性”接入主图
+This is the only storage-internal module that source modules should import.
+Concrete modules receive a `ModuleContext`; they must not inspect `Store`
+internals or import peer source modules.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+import re
+from typing import Any
+
+from storage.query_inspector import cypher_label_clause
+
+_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+
+@dataclass
+class ResolverPointer:
+    project: str
+    module: str
+    kind: str
+    payload: str
 
 
 @dataclass
-class MatchResult:
-    """中心层用的匹配结果。
-
-    说明：
-    - `matches` 放的是主图里命中的实体内部 id
-    - `mergeable=False` 表示不要自动复用
-    """
-    matches: list[str]
-    mergeable: bool = False
-
-    @property
-    def count(self) -> int:
-        return len(self.matches)
-
-
-@dataclass
-class MatchQuery:
-    """模块返回给中心层的声明式匹配查询。
-
-    约定：
-    - `query` 必须是可直接执行的 cypher
-    - `params` 是执行参数
-    - `var` 是结果里代表“候选主图实体”的变量名
-    """
+class CypherStatement:
     query: str
-    params: dict
-    var: str = "n"
+    params: dict = field(default_factory=dict)
+
+
+def make_pointer(module: str, kind: str, payload: str, *, project: str = "") -> str:
+    """Build a Pontis resolver pointer string.
+
+    The payload is module-owned. Keep it free of literal ">" unless the module
+    encodes it first.
+    """
+    if not project:
+        raise ValueError("resolver pointer requires a project name")
+    return f"<pontis:{project}:{module}:{kind}:{payload}>"
+
+
+def parse_pointer(value: str) -> ResolverPointer | None:
+    """Parse a complete resolver pointer string."""
+    if not isinstance(value, str):
+        return None
+    prefix = "<pontis:"
+    if not value.startswith(prefix) or not value.endswith(">"):
+        return None
+    body = value[len(prefix):-1]
+    parts = body.split(":", 3)
+    if len(parts) != 4:
+        return None
+    project, module, kind, payload = parts
+    if project and not _TOKEN_RE.match(project):
+        return None
+    if not _TOKEN_RE.match(module) or not _TOKEN_RE.match(kind):
+        return None
+    return ResolverPointer(
+        project=project,
+        module=module,
+        kind=kind,
+        payload=payload,
+    )
+
+
+@dataclass
+class ModuleContext:
+    project_name: str
+    project_config: Any
+    source_config: Any
+    graph_config: Any
+    source: Any
+    cache: dict = field(default_factory=dict)
 
 
 class StoreModule:
-    """模块协议。
+    """Base protocol for source modules.
 
-    一个模块通常对应一种 project/source 语义，例如 `fs`。
+    Active query-time flow:
 
-    模块作者通常只需要实现这些能力中的一部分：
-    - 虚实体发现：`discover_virtual`
-    - 虚子图导出：`iter_virtual_nodes` / `iter_virtual_edges`
-    - 虚元数据：`get_virtual_meta`
-    - 虚邻接：`get_virtual_neighbors`
-    - 原生访问端口：`bind_src`
-    - 主图复用规则：`match_query`
-    - fallback 元数据：`meta_fallback`
+    ```text
+    Workspace.cypher(...)
+      -> TriggerRouter calls module.wants(event)
+      -> selected module returns CypherStatement objects
+      -> Store executes those statements
+      -> Neo4j runs the original query
+      -> Workspace resolves returned pointer strings
+    ```
 
-    不是每个模块都要实现全部方法；不需要的能力返回空即可。
+    A module should be flat and self-contained: it receives only
+    `ModuleContext`, reads data through `ctx.source`, and does not import peer
+    modules or Store internals.
     """
     name = "module"
-    prop_registry = {}
-    dir_props = {}
-    common_file_props = {}
 
-    def iter_virtual_nodes(self) -> list[dict]:
-        """返回模块提供的虚节点列表。
+    def __init__(self, ctx: ModuleContext | None = None):
+        self.ctx = ctx
 
-        返回的每个节点应尽量包含：
-        - `name`
-        - `path`（如果有稳定路径）
-        - `labels`
+    @property
+    def project_name(self) -> str:
+        return self.ctx.project_name if self.ctx else ""
+
+    def pointer(self, kind: str, payload: str) -> str:
+        """Build a project-aware resolver pointer for this module."""
+        return make_pointer(self.name, kind, payload, project=self.project_name)
+
+    def wants(self, event) -> bool:
+        """Return whether this module should run for a trigger event."""
+        if getattr(event, "type", "") != "query":
+            return False
+        return self.should_materialize_for_query(
+            getattr(event, "parsed_query", None),
+            getattr(event, "query", ""),
+        )
+
+    def should_materialize_for_query(self, parsed, raw_query: str = "") -> bool:
+        """Return whether this module should publish its virtual subgraph.
+
+        Workspace must not know source-specific labels or type rules. Each
+        module decides whether a query touches the entity types or access ports
+        it owns.
+        """
+        return False
+
+    def cypher_statements(self) -> list[CypherStatement]:
+        """Return write statements used to refresh this module's facts.
+
+        Store does not interpret a module's identity model. The module owns its
+        Cypher MERGE / MATCH / DELETE semantics and Store only executes the
+        returned statements in order.
         """
         return []
 
-    def iter_virtual_edges(self, nodes: list[dict]) -> list[tuple[str, str]]:
-        """返回虚节点之间的边。
+    def resolve_pointer(self, kind: str, payload: str, *, node: dict | None = None):
+        """Resolve a returned `<pontis:project:module:kind:payload>` string.
 
-        这里返回的是逻辑 ref/path 对，而不是持久化 ent_id。
-        中心层会在物化或 merged view 中再做解析。
-        """
-        return []
-
-    def discover_virtual(self, pattern: str, label: str | None = None) -> list:
-        """按模式发现虚实体。
-
-        主要给搜索/调试/兼容路径使用。
-        """
-        return []
-
-    def get_virtual_meta(self, key: str) -> Optional[dict]:
-        """返回某个虚实体的元数据。
-
-        这里返回的内容会参与中心化物化：
-        - 写入前物化时，虚属性覆盖已持久化内容
-        - `labels` 会与已有标签取并集
-        """
-        return None
-
-    def get_virtual_neighbors(self, key: str) -> list:
-        """返回虚实体的逻辑邻居。
-
-        中心层会沿这个邻接关系做闭包物化。
-        所以这里应只返回“结构上必要”的邻居，不要返回过大的噪声集合。
-        """
-        return []
-
-    def bind_src(self, node: dict):
-        """给节点绑定 `src` 原生端口。
-
-        返回：
-        - `SrcHandle`
-        - 或 `None`
-        """
-        return None
-
-    def match_query(self, node: dict) -> MatchQuery | None:
-        """返回主图复用规则。
-
-        这是模块最重要的匹配钩子。
-
-        语义：
-        - 给一个虚节点
-        - 返回一条 cypher
-        - 让中心层去主图里找“是否已经有对应的持久化实体”
-
-        约束：
-        - 读查询只构造 merged view：命中 0 个时保留为虚实体，不创建持久实体
-        - 写查询触发物化：命中 0 个时没有可合并的持久实体，才创建持久 overlay
-        - 命中 1 个：把虚实体属性合并到该持久实体
-        - 命中多个：中心层不会自动猜，也不会自动合并
-        """
-        return None
-
-    def meta_fallback(self, ref: str, include_props=None, _visiting=None) -> dict | None:
-        """当主图中没有实体时，按模块规则直接生成一份可读元数据。
-
-        这是只读 fallback，不等于持久化。
+        Neo4j only sees the pointer as a normal string. Workspace calls this
+        after Neo4j has returned rows.
         """
         return None

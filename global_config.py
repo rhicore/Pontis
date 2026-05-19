@@ -21,6 +21,19 @@ EXTRACTOR_TEMPERATURE = 0.2
 EXTRACTOR_THINKING = True
 EXTRACTOR_THINKING_EFFORT = "high"
 
+# Embedding profile
+EMBEDDING_PROVIDER = os.environ.get(
+    "PONTIS_EMBEDDING_PROVIDER",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+EMBEDDING_MODEL = os.environ.get("PONTIS_EMBEDDING_MODEL", "text-embedding-v4")
+EMBEDDING_API_KEY = os.environ.get(
+    "PONTIS_EMBEDDING_API_KEY",
+    os.environ.get("DASHSCOPE_API_KEY", os.environ.get("OPENAI_API_KEY", "")),
+)
+EMBEDDING_DIMENSIONS = int(os.environ.get("PONTIS_EMBEDDING_DIMENSIONS", "1024"))
+EMBEDDING_BATCH_SIZE = int(os.environ.get("PONTIS_EMBEDDING_BATCH_SIZE", "10"))
+
 # Shared
 PONTIS_DIR_NAME = ".pontis"
 META_FILENAME = "_meta.yml"

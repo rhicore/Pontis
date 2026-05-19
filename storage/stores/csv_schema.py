@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import csv
 import os
-from typing import Dict, Optional
+from typing import Dict
 
-from storage.stores.base import MatchQuery, StoreModule
+from storage.stores.base import (
+    CypherStatement,
+    ModuleContext,
+    StoreModule,
+    cypher_label_clause,
+)
 
 
 def _node_copy(node: dict) -> dict:
@@ -51,10 +56,21 @@ def _infer_type(sample_rows: list[list[str]], col_idx: int) -> str:
 
 class CSVSchemaModule(StoreModule):
     name = "csv_schema"
+    query_labels = {"col"}
 
-    def __init__(self, store):
-        self.store = store
+    def __init__(self, ctx: ModuleContext):
+        super().__init__(ctx)
         self._bundle_cache: Dict[str, tuple[tuple[int, int], dict]] = {}
+
+    @property
+    def project_path(self) -> str:
+        return self.ctx.source.root
+
+    def should_materialize_for_query(self, parsed, raw_query: str = "") -> bool:
+        for node in getattr(parsed, "nodes", []) or []:
+            if set(getattr(node, "labels", []) or []) & self.query_labels:
+                return True
+        return False
 
     def iter_virtual_nodes(self) -> list[dict]:
         nodes: list[dict] = []
@@ -70,76 +86,82 @@ class CSVSchemaModule(StoreModule):
             edges.extend(list(bundle["edges"]))
         return edges
 
-    def get_virtual_meta(self, key: str) -> Optional[dict]:
-        for csv_rel in self._candidate_csv_paths(key):
-            bundle = self._bundle_for_csv(csv_rel)
-            meta = bundle["by_lookup"].get(key) or bundle["by_lookup"].get(
-                self._canonical_key(key, csv_rel)
-            )
-            if meta:
-                return _node_copy(meta)
-        return None
+    def cypher_statements(self) -> list[CypherStatement]:
+        nodes = self.iter_virtual_nodes()
+        edges = self.iter_virtual_edges(nodes)
+        statements: list[CypherStatement] = []
 
-    def get_virtual_neighbors(self, key: str) -> list:
-        for csv_rel in self._candidate_csv_paths(key):
-            bundle = self._bundle_for_csv(csv_rel)
-            canonical = self._canonical_key(key, csv_rel)
-            if canonical in bundle["neighbors"]:
-                return list(bundle["neighbors"][canonical])
-        return []
+        grouped: dict[tuple[str, ...], list[dict]] = {}
+        for node in nodes:
+            labels = tuple(node.get("labels", []) or [])
+            props = {k: v for k, v in node.items() if k != "labels" and v is not None}
+            grouped.setdefault(labels, []).append({
+                "_ref": node.get("_ref"),
+                "labels": list(labels),
+                "props": props,
+            })
 
-    def match_query(self, node: dict) -> MatchQuery | None:
-        labels = set(node.get("labels", []) or [])
-        ref = node.get("ref", "")
-        if "col" not in labels or not ref:
-            return None
-        return MatchQuery(
-            query="MATCH (c:col) WHERE c.ref = $ref RETURN c",
-            params={"ref": ref},
-            var="c",
-        )
+        for labels, rows in grouped.items():
+            statements.append(CypherStatement(
+                query=(
+                    "UNWIND $rows AS row "
+                    "MATCH (n {ref: row._ref}) "
+                    "WHERE n._ref IS NULL "
+                    "SET n._ref = row._ref "
+                    "REMOVE n.ref"
+                ),
+                params={"rows": rows},
+            ))
+            statements.append(CypherStatement(
+                query=(
+                    "UNWIND $rows AS row "
+                    "MERGE (n {_ref: row._ref}) "
+                    "ON CREATE SET n.id = 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8) "
+                    "ON MATCH SET n.id = coalesce(n.id, 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8)) "
+                    "SET n += row.props "
+                    "REMOVE n.src, n.ref, n.csv_column_handle, n.csv_column_open "
+                    "WITH n, row.labels AS labels "
+                    "SET n.labels = reduce(acc = [], label IN coalesce(n.labels, []) + labels | "
+                    "CASE WHEN label IN acc THEN acc ELSE acc + label END) "
+                    f"SET n{cypher_label_clause(list(labels))}"
+                ),
+                params={"rows": rows},
+            ))
 
-    def meta_fallback(self, ref: str, include_props=None, _visiting=None) -> dict | None:
-        meta = self.get_virtual_meta(ref)
-        if not meta:
-            return None
-        if include_props is None:
-            return meta
-        return {
-            k: v for k, v in meta.items()
-            if k in include_props or k in ("name", "labels", "ref")
-        }
+        if edges:
+            statements.append(CypherStatement(
+                query=(
+                    "UNWIND $edges AS edge "
+                    "MATCH (b) WHERE b._ref = edge.b OR b.ref = edge.b "
+                    "OPTIONAL MATCH (a {path: edge.a}) "
+                    "FOREACH (_ IN CASE WHEN a IS NULL THEN [] ELSE [1] END | "
+                    "MERGE (a)-[:RELATED_TO]->(b))"
+                ),
+                params={
+                    "edges": [{"a": a, "b": b} for a, b in edges],
+                },
+            ))
+
+        return statements
 
     def _iter_csv_files(self) -> list[str]:
-        project_path = self.store.project_path
+        project_path = self.project_path
         if not project_path:
             return []
         results: list[str] = []
-        for root, dirs, files in os.walk(project_path):
+        for root, dirs, files in self.ctx.source.walk():
             dirs[:] = [d for d in dirs if d != ".pontis"]
             for fname in files:
                 if not fname.lower().endswith((".csv", ".tsv")):
                     continue
-                full = os.path.join(root, fname)
-                if self._is_backend_file(full):
-                    continue
-                results.append(os.path.relpath(full, project_path))
+                results.append(os.path.join(root, fname) if root else fname)
         return sorted(set(results))
 
-    def _is_backend_file(self, fp: str) -> bool:
-        backend_db = getattr(self.store, "_backend_db_path", None)
-        if not backend_db:
-            return False
-        absp = os.path.abspath(fp)
-        db_base = os.path.abspath(backend_db)
-        return absp == db_base or absp.startswith(db_base + "-")
-
     def _bundle_for_csv(self, csv_rel: str) -> dict:
-        full = os.path.join(self.store.project_path, csv_rel)
         try:
-            stat = os.stat(full)
+            stat = self.ctx.source.stat(csv_rel)
         except OSError:
-            return {"nodes": [], "edges": [], "by_lookup": {}, "neighbors": {}}
+            return {"nodes": [], "edges": []}
         sig = (stat.st_mtime_ns, stat.st_size)
         cached = self._bundle_cache.get(csv_rel)
         if cached and cached[0] == sig:
@@ -149,32 +171,18 @@ class CSVSchemaModule(StoreModule):
         return bundle
 
     def _build_bundle(self, csv_rel: str) -> dict:
-        csv_name = os.path.basename(csv_rel)
         delimiter = "\t" if csv_rel.lower().endswith(".tsv") else ","
         nodes: list[dict] = []
         edges: list[tuple[str, str]] = []
-        by_lookup: dict[str, dict] = {}
-        neighbors: dict[str, list[str]] = {}
 
-        def register(node: dict, aliases: list[str] | None = None):
+        def register(node: dict):
             nodes.append(node)
-            keys = {node.get("ref")}
-            for alias in aliases or []:
-                keys.add(alias)
-            for key in keys:
-                if not key:
-                    continue
-                by_lookup[key] = node
-                neighbors.setdefault(key, [])
 
-        def link(a_keys: list[str], a_ref: str, b_ref: str):
+        def link(a_ref: str, b_ref: str):
             edges.append((a_ref, b_ref))
-            for key in a_keys:
-                neighbors.setdefault(key, []).append(b_ref)
 
-        full = os.path.join(self.store.project_path, csv_rel)
         try:
-            with open(full, "r", encoding="utf-8", errors="ignore", newline="") as f:
+            with self.ctx.source.open(csv_rel, "r", encoding="utf-8", errors="ignore", newline="") as f:
                 reader = csv.reader(f, delimiter=delimiter)
                 headers = next(reader, None) or []
                 sample_rows = []
@@ -183,7 +191,7 @@ class CSVSchemaModule(StoreModule):
                         break
                     sample_rows.append(row)
         except Exception:
-            return {"nodes": [], "edges": [], "by_lookup": {}, "neighbors": {}}
+            return {"nodes": [], "edges": []}
 
         for idx, raw_col in enumerate(headers):
             col_name = _safe_col_name(raw_col)
@@ -193,44 +201,14 @@ class CSVSchemaModule(StoreModule):
             col_ref = f"{csv_rel}--{col_name}"
             node = {
                 "name": col_name,
-                "ref": col_ref,
+                "_ref": col_ref,
                 "source_column": raw_col,
                 "ordinal": idx,
                 "col_type": col_type,
                 "labels": ["col", col_type],
             }
-            register(node, aliases=[
-                f"{csv_name}/{col_name}",
-                f"{csv_rel}/{col_name}",
-            ])
-            link([csv_rel, csv_name], csv_rel, col_ref)
+            register(node)
+            link(csv_rel, col_ref)
 
-        return {"nodes": nodes, "edges": edges, "by_lookup": by_lookup, "neighbors": neighbors}
-
-    def _candidate_csv_paths(self, key: str) -> list[str]:
-        csv_files = self._iter_csv_files()
-        if key in csv_files:
-            return [key]
-        if "--" in key:
-            head = key.split("--", 1)[0]
-            return [
-                rel for rel in csv_files
-                if rel == head or os.path.basename(rel) == os.path.basename(head)
-            ]
-        if "/" in key:
-            head = key.split("/", 1)[0]
-            return [rel for rel in csv_files if os.path.basename(rel) == head or rel == head]
-        basename = os.path.basename(key)
-        return [rel for rel in csv_files if os.path.basename(rel) == basename or rel == key]
-
-    def _canonical_key(self, key: str, csv_rel: str) -> str:
-        if key == csv_rel or key == os.path.basename(csv_rel):
-            return key
-        if "--" in key:
-            if key.startswith(csv_rel + "--"):
-                return key
-            return f"{csv_rel}--{key.split('--', 1)[1]}"
-        return key
-
-
+        return {"nodes": nodes, "edges": edges}
 __all__ = ["CSVSchemaModule"]

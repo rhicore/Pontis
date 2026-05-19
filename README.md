@@ -153,7 +153,7 @@ pontis ./my_project:cypher "MATCH (n) RETURN n"
 Pontis/
 ├── agent/          # Agent loop, mode config, prompts and guardrails
 ├── extractor/      # Extraction engine and modular analysis passes
-├── storage/        # Graph store, Cypher engine, source modules and backend
+├── storage/        # Neo4j graph boundary, source modules and query triggers
 ├── tool/           # CLI and agent tools over the workspace
 ├── docs/           # Architecture notes and design records
 ├── scripts/        # Benchmarks, migration helpers and web prototype
@@ -164,12 +164,12 @@ Pontis/
 
 ## Current Shape
 
-Pontis is still in an active design phase. The direction is already clear: a graph-first workspace with virtual source modules, Cypher as the public graph surface, and tools/agents as consumers.
+Pontis is still in an active design phase, but the storage direction is now
+clear: Neo4j is the durable graph and Cypher is the public query surface.
+Source modules refresh source-derived facts before a query, while extractors
+derive higher-level knowledge on top of the same workspace boundary.
 
-Some implementation areas are intentionally transitional:
-
-- Storage still carries a few compatibility paths while the Cypher boundary is being tightened.
-- Extractors are moving toward “derive knowledge” rather than “own schema modeling”.
-- More source lifecycle work is planned around stale entities, provenance and incremental sync.
+Remaining design work is around stale entities, provenance, incremental sync,
+and richer semantic search.
 
 Detailed design discussion lives in `docs/`; the README is only the front door.

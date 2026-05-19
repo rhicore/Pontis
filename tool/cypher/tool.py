@@ -1,8 +1,11 @@
 """Cypher 查询工具 — 标准 Cypher 的透传封装。"""
 
+from tool.utils.formatters import format_labels
+
 
 def cypher_command(workspace, query: str, offset: int = 0,
-                   limit: int = 100, params: dict = None) -> str:
+                   limit: int = 100, params: dict = None,
+                   project: str = None) -> str:
     """执行标准 Cypher 查询，直接透传给 workspace。
 
     Args:
@@ -11,8 +14,9 @@ def cypher_command(workspace, query: str, offset: int = 0,
         offset: 起始偏移
         limit: 最大返回条数
         params: 参数化查询参数
+        project: 目标 project database；省略时由 Workspace 使用默认项目
     """
-    results = workspace.cypher(query, params=params)
+    results = workspace.cypher(query, params=params, project=project)
 
     if not results:
         return "(无结果)"
@@ -27,7 +31,7 @@ def cypher_command(workspace, query: str, offset: int = 0,
                 parts.append(f"{var}: (未追踪)")
             elif isinstance(info, dict) and "name" in info:
                 labels = info.get("labels", [])
-                labels_str = "".join(f":{l}" for l in labels)
+                labels_str = format_labels(labels)
                 name = info.get("name", "?")
                 if labels_str:
                     parts.append(f"{var}: {name} [{labels_str}]")

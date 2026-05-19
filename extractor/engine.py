@@ -14,7 +14,7 @@ from storage.workspace import Workspace
 logger = logging.getLogger(__name__)
 
 # 需要传 config 参数的模块
-CONFIG_MODULES = {"db_column_overlap", "ai_db_column_summary"}
+CONFIG_MODULES = {"db_column_overlap", "ai_db_column_summary", "semantic_embedding"}
 
 _REGISTRY = None
 
@@ -67,6 +67,7 @@ def get_registry() -> Dict[str, object]:
     from extractor.modules.db_fk_validate import generate as db_fk_validate
     from extractor.modules.db_column_overlap import generate as db_column_overlap
     from extractor.modules.ai_db_column_summary import generate as ai_db_column_summary
+    from extractor.modules.semantic_embedding import generate as semantic_embedding
 
     _REGISTRY = {
         "db_column_stats_approx": db_column_stats_approx,
@@ -77,6 +78,7 @@ def get_registry() -> Dict[str, object]:
         "db_fk_validate": db_fk_validate,
         "db_column_overlap": db_column_overlap,
         "ai_db_column_summary": ai_db_column_summary,
+        "semantic_embedding": semantic_embedding,
     }
 
     # Explorer 模块（需要 agent API key）

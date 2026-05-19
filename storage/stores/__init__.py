@@ -8,13 +8,16 @@ import os
 from dataclasses import replace
 
 from storage.config import ProjectConfig
-from storage.backends import create_backend
+from storage.neo4j import Neo4jGraph
+from storage.stores.base import ModuleContext
+from storage.stores.utils.fs_adapter import LocalSourceAdapter
 from storage.stores.fs import FSModule
+from storage.stores.text import TextModule
 from storage.stores.csv_schema import CSVSchemaModule
 from storage.stores.db_schema import SQLiteSchemaModule
 
 _MODULE_REGISTRY = {
-    "fs": [FSModule, CSVSchemaModule, SQLiteSchemaModule],
+    "fs": [FSModule, TextModule, CSVSchemaModule, SQLiteSchemaModule],
 }
 
 
@@ -22,26 +25,31 @@ def create_store(config: ProjectConfig):
     """根据 project config 创建主图 Store，并按 source 类型挂模块。"""
     from storage.store import Store
 
-    graph_path = config.graph.path
-    if not graph_path and config.source.path:
-        src = os.path.abspath(os.path.expanduser(config.source.path))
-        graph_path = os.path.join(src, ".pontis", "store.db")
-
-    if graph_path:
-        os.makedirs(os.path.dirname(graph_path), exist_ok=True)
-
-    backend = create_backend(config.graph.type, graph_path)
+    graph = Neo4jGraph(
+        uri=config.graph.uri,
+        database=config.graph.database,
+        user=config.graph.user,
+        password=config.graph.password,
+        password_env=config.graph.password_env,
+    )
     source_cfg = replace(
         config.source,
         path=os.path.abspath(os.path.expanduser(config.source.path)) if config.source.path else "",
     )
 
-    store = Store(source_cfg, backend)
+    store = Store(source_cfg, graph)
     mod_entry = _MODULE_REGISTRY.get(source_cfg.type or "")
     if mod_entry:
+        ctx = ModuleContext(
+            project_name=config.name,
+            project_config=config,
+            source_config=source_cfg,
+            graph_config=config.graph,
+            source=LocalSourceAdapter(source_cfg.path),
+        )
         mod_classes = mod_entry if isinstance(mod_entry, list) else [mod_entry]
         for mod_cls in mod_classes:
-            store.add_module(mod_cls(store))
+            store.add_module(mod_cls(ctx))
     return store
 
 
@@ -49,4 +57,4 @@ def register_module(name: str, module_cls):
     _MODULE_REGISTRY[name] = module_cls
 
 
-__all__ = ["FSModule", "CSVSchemaModule", "create_store", "register_module"]
+__all__ = ["FSModule", "TextModule", "CSVSchemaModule", "SQLiteSchemaModule", "create_store", "register_module"]

@@ -1,6 +1,6 @@
 """Search tool prompt — 语义检索。"""
 
-DESCRIPTION = "语义检索工具，当不确定具体路径或名称，仅有模糊意图时使用。"
+DESCRIPTION = "语义检索工具，当不确定具体路径或名称，仅有模糊意图时使用。优先使用 detail embedding 向量检索，缺少索引时回退 BM25。"
 
 DETAIL = """\
 参数：

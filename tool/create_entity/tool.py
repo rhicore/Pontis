@@ -7,16 +7,18 @@
 """
 
 from tool.utils import execute_cypher
+from storage.query_inspector import cypher_label_clause, is_valid_label
 from tool.utils.knowledge_meta import is_bird_knowledge, normalize_knowledge_meta
 from tool.utils.resolve import resolve_entity_selector
 
 
 def _selector_pattern(selector: dict, var: str, prefix: str) -> tuple[str, dict]:
-    labels = "".join(f":{label}" for label in selector.get("labels", []))
+    labels = cypher_label_clause(selector.get("labels", []))
     if selector.get("path"):
         return f"({var}{labels} {{path: ${prefix}_path}})", {f"{prefix}_path": selector["path"]}
     if selector.get("ref"):
-        return f"({var}{labels} {{ref: ${prefix}_ref}})", {f"{prefix}_ref": selector["ref"]}
+        ref_key = selector.get("ref_key") or "_ref"
+        return f"({var}{labels} {{{ref_key}: ${prefix}_ref}})", {f"{prefix}_ref": selector["ref"]}
     return f"({var}{labels} {{name: ${prefix}_name}})", {f"{prefix}_name": selector["name"]}
 
 def _parse_ref(ref: str) -> tuple:
@@ -65,6 +67,9 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
 
     if not name:
         return "错误: 实体名不能为空"
+    invalid_labels = [label for label in labels if not is_valid_label(label)]
+    if invalid_labels:
+        return f"错误: 非法标签: {', '.join(invalid_labels)}"
 
     existing_rows = workspace.cypher(
         'MATCH (n {name: $name}) RETURN n',
@@ -74,11 +79,11 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
     requested_labels = set(labels or [])
     if existing_rows:
         if not requested_labels:
-            return f"Entity already exists: {name}"
+            return f"实体已存在: {name}"
         for row in existing_rows:
             existing_labels = set(row.get("n", {}).get("labels", []))
             if existing_labels == requested_labels:
-                return f"Entity already exists: {name}"
+                return f"实体已存在: {name}"
 
     meta = normalize_knowledge_meta(project, labels, meta or {})
     if is_bird_knowledge(project, labels):
@@ -89,14 +94,15 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
 
     props = dict(meta)
     props["name"] = name
-    if project:
-        props["project"] = project
+    props["labels"] = list(labels or [])
     prop_values = {k: v for k, v in props.items() if not k.startswith("_")}
 
-    label_str = "".join(f":{label}" for label in (labels or []))
+    label_str = cypher_label_clause(labels or [])
     created = execute_cypher(
         workspace,
-        f"CREATE (n{label_str} {{name: $name}}) SET n += $props RETURN n",
+        f"CREATE (n{label_str} {{name: $name}}) "
+        "SET n.id = 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8) "
+        "SET n += $props RETURN n",
         params={"name": name, "props": prop_values},
         project=project,
     )
@@ -133,7 +139,7 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
             a_pat, a_params = _selector_pattern(a_selector, "a", "a")
             b_pat, b_params = _selector_pattern(b_selector, "b", "b")
             rows = workspace.cypher(
-                f"MATCH {a_pat}, {b_pat} CREATE (a)--(b)",
+                f"MATCH {a_pat}, {b_pat} MERGE (a)-[r:RELATED_TO]->(b) RETURN count(r) AS created",
                 params={**a_params, **b_params},
                 project=project,
             )

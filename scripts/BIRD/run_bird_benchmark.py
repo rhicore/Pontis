@@ -51,12 +51,6 @@ QUERY_PROMPT_TEMPLATE = """\
 
 
 
-请根据以下信息生成一条 SQLite SQL 查询。
-
-问题：{question}
-
-提示：{evidence}
-
 输出要求：
 - 只输出一条 SELECT 语句，用 ```sql ``` 代码块包裹
 - 不要解释，只输出 SQL
@@ -70,16 +64,31 @@ QUERY_PROMPT_TEMPLATE = """\
 
 关于 `bird` 经验的使用：
 - 最终输出 SQL 前，至少先浏览一次 `bird` 的知识实体总表，确认是否存在相关经验
-- 优先读取抽象知识实体，也就是：`knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term`
-- 其中：`convention` 表示应遵循或避免的规则，`pattern` 表示可复用的通用解法，`lesson` 表示已经总结出的错误模式，`term` 表示辅助理解题意或知识节点的术语/概念说明
-- 如果总表过长，先用 `search(ref="bird::*:knowledge", query="...")` 缩小候选，再读 `meta`；不要把翻页扫完整个 `bird` 当成默认动作
-- `knowledge:example` 放在后面；只有当抽象知识仍不足以支持判断时，才把它当作解释型案例阅读
-- 不要机械照抄 example 里的 SQL、表名、列名或字面值
-- 如果先看到某个 example，也要回头优先查看它相连的抽象知识，再决定是否参考这个案例
+- bird数据集的其中一个实体是README, 这部分内容应该已经在上文提及过了
+- 你在给当前在写SQL最需要参考的是BIRD数据集的SQL写作风格,这并不是SQL对错的问题,而仅仅是BIRD数据集本身会有一定的SQL写作偏好,
+- 在bird project库中, 会有一些example类型的知识实体, 这些是BIRD train数据集在其他数据库上的query/evidence/golden_sql,尽管他们的数据库schema和当前的数据库不一样, 但他们的SQL写作风格和表达习惯是非常值得参考的, 
+- 你应该利用语义检索来检索相关的SQL写作经验, 来指导你写出符合BIRD数据集风格的SQL(因为这些SQL的数据集和当前数据集并不重合, 所以你在编写查询语句时尽量要避免关注当前数据库具体的schema, 而是要关注SQL写作风格和表达习惯), 
+- 你可以在检索到相关经验后, 先分析总结出这些经验的SQL写作风格和表达习惯是什么, 然后再把这些总结出的SQL写作风格和表达习惯迁移应用到你当前的SQL写作中来, 以此来提升你SQL的质量和BIRD数据集的风格一致性
 
 
+---
+
+请根据以下信息生成一条 SQLite SQL 查询。
+
+问题：{question}
+
+提示：{evidence}
 
 """
+
+# - 最终输出 SQL 前，至少先浏览一次 `bird` 的知识实体总表，确认是否存在相关经验
+# - 优先读取抽象知识实体，也就是：`knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term`
+# - 其中：`convention` 表示应遵循或避免的规则，`pattern` 表示可复用的通用解法，`lesson` 表示已经总结出的错误模式，`term` 表示辅助理解题意或知识节点的术语/概念说明
+# - 如果总表过长，先用 `search(ref="bird::*:knowledge", query="...")` 缩小候选，再读 `meta`；不要把翻页扫完整个 `bird` 当成默认动作
+# - `knowledge:example` 放在后面；只有当抽象知识仍不足以支持判断时，才把它当作解释型案例阅读
+# - 不要机械照抄 example 里的 SQL、表名、列名或字面值
+# - 如果先看到某个 example，也要回头优先查看它相连的抽象知识，再决定是否参考这个案例
+
 
 # SQL 兜底 prompt。
 # 输入时机：
@@ -641,6 +650,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         if r["static"]: parts.append(f"Static {r['static']:.0f}s")
         if r["ai_columns"]: parts.append(f"AI Cols {r['ai_columns']:.0f}s")
         if r["agent"]: parts.append(f"Agent {r['agent']:.0f}s")
+        if r.get("embedding"): parts.append(f"Embedding {r['embedding']:.0f}s")
         print(f"[{db_id}] Extract done: {', '.join(parts)}")
 
     if args.extract_only:

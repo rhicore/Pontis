@@ -12,6 +12,7 @@ dependencies = [
     "uvicorn>=0.29.0",
     "sse-starlette>=2.0.0",
     "datasketches>=5.0.0",
+    "neo4j>=5.28.0",
 ]
 
 [project.scripts]

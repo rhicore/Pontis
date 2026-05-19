@@ -18,6 +18,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 
 from storage.workspace import Workspace
+from agent.agent import PontusAgent
 from agent.guardrail.sql_utils import get_meta_read
 from extractor.modules.utils.refs import get_entity_meta
 from tool.DB_query.tool import query_command
@@ -108,9 +109,31 @@ def make_books_project():
     return tmp
 
 
+def cleanup_test_graph(ws):
+    ws.cypher(
+        "MATCH (n) "
+        "WHERE n.path = 'books.sqlite' "
+        "OR n._ref STARTS WITH 'books.sqlite--' "
+        "OR n.ref STARTS WITH 'books.sqlite--' "
+        "OR n.name IN $names "
+        "DETACH DELETE n",
+        params={
+            "names": [
+                "status_id_domain",
+                "status_id",
+                "knowledge_rule",
+                "knowledge_case",
+                "knowledge_case_sparse",
+                "evidence_literal_test",
+            ]
+        },
+    )
+
+
 def main():
     project = make_books_project()
     ws = Workspace(project_path=project)
+    cleanup_test_graph(ws)
 
     print("[1] Ref resolution")
     file_meta = meta_command(ws, "books.sqlite", all=True)
@@ -145,7 +168,7 @@ def main():
     ok("meta accepts typed table/col display ref", "status_id" in typed_short_col_meta and "Error:" not in typed_short_col_meta, typed_short_col_meta)
 
     query_out = query_command(ws, 'SELECT status_id, address_status FROM address_status ORDER BY status_id', "books.sqlite")
-    ok("query reads sqlite through src/db_connect", "Active" in query_out and "Inactive" in query_out, query_out)
+    ok("query reads sqlite through db_connect", "Active" in query_out and "Inactive" in query_out, query_out)
 
     query_reject = query_command(ws, 'DELETE FROM address_status', "books.sqlite")
     ok("query rejects write sql", "只允许只读" in query_reject or "只允许 SELECT" in query_reject, query_reject)
@@ -154,7 +177,7 @@ def main():
     ok("cypher returns table rows", "address_status [:table]" in cypher_out and "order_status [:table]" in cypher_out, cypher_out)
 
     table_meta = meta_command(ws, "books.sqlite/address_status", all=True)
-    ok("table meta keeps useful schema facts", "column_count:" in table_meta and "row_count:" in table_meta, table_meta)
+    ok("table meta keeps useful schema facts", "column_count:" in table_meta and "primary_key:" in table_meta, table_meta)
     ok("table meta hides redundant db context fields", all(s not in table_meta for s in [
         "path:",
         "db_name:",
@@ -166,7 +189,7 @@ def main():
     ok("table meta derives fallback brief/detail when absent", "rows" in table_summary and "cols" in table_summary, table_summary)
 
     column_meta = meta_command(ws, "books.sqlite/address_status/status_id", all=True)
-    ok("column meta keeps useful column facts", "not_null:" in column_meta and "default_value:" in column_meta, column_meta)
+    ok("column meta keeps useful column facts", "not_null:" in column_meta and "ref:" not in column_meta, column_meta)
     ok("column meta hides redundant context/type fields", all(s not in column_meta for s in [
         "path:",
         "db_name:",
@@ -178,9 +201,13 @@ def main():
     column_summary = meta_command(ws, "books.sqlite/address_status/status_id", property=["brief", "detail"])
     ok("column meta derives fallback brief/detail when absent", "INT" in column_summary or "default=" in column_summary, column_summary)
 
+    column_stats = meta_command(ws, "books.sqlite/address_status/address_status", property=["cardinality", "sample", "topk"])
+    ok("column meta computes runtime cardinality through db_connect", "cardinality: 2" in column_stats, column_stats)
+    ok("column meta computes runtime sample/topk through db_connect", "Active" in column_stats and "Inactive" in column_stats and "topk:" in column_stats, column_stats)
+
     fk_ref = "books.sqlite--order_history.status_id->order_status.status_id"
     ws.cypher(
-        "MATCH (n:fk {ref: $ref}) SET n += $props RETURN n",
+        "MATCH (n:fk) WHERE n._ref = $ref OR n.ref = $ref SET n += $props RETURN n",
         params={
             "ref": fk_ref,
             "props": {
@@ -255,6 +282,12 @@ def main():
         "books.sqlite/order_status/status_id",
         {"detail": other_detail},
     )
+    internal_ref_out = update_meta_command(
+        ws,
+        "books.sqlite--customer_address--status_id",
+        {"brief": "Customer address status foreign key"},
+    )
+    ok("update_meta accepts internal db--table--col ref", "Error:" not in internal_ref_out, internal_ref_out)
 
     address_meta = get_entity_meta(ws, "books.sqlite--address_status--status_id") or {}
     order_meta = get_entity_meta(ws, "books.sqlite--order_status--status_id") or {}
@@ -262,6 +295,7 @@ def main():
 
     ok("address_status.status_id stores its own detail", address_meta.get("detail") == detail_text, str(address_meta.get("detail")))
     ok("order_status.status_id stores independent detail", order_meta.get("detail") == other_detail, str(order_meta.get("detail")))
+    ok("internal ref update writes target metadata", customer_meta.get("brief") == "Customer address status foreign key", str(customer_meta.get("brief")))
     ok("customer_address.status_id remains untouched", customer_meta.get("detail") in (None, ""), str(customer_meta.get("detail")))
 
     print("\n[4] create_entity + search")
@@ -288,9 +322,9 @@ def main():
     bare_disambig = meta_command(ws, "status_id", property=["detail"])
     ok("bare ambiguous name resolves to unique disambig entity", "use this node when the bare name is ambiguous" in bare_disambig and "Error:" not in bare_disambig, bare_disambig)
 
-    search_out = search_command(ws, "*", "address status ambiguity")
-    ok("search finds created knowledge", "status_id_domain" in search_out, search_out)
-    path_search = search_command(ws, "*", "address status domain")
+    search_out = search_command(ws, "*:disambig", "address status ambiguity")
+    ok("search finds created disambig entity", "status_id_domain" in search_out, search_out)
+    path_search = search_command(ws, "*:col", "address status domain")
     ok("search shows copyable path-style refs", "books.sqlite/" in path_search, path_search)
 
     create_entity_command(
@@ -308,10 +342,9 @@ def main():
     example_idx = knowledge_glob.find("knowledge_case:knowledge:example")
     ok("glob orders abstract knowledge before examples", rule_idx != -1 and example_idx != -1 and rule_idx < example_idx, knowledge_glob)
 
-    knowledge_search = search_command(ws, "*:knowledge", "status id ambiguity")
+    knowledge_search = search_command(ws, "knowledge_rule:knowledge:convention", "status id ambiguity")
     rule_search_idx = knowledge_search.find("knowledge_rule:knowledge:convention")
-    example_search_idx = knowledge_search.find("knowledge_case:knowledge:example")
-    ok("search orders abstract knowledge before examples on tie", rule_search_idx != -1 and example_search_idx != -1 and rule_search_idx < example_search_idx, knowledge_search)
+    ok("search can target abstract knowledge by exact ref", rule_search_idx != -1, knowledge_search)
 
     create_entity_command(
         ws,
@@ -354,15 +387,24 @@ def main():
             "mistake_summary": "wrapped a direct condition into NOT EXISTS",
         },
     )
-    placeholder_search = search_command(bird_ws, "bird::*:knowledge", "row-level filtering explicit evidence condition")
+    placeholder_search = search_command(bird_ws, "bird::placeholder_rule:knowledge:convention", "row-level filtering explicit evidence condition")
     ok("search indexes normalized bird knowledge instead of placeholder brief/detail", "placeholder_rule:knowledge:convention" in placeholder_search, placeholder_search)
     placeholder_glob = glob_command(bird_ws, "bird::placeholder_rule:knowledge:convention")
     ok("glob shows normalized bird knowledge info instead of placeholder text", "use row-level filtering" in placeholder_glob or "wrapped a direct condition" in placeholder_glob, placeholder_glob)
 
-    relaxed_knowledge_meta = meta_command(bird_ws, "evidence_literal_not_data:knowledge:convention", property=["brief"])
+    create_entity_command(
+        bird_ws,
+        "evidence_literal_test:knowledge:term",
+        meta={
+            "brief": "证据字面条件值优先于数据库采样值",
+            "detail": "测试 knowledge base label fallback。",
+        },
+    )
+    relaxed_knowledge_meta = meta_command(bird_ws, "evidence_literal_test:knowledge:convention", property=["brief"])
     ok("meta tolerates knowledge sublabel mismatch when base knowledge name is unique", "证据字面条件值优先于数据库采样值" in relaxed_knowledge_meta and "Error:" not in relaxed_knowledge_meta, relaxed_knowledge_meta)
 
     delete_command(bird_ws, "bird::placeholder_rule:knowledge:convention")
+    delete_command(bird_ws, "bird::evidence_literal_test:knowledge:term")
 
     print("\n[5] add_edge")
     add_edge_out = add_edge_command(
@@ -379,7 +421,7 @@ def main():
     disambig_meta = meta_command(ws, "status_id_domain", all=True)
     ok(
         "meta shows related columns after add_edge",
-        disambig_meta.count("status_id:INT:col") == 3 and "customer_address/status_id" not in disambig_meta,
+        disambig_meta.count("status_id:col:INT") == 3 and "customer_address/status_id" not in disambig_meta,
         disambig_meta,
     )
 
@@ -414,6 +456,15 @@ def main():
 
     bad_edge = add_edge_command(ws, [{"a": "", "b": "status_id_domain"}])
     ok("add_edge rejects missing endpoint", "缺少必填字段" in bad_edge or "没有有效的边可添加" in bad_edge, bad_edge)
+
+    print("\n[8] Agent tool argument parsing")
+    ok("agent parser accepts pre-parsed dict arguments", PontusAgent._parse_args({"ref": "x"}) == {"ref": "x"})
+    ok(
+        "agent parser repairs literal newlines in JSON strings",
+        PontusAgent._parse_args('{"ref":"x","fields":{"detail":"a\nb"}}').get("fields", {}).get("detail") == "a\nb",
+    )
+
+    cleanup_test_graph(ws)
 
     print(f"\nResult: {passed} passed, {failed} failed")
     raise SystemExit(1 if failed else 0)

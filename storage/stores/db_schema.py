@@ -3,10 +3,39 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional
+import sqlite3
+from typing import Dict, List
 
-from storage.stores.base import MatchQuery, StoreModule
-from storage.stores.utils import db as db_utils
+from storage.stores.base import (
+    CypherStatement,
+    ModuleContext,
+    StoreModule,
+    cypher_label_clause,
+)
+from storage.stores.access import DbConnect
+
+
+DB_FILE_LABELS = {
+    ".db": ["file", "db"],
+    ".sqlite": ["file", "db"],
+    ".sqlite3": ["file", "db"],
+    ".duckdb": ["file", "db"],
+}
+
+
+def _file_db_labels(path_or_name: str) -> list[str] | None:
+    return DB_FILE_LABELS.get(os.path.splitext(path_or_name)[1].lower())
+
+
+def _connect_sqlite(path: str, *args, readonly: bool = False,
+                    immutable: bool = False, **kwargs):
+    if readonly or immutable:
+        qs = ["mode=ro"]
+        if immutable:
+            qs.append("immutable=1")
+        path = f"file:{path}?{'&'.join(qs)}"
+        kwargs["uri"] = True
+    return sqlite3.connect(path, *args, **kwargs)
 
 
 def _normalize_type(sql_type: str) -> str:
@@ -34,10 +63,23 @@ def _node_copy(node: dict) -> dict:
 
 class SQLiteSchemaModule(StoreModule):
     name = "db_schema"
+    query_labels = {"db", "table", "view", "col", "fk"}
 
-    def __init__(self, store):
-        self.store = store
+    def __init__(self, ctx: ModuleContext):
+        super().__init__(ctx)
         self._bundle_cache: Dict[str, tuple[tuple[int, int], dict]] = {}
+
+    @property
+    def project_path(self) -> str:
+        return self.ctx.source.root
+
+    def should_materialize_for_query(self, parsed, raw_query: str = "") -> bool:
+        if ".db_connect" in raw_query or "._db_connect" in raw_query:
+            return True
+        for node in getattr(parsed, "nodes", []) or []:
+            if set(getattr(node, "labels", []) or []) & self.query_labels:
+                return True
+        return False
 
     def iter_virtual_nodes(self) -> list[dict]:
         nodes: List[dict] = []
@@ -53,94 +95,137 @@ class SQLiteSchemaModule(StoreModule):
             edges.extend(list(bundle["edges"]))
         return edges
 
-    def get_virtual_meta(self, key: str) -> Optional[dict]:
-        for db_rel in self._candidate_db_paths(key):
-            bundle = self._bundle_for_db(db_rel)
-            meta = bundle["by_lookup"].get(key) or bundle["by_lookup"].get(self._canonical_key(key, db_rel))
-            if meta:
-                return _node_copy(meta)
-        return None
+    def cypher_statements(self) -> list[CypherStatement]:
+        nodes = self.iter_virtual_nodes()
+        edges = self.iter_virtual_edges(nodes)
+        statements: list[CypherStatement] = []
 
-    def get_virtual_neighbors(self, key: str) -> list:
-        for db_rel in self._candidate_db_paths(key):
-            bundle = self._bundle_for_db(db_rel)
-            canonical = self._canonical_key(key, db_rel)
-            if canonical in bundle["neighbors"]:
-                return list(bundle["neighbors"][canonical])
-        return []
+        non_fk_nodes = [node for node in nodes if "fk" not in set(node.get("labels", []) or [])]
+        fk_nodes = [node for node in nodes if "fk" in set(node.get("labels", []) or [])]
 
-    def match_query(self, node: dict) -> MatchQuery | None:
-        labels = set(node.get("labels", []) or [])
-        ref = node.get("ref", "")
-        if not ref:
-            return None
+        grouped: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
+        for node in non_fk_nodes:
+            labels = tuple(node.get("labels", []) or [])
+            key_field = "path" if node.get("path") else "_ref"
+            key_value = node.get(key_field)
+            if not key_value:
+                continue
+            props = {k: v for k, v in node.items() if k != "labels" and v is not None}
+            grouped.setdefault((key_field, labels), []).append({
+                key_field: key_value,
+                "labels": list(labels),
+                "props": props,
+            })
 
-        if "table" in labels:
-            return MatchQuery(
-                query="MATCH (t:table) WHERE t.ref = $ref RETURN t",
-                params={"ref": ref},
-                var="t",
-            )
-        if "view" in labels:
-            return MatchQuery(
-                query="MATCH (v:view) WHERE v.ref = $ref RETURN v",
-                params={"ref": ref},
-                var="v",
-            )
-        if "col" in labels:
-            return MatchQuery(
-                query="MATCH (c:col) WHERE c.ref = $ref RETURN c",
-                params={"ref": ref},
-                var="c",
-            )
-        if "fk" in labels:
-            return MatchQuery(
-                query="MATCH (k:fk) WHERE k.ref = $ref RETURN k",
-                params={"ref": ref},
-                var="k",
-            )
-        return None
+        for (key_field, labels), rows in grouped.items():
+            if key_field == "_ref":
+                statements.append(CypherStatement(
+                    query=(
+                        "UNWIND $rows AS row "
+                        "MATCH (n {ref: row._ref}) "
+                        "WHERE n._ref IS NULL "
+                        "SET n._ref = row._ref "
+                        "REMOVE n.ref"
+                    ),
+                    params={"rows": rows},
+                ))
+            statements.append(CypherStatement(
+                query=(
+                    f"UNWIND $rows AS row "
+                    f"MERGE (n {{{key_field}: row.{key_field}}}) "
+                    "ON CREATE SET n.id = 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8) "
+                    "ON MATCH SET n.id = coalesce(n.id, 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8)) "
+                    "SET n += row.props "
+                    "REMOVE n.src, n.ref, n.db_handle, n.db_connect "
+                    "WITH n, row.labels AS labels "
+                    "SET n.labels = reduce(acc = [], label IN coalesce(n.labels, []) + labels | "
+                    "CASE WHEN label IN acc THEN acc ELSE acc + label END) "
+                    f"SET n{cypher_label_clause(list(labels))}"
+                ),
+                params={"rows": rows},
+            ))
 
-    def meta_fallback(self, ref: str, include_props=None, _visiting=None) -> dict | None:
-        meta = self.get_virtual_meta(ref)
-        if not meta:
-            return None
-        if include_props is None:
-            return meta
-        result = {k: v for k, v in meta.items() if k in include_props or k in ("name", "labels", "ref")}
-        return result
+        fk_rows = []
+        for node in fk_nodes:
+            props = {k: v for k, v in node.items() if k != "labels" and v is not None}
+            from_col_ref = node.get("_from_col_ref")
+            to_col_ref = node.get("_to_col_ref")
+            if not from_col_ref or not to_col_ref:
+                continue
+            fk_rows.append({
+                "from_col_ref": from_col_ref,
+                "to_col_ref": to_col_ref,
+                "labels": list(node.get("labels", []) or []),
+                "props": props,
+            })
+        if fk_rows:
+            statements.append(CypherStatement(
+                query=(
+                    "UNWIND $rows AS row "
+                    "MATCH (fk:fk {from_col_ref: row.from_col_ref, to_col_ref: row.to_col_ref}) "
+                    "WHERE fk._from_col_ref IS NULL OR fk._to_col_ref IS NULL "
+                    "SET fk._from_col_ref = row.from_col_ref, "
+                    "fk._to_col_ref = row.to_col_ref, "
+                    "fk._ref = coalesce(fk._ref, fk.ref, row.props._ref) "
+                    "REMOVE fk.ref, fk.from_col_ref, fk.to_col_ref"
+                ),
+                params={"rows": fk_rows},
+            ))
+            statements.append(CypherStatement(
+                query=(
+                    "UNWIND $rows AS row "
+                    "MATCH (from_col) WHERE from_col._ref = row.from_col_ref OR from_col.ref = row.from_col_ref "
+                    "MATCH (to_col) WHERE to_col._ref = row.to_col_ref OR to_col.ref = row.to_col_ref "
+                    "MERGE (fk:fk {_from_col_ref: row.from_col_ref, _to_col_ref: row.to_col_ref}) "
+                    "ON CREATE SET fk.id = 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8) "
+                    "ON MATCH SET fk.id = coalesce(fk.id, 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8)) "
+                    "SET fk += row.props "
+                    "REMOVE fk.src, fk.ref, fk.from_col_ref, fk.to_col_ref, fk.db_handle, fk.db_connect "
+                    "WITH fk, from_col, to_col, row.labels AS labels "
+                    "SET fk.labels = reduce(acc = [], label IN coalesce(fk.labels, []) + labels | "
+                    "CASE WHEN label IN acc THEN acc ELSE acc + label END) "
+                    "MERGE (from_col)-[:RELATED_TO]->(fk) "
+                    "MERGE (to_col)-[:RELATED_TO]->(fk)"
+                ),
+                params={"rows": fk_rows},
+            ))
+
+        if edges:
+            statements.append(CypherStatement(
+                query=(
+                    "UNWIND $edges AS edge "
+                    "MATCH (a) "
+                    "WHERE a.path = edge.a OR a._ref = edge.a OR a.ref = edge.a "
+                    "MATCH (b) "
+                    "WHERE b.path = edge.b OR b._ref = edge.b OR b.ref = edge.b "
+                    "MERGE (a)-[:RELATED_TO]->(b)"
+                ),
+                params={
+                    "edges": [{"a": a, "b": b} for a, b in edges],
+                },
+            ))
+
+        return statements
 
     def _iter_db_files(self) -> list[str]:
-        project_path = self.store.project_path
+        project_path = self.project_path
         if not project_path:
             return []
         results: list[str] = []
-        for root, dirs, files in os.walk(project_path):
+        for root, dirs, files in self.ctx.source.walk():
             dirs[:] = [d for d in dirs if d != ".pontis"]
             for fname in files:
-                full = os.path.join(root, fname)
-                if self._is_backend_file(full):
+                if not _file_db_labels(fname):
                     continue
-                if not db_utils.file_labels(fname):
-                    continue
-                rel = os.path.relpath(full, project_path)
+                rel = os.path.join(root, fname) if root else fname
                 results.append(rel)
         return sorted(set(results))
 
-    def _is_backend_file(self, fp: str) -> bool:
-        backend_db = getattr(self.store, "_backend_db_path", None)
-        if not backend_db:
-            return False
-        absp = os.path.abspath(fp)
-        db_base = os.path.abspath(backend_db)
-        return absp == db_base or absp.startswith(db_base + "-")
-
     def _bundle_for_db(self, db_rel: str) -> dict:
-        full = os.path.join(self.store.project_path, db_rel)
         try:
-            stat = os.stat(full)
+            stat = self.ctx.source.stat(db_rel)
         except OSError:
-            return {"nodes": [], "edges": [], "by_lookup": {}, "neighbors": {}}
+            return {"nodes": [], "edges": []}
         sig = (stat.st_mtime_ns, stat.st_size)
         cached = self._bundle_cache.get(db_rel)
         if cached and cached[0] == sig:
@@ -153,33 +238,43 @@ class SQLiteSchemaModule(StoreModule):
         db_name = os.path.basename(db_rel)
         nodes: list[dict] = []
         edges: list[tuple[str, str]] = []
-        by_lookup: dict[str, dict] = {}
-        neighbors: dict[str, list[str]] = {}
+        seen_refs: set[str] = set()
 
-        def register(node: dict, aliases: list[str] | None = None):
+        def register(node: dict):
             nodes.append(node)
-            keys = {node.get("ref")}
-            for alias in aliases or []:
-                keys.add(alias)
-            for key in keys:
-                if not key:
-                    continue
-                by_lookup[key] = node
-                neighbors.setdefault(key, [])
+            ref = node.get("_ref")
+            if ref:
+                seen_refs.add(ref)
 
-        def link(a_keys: list[str], a_ref: str, b_ref: str):
+        def link(a_ref: str, b_ref: str):
             edges.append((a_ref, b_ref))
-            for key in a_keys:
-                neighbors.setdefault(key, []).append(b_ref)
 
-        full = os.path.join(self.store.project_path, db_rel)
-        conn = db_utils.connect_sqlite(full, readonly=True, immutable=True)
+        full = self.ctx.source.absolute_path(db_rel)
+        conn = _connect_sqlite(full, readonly=True, immutable=True)
         try:
             cur = conn.cursor()
             cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
             tables = [row[0] for row in cur.fetchall()]
             cur.execute("SELECT name FROM sqlite_master WHERE type='view'")
             views = [row[0] for row in cur.fetchall()]
+            try:
+                cur.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'")
+                index_count = cur.fetchone()[0]
+            except Exception:
+                index_count = None
+
+            db_node = {
+                "name": db_name,
+                "path": db_rel,
+                "_ref": db_rel,
+                "_db_connect": self.pointer("connect", db_rel),
+                "table_count": len(tables),
+                "view_count": len(views),
+                "labels": ["file", "db"],
+            }
+            if index_count is not None:
+                db_node["index_count"] = index_count
+            register(db_node)
 
             table_pks: dict[str, str] = {}
             explicit_fk_keys: set[tuple[str, str, str, str]] = set()
@@ -189,24 +284,20 @@ class SQLiteSchemaModule(StoreModule):
                 columns = cur.fetchall()
                 pk_col = next((col[1] for col in columns if col[5] == 1), None)
                 table_pks[table_name] = pk_col or "rowid"
-                try:
-                    cur.execute(f'SELECT COUNT(*) FROM "{table_name}"')
-                    row_count = cur.fetchone()[0]
-                except Exception:
-                    row_count = None
 
                 table_ref = f"{db_name}--{table_name}"
                 tnode = {
                     "name": table_name,
-                    "ref": table_ref,
+                    "_ref": table_ref,
+                    "_db_ref": db_rel,
+                    "_db_connect": self.pointer("connect", db_rel),
+                    "table_name": table_name,
                     "column_count": len(columns),
                     "primary_key": pk_col or "",
                     "labels": ["table"],
                 }
-                if row_count is not None:
-                    tnode["row_count"] = row_count
-                register(tnode, aliases=[f"{db_name}/{table_name}"])
-                link([db_rel, db_name], db_rel, table_ref)
+                register(tnode)
+                link(db_rel, table_ref)
 
                 for col in columns:
                     col_name = col[1]
@@ -214,13 +305,17 @@ class SQLiteSchemaModule(StoreModule):
                     col_ref = f"{table_ref}--{col_name}"
                     cnode = {
                         "name": col_name,
-                        "ref": col_ref,
+                        "_ref": col_ref,
+                        "_db_ref": db_rel,
+                        "_db_connect": self.pointer("connect", db_rel),
+                        "table_name": table_name,
+                        "column_name": col_name,
                         "not_null": bool(col[3]),
                         "default_value": col[4],
                         "labels": ["col", col_type],
                     }
-                    register(cnode, aliases=[f"{db_name}/{table_name}/{col_name}"])
-                    link([table_ref, f"{db_name}/{table_name}"], table_ref, col_ref)
+                    register(cnode)
+                    link(table_ref, col_ref)
 
                 cur.execute(f'PRAGMA foreign_key_list("{table_name}")')
                 for fk in cur.fetchall():
@@ -232,25 +327,23 @@ class SQLiteSchemaModule(StoreModule):
                     fk_ref = f"{db_name}--{fk_name}"
                     fnode = {
                         "name": fk_name,
-                        "ref": fk_ref,
+                        "_ref": fk_ref,
+                        "_db_ref": db_rel,
+                        "_db_connect": self.pointer("connect", db_rel),
                         "from_table": table_name,
                         "from_column": from_col,
+                        "_from_col_ref": f"{table_ref}--{from_col}",
                         "to_table": to_table,
                         "to_column": to_col,
+                        "_to_col_ref": f"{db_name}--{to_table}--{to_col}",
                         "confidence": 1.0,
                         "labels": ["fk"],
                     }
-                    register(fnode, aliases=[f"{db_name}/fks/{fk_name}"])
-                    link([table_ref, f"{db_name}/{table_name}"], table_ref, fk_ref)
-                    link([f"{table_ref}--{from_col}", f"{db_name}/{table_name}/{from_col}"], f"{table_ref}--{from_col}", fk_ref)
-                    link([f"{db_name}--{to_table}", f"{db_name}/{to_table}"], f"{db_name}--{to_table}", fk_ref)
-                    link([f"{db_name}--{to_table}--{to_col}", f"{db_name}/{to_table}/{to_col}"], f"{db_name}--{to_table}--{to_col}", fk_ref)
-                    neighbors.setdefault(fk_ref, []).extend([
-                        table_ref,
-                        f"{table_ref}--{from_col}",
-                        f"{db_name}--{to_table}",
-                        f"{db_name}--{to_table}--{to_col}",
-                    ])
+                    register(fnode)
+                    link(table_ref, fk_ref)
+                    link(f"{table_ref}--{from_col}", fk_ref)
+                    link(f"{db_name}--{to_table}", fk_ref)
+                    link(f"{db_name}--{to_table}--{to_col}", fk_ref)
 
             for table_name in tables:
                 cur.execute(f'PRAGMA table_info("{table_name}")')
@@ -272,50 +365,44 @@ class SQLiteSchemaModule(StoreModule):
                             break
                         fk_name = f"{table_name}.{col_name}->{ref_table}.{to_col}"
                         fk_ref = f"{db_name}--{fk_name}"
-                        if fk_ref in by_lookup:
+                        if fk_ref in seen_refs:
                             break
                         fnode = {
                             "name": fk_name,
-                            "ref": fk_ref,
+                            "_ref": fk_ref,
+                            "_db_ref": db_rel,
+                            "_db_connect": self.pointer("connect", db_rel),
                             "from_table": table_name,
                             "from_column": col_name,
+                            "_from_col_ref": f"{db_name}--{table_name}--{col_name}",
                             "to_table": ref_table,
                             "to_column": to_col,
+                            "_to_col_ref": f"{db_name}--{ref_table}--{to_col}",
                             "confidence": 0.7,
                             "labels": ["fk"],
                         }
-                        register(fnode, aliases=[f"{db_name}/fks/{fk_name}"])
-                        link([f"{db_name}--{table_name}", f"{db_name}/{table_name}"], f"{db_name}--{table_name}", fk_ref)
-                        link([f"{db_name}--{table_name}--{col_name}", f"{db_name}/{table_name}/{col_name}"], f"{db_name}--{table_name}--{col_name}", fk_ref)
-                        link([f"{db_name}--{ref_table}", f"{db_name}/{ref_table}"], f"{db_name}--{ref_table}", fk_ref)
-                        link([f"{db_name}--{ref_table}--{to_col}", f"{db_name}/{ref_table}/{to_col}"], f"{db_name}--{ref_table}--{to_col}", fk_ref)
-                        neighbors.setdefault(fk_ref, []).extend([
-                            f"{db_name}--{table_name}",
-                            f"{db_name}--{table_name}--{col_name}",
-                            f"{db_name}--{ref_table}",
-                            f"{db_name}--{ref_table}--{to_col}",
-                        ])
+                        register(fnode)
+                        link(f"{db_name}--{table_name}", fk_ref)
+                        link(f"{db_name}--{table_name}--{col_name}", fk_ref)
+                        link(f"{db_name}--{ref_table}", fk_ref)
+                        link(f"{db_name}--{ref_table}--{to_col}", fk_ref)
                         break
 
             for view_name in views:
                 cur.execute(f'PRAGMA table_info("{view_name}")')
                 columns = cur.fetchall()
-                try:
-                    cur.execute(f'SELECT COUNT(*) FROM "{view_name}"')
-                    row_count = cur.fetchone()[0]
-                except Exception:
-                    row_count = None
                 view_ref = f"{db_name}--{view_name}"
                 vnode = {
                     "name": view_name,
-                    "ref": view_ref,
+                    "_ref": view_ref,
+                    "_db_ref": db_rel,
+                    "_db_connect": self.pointer("connect", db_rel),
+                    "view_name": view_name,
                     "column_count": len(columns),
                     "labels": ["view"],
                 }
-                if row_count is not None:
-                    vnode["row_count"] = row_count
-                register(vnode, aliases=[f"{db_name}/{view_name}"])
-                link([db_rel, db_name], db_rel, view_ref)
+                register(vnode)
+                link(db_rel, view_ref)
 
                 for col in columns:
                     col_name = col[1]
@@ -323,39 +410,36 @@ class SQLiteSchemaModule(StoreModule):
                     col_ref = f"{view_ref}--{col_name}"
                     cnode = {
                         "name": col_name,
-                        "ref": col_ref,
+                        "_ref": col_ref,
+                        "_db_ref": db_rel,
+                        "_db_connect": self.pointer("connect", db_rel),
+                        "table_name": view_name,
+                        "column_name": col_name,
                         "labels": ["col", col_type],
                     }
-                    register(cnode, aliases=[f"{db_name}/{view_name}/{col_name}"])
-                    link([view_ref, f"{db_name}/{view_name}"], view_ref, col_ref)
+                    register(cnode)
+                    link(view_ref, col_ref)
         finally:
             conn.close()
 
-        return {"nodes": nodes, "edges": edges, "by_lookup": by_lookup, "neighbors": neighbors}
+        return {"nodes": nodes, "edges": edges}
 
-    def _candidate_db_paths(self, key: str) -> list[str]:
-        db_files = self._iter_db_files()
-        if key in db_files:
-            return [key]
-        if "/" in key:
-            head = key.split("/", 1)[0]
-            return [rel for rel in db_files if os.path.basename(rel) == head or rel == head]
-        if "--" in key:
-            db_name = key.split("--", 1)[0]
-            matches = [rel for rel in db_files if os.path.basename(rel) == db_name or rel == db_name]
-            return matches
-        basename = os.path.basename(key)
-        return [rel for rel in db_files if os.path.basename(rel) == basename or rel == key]
+    def resolve_pointer(self, kind: str, payload: str, *, node: dict | None = None):
+        if kind != "connect":
+            return None
+        db_rel = payload
+        abs_path = self.ctx.source.absolute_path(db_rel)
+        if not os.path.isfile(abs_path):
+            return None
 
-    def _canonical_key(self, key: str, db_rel: str) -> str:
-        db_name = os.path.basename(db_rel)
-        if key == db_rel or key == db_name:
-            return key
-        if "--" in key:
-            if key.startswith(db_name + "--"):
-                return key
-            return f"{db_name}--{key.split('--', 1)[1]}"
-        return key
-
+        node_data = dict(node or {})
+        return DbConnect(
+            db_path=abs_path,
+            connect=lambda *args, **kwargs: _connect_sqlite(abs_path, *args, **kwargs),
+            table=node_data.get("table_name", ""),
+            view=node_data.get("view_name", ""),
+            column=node_data.get("column_name", ""),
+            fk=node_data.get("name", "") if "fk" in set(node_data.get("labels", []) or []) else "",
+        )
 
 __all__ = ["SQLiteSchemaModule"]

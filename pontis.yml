@@ -1,71 +1,103 @@
+# Neo4j graph routing.
+#
+# Community / local mode:
+#   Use one Neo4j process per project. Each project gets a different bolt port
+#   and keeps database: neo4j.
+#
+# Enterprise / single-process mode:
+#   Point projects at the same uri and set graph.database to different database
+#   names, for example california-schools, card-games, bird.
+graph_defaults: &neo4j_graph
+  database: neo4j
+  user: neo4j
+  password_env: NEO4J_PASSWORD
+
 projects:
   bird:
     graph:
-      type: sqlite
-      path: example_data/bird_global/store.db
+      <<: *neo4j_graph
+      uri: bolt://localhost:7687
   california_schools:
     source:
       type: fs
       path: example_data/bird_dev/dev_databases/california_schools
     graph:
-      type: sqlite
+      <<: *neo4j_graph
+      uri: bolt://localhost:7688
   card_games:
     source:
       type: fs
       path: example_data/bird_dev/dev_databases/card_games
     graph:
-      type: sqlite
+      <<: *neo4j_graph
+      uri: bolt://localhost:7689
   codebase_community:
     source:
       type: fs
       path: example_data/bird_dev/dev_databases/codebase_community
     graph:
-      type: sqlite
+      <<: *neo4j_graph
+      uri: bolt://localhost:7690
   debit_card_specializing:
     source:
       type: fs
       path: example_data/bird_dev/dev_databases/debit_card_specializing
     graph:
-      type: sqlite
+      <<: *neo4j_graph
+      uri: bolt://localhost:7691
   european_football_2:
     source:
       type: fs
       path: example_data/bird_dev/dev_databases/european_football_2
     graph:
-      type: sqlite
+      <<: *neo4j_graph
+      uri: bolt://localhost:7692
   financial:
     source:
       type: fs
       path: example_data/bird_dev/dev_databases/financial
     graph:
-      type: sqlite
+      <<: *neo4j_graph
+      uri: bolt://localhost:7693
   formula_1:
     source:
       type: fs
       path: example_data/bird_dev/dev_databases/formula_1
     graph:
-      type: sqlite
+      <<: *neo4j_graph
+      uri: bolt://localhost:7694
   student_club:
     source:
       type: fs
       path: example_data/bird_dev/dev_databases/student_club
     graph:
-      type: sqlite
+      <<: *neo4j_graph
+      uri: bolt://localhost:7695
   superhero:
     source:
       type: fs
       path: example_data/bird_dev/dev_databases/superhero
     graph:
-      type: sqlite
+      <<: *neo4j_graph
+      uri: bolt://localhost:7696
   thrombosis_prediction:
     source:
       type: fs
       path: example_data/bird_dev/dev_databases/thrombosis_prediction
     graph:
-      type: sqlite
+      <<: *neo4j_graph
+      uri: bolt://localhost:7697
   toxicology:
     source:
       type: fs
       path: example_data/bird_dev/dev_databases/toxicology
     graph:
-      type: sqlite
+      <<: *neo4j_graph
+      uri: bolt://localhost:7698
+  storage_test:
+    source:
+      type: fs
+      path: .pontis/storage_test_source
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7699

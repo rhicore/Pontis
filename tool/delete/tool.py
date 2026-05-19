@@ -27,7 +27,7 @@ def delete_command(workspace, ref: str) -> str:
     if err:
         return f"Error: {err}"
 
-    project = node.get("project") or None
+    project = node.get("__project") or None
     name = node.get("name", "")
     target_ref = canonical_ref(node, ref)
     if not name:
@@ -41,7 +41,8 @@ def delete_command(workspace, ref: str) -> str:
         "name": name,
         "labels": list(node.get("labels", [])),
         "path": node.get("path"),
-        "ref": node.get("ref"),
+        "ref": node.get("_ref") or node.get("ref"),
+        "ref_key": "_ref" if node.get("_ref") else ("ref" if node.get("ref") else None),
         "target_ref": target_ref,
     }]
     main_labels = set(node.get("labels", []))
@@ -51,7 +52,8 @@ def delete_command(workspace, ref: str) -> str:
             "name": name,
             "labels": list(node.get("labels", [])),
             "path": node.get("path"),
-            "ref": node.get("ref"),
+            "ref": node.get("_ref") or node.get("ref"),
+            "ref_key": "_ref" if node.get("_ref") else ("ref" if node.get("ref") else None),
         }
         match = selector_match_pattern(selector, "n")
         neighbor_rows = workspace.cypher(
@@ -70,7 +72,8 @@ def delete_command(workspace, ref: str) -> str:
                     "name": meta.get("name", ""),
                     "labels": neighbor_labels,
                     "path": meta.get("path"),
-                    "ref": meta.get("ref"),
+                    "ref": meta.get("_ref") or meta.get("ref"),
+                    "ref_key": "_ref" if meta.get("_ref") else ("ref" if meta.get("ref") else None),
                     "target_ref": canonical_ref(meta, meta.get("name", "")),
                 })
 
@@ -81,7 +84,7 @@ def delete_command(workspace, ref: str) -> str:
             continue
         match = selector_match_pattern(sel, "n")
         rows = workspace.cypher(
-            f"MATCH {match} DELETE n",
+            f"MATCH {match} WITH n, n.name AS deleted_name DETACH DELETE n RETURN deleted_name",
             params=selector_params(sel),
             project=sel.get("project"),
         )

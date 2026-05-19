@@ -5,6 +5,7 @@
 独立执行：
     python -m extractor.ai_db_column_summary ./my_data
 """
+import json
 import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,6 +16,18 @@ from extractor.modules.utils.ai_utils import generate_with_prefix
 from extractor.modules.utils.refs import db_column_ref, db_table_ref, get_entity_meta, set_entity_meta
 
 logger = logging.getLogger(__name__)
+
+
+def _json_value(value):
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or text[0] not in "[{":
+        return value
+    try:
+        return json.loads(text)
+    except Exception:
+        return value
 
 COL_MAX_WORKERS = 4
 TABLE_MAX_WORKERS = 4
@@ -42,7 +55,10 @@ def generate(workspace: Workspace, config=None) -> None:
         return
 
     for ext_suffix in [".db", ".sqlite", ".sqlite3", ".duckdb"]:
-        db_rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext_suffix}' RETURN n")
+        db_rows = workspace.cypher(
+            "MATCH (n) WHERE n.name ENDS WITH $suffix RETURN n",
+            params={"suffix": ext_suffix},
+        )
         for db_row in db_rows:
             db_ref = db_row["n"]["name"]
             try:
@@ -55,10 +71,16 @@ def _process_database(db_ref: str, workspace: Workspace, llm) -> None:
     """处理一个数据库：按表分组，表与表之间也并行。"""
     # 按 table 分组
     table_groups = defaultdict(list)
-    tbl_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t:table) RETURN t')
+    tbl_rows = workspace.cypher(
+        "MATCH (d {name: $db_ref})--(t:table) RETURN t",
+        params={"db_ref": db_ref},
+    )
     for tbl_row in tbl_rows:
         table_ref = tbl_row["t"]["name"]
-        col_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
+        col_rows = workspace.cypher(
+            "MATCH (d {name: $db_ref})--(t {name: $table_ref})--(c:col) RETURN c",
+            params={"db_ref": db_ref, "table_ref": table_ref},
+        )
         for col_row in col_rows:
             col_ref = db_column_ref(db_ref, table_ref, col_row["c"]["name"])
             table_groups[table_ref].append(col_ref)
@@ -157,7 +179,10 @@ def _build_table_info(db_ref: str, table_ref: str, workspace: Workspace) -> str:
 
     # 列清单
     col_lines = []
-    col_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
+    col_rows = workspace.cypher(
+        "MATCH (d {name: $db_ref})--(t {name: $table_ref})--(c:col) RETURN c",
+        params={"db_ref": db_ref, "table_ref": table_ref},
+    )
     for col_row in col_rows:
         col_name = col_row["c"]["name"]
         col_ref = db_column_ref(db_ref, table_ref, col_name)
@@ -168,7 +193,10 @@ def _build_table_info(db_ref: str, table_ref: str, workspace: Workspace) -> str:
         parts.append("所有列:\n" + "\n".join(col_lines))
 
     # FK
-    fk_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(f:fk) RETURN f')
+    fk_rows = workspace.cypher(
+        "MATCH (d {name: $db_ref})--(t {name: $table_ref})--(f:fk) RETURN f",
+        params={"db_ref": db_ref, "table_ref": table_ref},
+    )
     if fk_rows:
         fk_lines = []
         for fk_row in fk_rows:
@@ -216,7 +244,7 @@ def _build_column_block(col_name: str, meta: dict) -> str:
         sample_str = ", ".join(str(s) for s in samples[:30])
         parts.append(f"样本值: [{sample_str}]")
 
-    topk = meta.get("topk", [])
+    topk = _json_value(meta.get("topk", []))
     if topk:
         top_items = []
         for t in topk[:5]:

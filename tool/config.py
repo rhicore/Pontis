@@ -271,7 +271,40 @@ def resolve_meta_config(entity_labels: List[str]) -> MetaTypeConfig:
     """
     merged_keys = []
     merged_folded: Set[str] = set()
-    merged_hidden: Set[str] = set()
+    merged_hidden: Set[str] = {
+        "id",
+        "name",
+        "labels",
+        "project",
+        "path",
+        "ref",
+        "db_ref",
+        "db_connect",
+        "file_open",
+        "from_col_ref",
+        "to_col_ref",
+        "db_name",
+        "db_path",
+        "table_name",
+        "column_name",
+        "col_type",
+        "view_name",
+        "source_column",
+        "from_table",
+        "from_column",
+        "to_table",
+        "to_column",
+        "relation_type",
+        "detail_embedding",
+        "detail_embedding_model",
+        "detail_embedding_hash",
+        "detail_embedding_dimensions",
+        "sample_method",
+        "topk_method",
+        "cardinality_method",
+        "cardinality_lower_bound",
+        "cardinality_upper_bound",
+    }
     merged_adjacency: Set[str] = set()
     seen_keys: Set[str] = set()
     merged_max_value_len: Optional[int] = 100

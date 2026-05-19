@@ -6,21 +6,35 @@
 - format_entity_name: 将实体名与标签直接拼接
 - meta 格式化
 """
+import json
 from typing import Dict, Any, List, Optional
 
 from tool.config import (
     MetaTypeConfig, resolve_meta_config, resolve_info as _resolve_info,
 )
 from tool.utils.knowledge_meta import derive_knowledge_brief
+from storage.query_inspector import normalize_labels
 
 
 # ========== 标签格式化 ==========
+
+
+def _json_value(value):
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or text[0] not in "[{":
+        return value
+    try:
+        return json.loads(text)
+    except Exception:
+        return value
 
 def format_labels(labels: List[str]) -> str:
     """格式化标签为 Cypher 风格 ':label1:label2'。"""
     if not labels:
         return ""
-    return "".join(f":{label}" for label in labels)
+    return "".join(f":{label}" for label in normalize_labels(labels))
 
 
 def format_entity_name(name: str, labels: List[str]) -> str:
@@ -77,7 +91,7 @@ def _relation_detail_fallback(meta_dict: Dict[str, Any], labels: List[str]) -> O
         return None
 
     brief = meta_dict.get("brief")
-    stats = meta_dict.get("stats")
+    stats = _json_value(meta_dict.get("stats"))
     lines: List[str] = []
     if brief and str(brief).strip() not in ("", "-", "..."):
         lines.append(str(brief).strip())
@@ -231,11 +245,17 @@ def format_meta_output(
         return f"{specific_key}: {_format_meta_value(value, None)}"
 
     if show_all:
-        keys = sorted(k for k in meta_dict.keys() if not k.startswith("_"))
+        keys = sorted(
+            k for k in meta_dict.keys()
+            if not k.startswith("_") and k not in config.hidden_keys
+        )
     else:
         keys = [k for k in config.default_keys if k in meta_dict]
         if not keys:
-            keys = sorted(meta_dict.keys())
+            keys = sorted(
+                k for k in meta_dict.keys()
+                if not k.startswith("_") and k not in config.hidden_keys
+            )
 
     lines = []
     for key in keys:

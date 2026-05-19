@@ -20,7 +20,7 @@ from typing import List, Dict, Set, Optional
 from collections import defaultdict
 from itertools import combinations
 from storage.workspace import Workspace
-from extractor.modules.utils.refs import db_column_ref, get_entity_meta
+from extractor.modules.utils.refs import db_column_ref, get_entity_meta, neo4j_props
 from extractor.modules.utils.src import file_exists, open_sqlite_db
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,10 @@ def generate(workspace: Workspace, config=None) -> None:
     logger.info("=== Generating column overlaps ===")
 
     for ext_suffix in [".db", ".sqlite", ".sqlite3", ".duckdb"]:
-        db_rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext_suffix}' RETURN n")
+        db_rows = workspace.cypher(
+            "MATCH (n) WHERE n.name ENDS WITH $suffix RETURN n",
+            params={"suffix": ext_suffix},
+        )
         for db_row in db_rows:
             path = db_row["n"]["name"]
             try:
@@ -57,10 +60,16 @@ def _generate_for_database(path: str, workspace: Workspace) -> bool:
 
     # 收集所有列信息（通过 table → col 遍历）
     columns_info = []
-    tbl_rows = workspace.cypher(f'MATCH (d {{name: "{path}"}})--(t:table) RETURN t')
+    tbl_rows = workspace.cypher(
+        "MATCH (d {name: $path})--(t:table) RETURN t",
+        params={"path": path},
+    )
     for tbl_row in tbl_rows:
         table_ref = tbl_row["t"]["name"]
-        col_rows = workspace.cypher(f'MATCH (d {{name: "{path}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
+        col_rows = workspace.cypher(
+            "MATCH (d {name: $path})--(t {name: $table_ref})--(c:col) RETURN c",
+            params={"path": path, "table_ref": table_ref},
+        )
         for col_row in col_rows:
             col_name = col_row["c"]["name"]
             col_ref = db_column_ref(path, table_ref, col_name)
@@ -86,6 +95,8 @@ def _generate_for_database(path: str, workspace: Workspace) -> bool:
         logger.info(f"  Skipping {path}: only {len(columns_info)} columns")
         return False
 
+    value_sets = _load_column_value_sets(db_rel, columns_info, workspace)
+
     # Step 1: Context计算与表级过滤
     table_contexts = _build_table_contexts(columns_info)
 
@@ -103,7 +114,7 @@ def _generate_for_database(path: str, workspace: Workspace) -> bool:
         cols2 = [c for c in columns_info if c['table'] == table2]
 
         # 检测列对重叠
-        overlaps = _detect_column_overlaps(db_rel, cols1, cols2, workspace)
+        overlaps = _detect_column_overlaps(cols1, cols2, value_sets)
 
         # 创建 overlap 实体
         for overlap in overlaps:
@@ -142,13 +153,34 @@ def _build_table_contexts(columns_info: List[Dict]) -> Dict[str, Set[str]]:
     return contexts
 
 
-def _detect_column_overlaps(db_rel: str, cols1: List[Dict], cols2: List[Dict], workspace: Workspace) -> List[Dict]:
+def _load_column_value_sets(db_rel: str, columns_info: List[Dict], workspace: Workspace) -> Dict[str, Set]:
+    """Load distinct non-null values for each column once per database."""
+    value_sets: Dict[str, Set] = {}
+    try:
+        with open_sqlite_db(workspace, db_rel) as conn:
+            cursor = conn.cursor()
+            for col in columns_info:
+                try:
+                    cursor.execute(
+                        f'SELECT DISTINCT "{col["column"]}" FROM "{col["table"]}" '
+                        f'WHERE "{col["column"]}" IS NOT NULL'
+                    )
+                    value_sets[col["entity_name"]] = {row[0] for row in cursor.fetchall()}
+                except Exception as exc:
+                    logger.debug("Could not load values for %s: %s", col["entity_name"], exc)
+                    value_sets[col["entity_name"]] = set()
+    except Exception as exc:
+        logger.debug("Could not load database values for overlap detection: %s", exc)
+    return value_sets
+
+
+def _detect_column_overlaps(cols1: List[Dict], cols2: List[Dict], value_sets: Dict[str, Set]) -> List[Dict]:
     """检测两表列之间的重叠"""
     overlaps = []
 
     for col1 in cols1:
         for col2 in cols2:
-            overlap_result = _calculate_overlap(db_rel, col1, col2, workspace)
+            overlap_result = _calculate_overlap(col1, col2, value_sets)
             if not overlap_result or overlap_result['card_overlap'] == 0:
                 continue
 
@@ -191,22 +223,11 @@ def _detect_column_overlaps(db_rel: str, cols1: List[Dict], cols2: List[Dict], w
     return overlaps[:3]
 
 
-def _calculate_overlap(db_rel: str, col1: Dict, col2: Dict, workspace: Workspace) -> Optional[Dict]:
+def _calculate_overlap(col1: Dict, col2: Dict, value_sets: Dict[str, Set]) -> Optional[Dict]:
     """计算两列的值重叠情况"""
     try:
-        with open_sqlite_db(workspace, db_rel) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                f'SELECT DISTINCT "{col1["column"]}" FROM "{col1["table"]}" '
-                f'WHERE "{col1["column"]}" IS NOT NULL'
-            )
-            values1 = {row[0] for row in cursor.fetchall()}
-
-            cursor.execute(
-                f'SELECT DISTINCT "{col2["column"]}" FROM "{col2["table"]}" '
-                f'WHERE "{col2["column"]}" IS NOT NULL'
-            )
-            values2 = {row[0] for row in cursor.fetchall()}
+        values1 = value_sets.get(col1["entity_name"], set())
+        values2 = value_sets.get(col2["entity_name"], set())
 
         if values1.isdisjoint(values2):
             return None
@@ -252,19 +273,31 @@ def _create_overlap_entity(path: str, overlap: Dict, workspace: Workspace) -> bo
         overlapname = f"{raw_from_table}.{safe_from_col}->{raw_to_table}.{safe_to_col}"
         reversename = f"{raw_to_table}.{safe_to_col}->{raw_from_table}.{safe_from_col}"
 
-        if workspace.cypher(f'MATCH (n {{name: "{overlapname}"}}) RETURN n') or \
-           workspace.cypher(f'MATCH (n {{name: "{reversename}"}}) RETURN n'):
+        if workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": overlapname}) or \
+           workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": reversename}):
             return False
 
-        workspace.cypher(f'CREATE (o:overlap {{name: "{overlapname}"}})')
-        workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": overlapname, "props": {
-            "stats": overlap['stats'],
-            "created_at": __import__('datetime').datetime.now().isoformat(),
-        }})
+        workspace.cypher(
+            "CREATE (o:overlap {name: $name}) SET o += $props",
+            params={
+                "name": overlapname,
+                "props": neo4j_props({
+                    "labels": ["overlap"],
+                    "stats": overlap["stats"],
+                    "created_at": __import__("datetime").datetime.now().isoformat(),
+                }),
+            },
+        )
 
         # 添加边: from_table → overlap, to_table → overlap
-        workspace.cypher(f'MATCH (a {{name: "{from_table}"}}),(o {{name: "{overlapname}"}}) CREATE (a)--(o)')
-        workspace.cypher(f'MATCH (a {{name: "{to_table}"}}),(o {{name: "{overlapname}"}}) CREATE (a)--(o)')
+        workspace.cypher(
+            "MATCH (a {name: $table_name}), (o {name: $overlap_name}) CREATE (a)--(o)",
+            params={"table_name": from_table, "overlap_name": overlapname},
+        )
+        workspace.cypher(
+            "MATCH (a {name: $table_name}), (o {name: $overlap_name}) CREATE (a)--(o)",
+            params={"table_name": to_table, "overlap_name": overlapname},
+        )
 
         return True
 

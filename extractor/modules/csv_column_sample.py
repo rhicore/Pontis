@@ -11,6 +11,7 @@ import logging
 
 from typing import Optional, List, Any
 from storage.workspace import Workspace
+from extractor.modules.utils.refs import set_entity_meta
 from extractor.modules.utils.src import file_exists, get_file_path
 
 logger = logging.getLogger(__name__)
@@ -21,12 +22,18 @@ def generate(workspace: Workspace, sample_size: int = 10) -> None:
     logger.info("=== Generating CSV column samples ===")
 
     for ext, delim in [('.csv', ','), ('.tsv', '\t')]:
-        csv_rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext}' RETURN n")
+        csv_rows = workspace.cypher(
+            "MATCH (n) WHERE n.name ENDS WITH $suffix RETURN n",
+            params={"suffix": ext},
+        )
         for csv_row in csv_rows:
             csv_ref = csv_row["n"]["name"]
-            col_rows = workspace.cypher(f'MATCH (f {{name: "{csv_ref}"}})--(c:col) RETURN c')
+            col_rows = workspace.cypher(
+                "MATCH (f {name: $csv_ref})--(c:col) RETURN c",
+                params={"csv_ref": csv_ref},
+            )
             for col_row in col_rows:
-                col_ref = col_row["c"]["name"]
+                col_ref = col_row["c"].get("_ref") or col_row["c"].get("ref") or col_row["c"]["name"]
                 try:
                     _generate_for_column(col_ref, csv_ref, workspace, delim, sample_size)
                 except Exception as e:
@@ -44,7 +51,7 @@ def _generate_for_column(col_ref: str, csv_ref: str, workspace: Workspace,
     if "sample" in meta:
         return False
 
-    col_name = col_ref
+    col_name = meta.get("source_column") or meta.get("name") or col_ref
     csv_meta_rows = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": csv_ref})
     csv_meta = csv_meta_rows[0].get("n") if csv_meta_rows else None or {}
     csv_rel_path = csv_meta.get("path", csv_ref)
@@ -56,7 +63,7 @@ def _generate_for_column(col_ref: str, csv_ref: str, workspace: Workspace,
     if samples is None:
         return False
 
-    workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": col_ref, "props": {"sample": samples}})
+    set_entity_meta(workspace, col_ref, {"sample": samples})
     logger.info(f"  Sample added: {col_ref} ({len(samples)} items)")
     return True
 

@@ -5,7 +5,13 @@
 - 通过 scoped ref 避免同名列/表在图中被错误复用
 """
 
+import json
+from typing import Any
+
 from storage.workspace import Workspace
+
+
+_PRIMITIVE = (str, int, float, bool)
 
 
 def db_table_ref(db_ref: str, table_name: str) -> str:
@@ -25,7 +31,7 @@ def db_fk_ref(db_ref: str, fk_name: str) -> str:
 
 
 def get_entity_meta(workspace: Workspace, ref: str) -> dict | None:
-    for prop in ("ref", "path", "name"):
+    for prop in ("_ref", "ref", "path", "name"):
         rows = workspace.cypher(
             f"MATCH (n {{{prop}: $ref}}) RETURN n",
             params={"ref": ref},
@@ -35,7 +41,30 @@ def get_entity_meta(workspace: Workspace, ref: str) -> dict | None:
     return None
 
 
+def _neo4j_property_value(value: Any):
+    if value is None or isinstance(value, _PRIMITIVE):
+        return value
+    if isinstance(value, list) and all(
+        item is None or isinstance(item, _PRIMITIVE)
+        for item in value
+    ):
+        return value
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def neo4j_props(props: dict) -> dict:
+    """Convert extractor metadata to Neo4j property-compatible values."""
+    return {key: _neo4j_property_value(value) for key, value in props.items()}
+
+
 def set_entity_meta(workspace: Workspace, ref: str, props: dict) -> None:
+    props = neo4j_props(props)
+    rows = workspace.cypher(
+        "MATCH (n {_ref: $ref}) SET n += $props RETURN n",
+        params={"ref": ref, "props": props},
+    )
+    if rows:
+        return
     rows = workspace.cypher(
         "MATCH (n {ref: $ref}) SET n += $props RETURN n",
         params={"ref": ref, "props": props},

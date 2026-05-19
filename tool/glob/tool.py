@@ -6,19 +6,21 @@
   pattern:label1|label2                OR 标签过滤
   seg1/seg2/seg3                       多跳遍历（/ 分隔）
   seg1/**/seg3                         变长遍历（** = [*1..N]）
-  project::pattern:label               项目前缀（:: 分隔）
+  project::pattern:label               项目路由前缀（:: 分隔）
 
 翻译规则：
   Pattern → WHERE n.name STARTS/ENDS/CONTAINS 或 fnmatch 后处理
   :Label  → :Label 节点标签
-  project:: → WHERE n.project = "xxx"
+  project:: → workspace.cypher(..., project=project)
   seg1/seg2 → MATCH (a:lbl)--(b:lbl) RETURN a, b
   **       → MATCH (a)-[*1..]-(b) 变长遍历
 """
 import os
+import json
 from fnmatch import fnmatch
 from typing import Dict, List, Optional, Tuple
 
+from storage.query_inspector import cypher_label_clause, is_valid_label
 from tool.config import TOOL_PAGINATION
 from tool.utils.formatters import format_entity_name, get_info
 from tool.utils.display_ref import display_ref_for_node
@@ -67,17 +69,30 @@ def parse_urn(urn: str) -> Tuple[Optional[str], List[dict]]:
     for raw in raw_segments:
         pattern, labels_and, labels_or = _split_segment(raw)
         segments.append({
-            "project": None,  # 项目只在顶层设置
             "pattern": pattern,
             "labels_and": labels_and,
             "labels_or": labels_or,
         })
 
-    # 项目属性设到第一段（用于 Cypher 生成）
-    if project and segments:
-        segments[0]["project"] = project
-
     return project, segments
+
+
+def normalize_project_slash_ref(workspace, ref: str) -> str:
+    """Accept common `project/...` typo as `project::...` for active projects.
+
+    `project::` is the route for the whole query. Models sometimes write
+    `project/*:table`, which otherwise means "find an entity named project and
+    traverse from it". Normalizing only active project names keeps normal file
+    paths unchanged.
+    """
+    text = (ref or "").strip()
+    if "::" in text or "/" not in text:
+        return text
+    first, rest = text.split("/", 1)
+    active = set(getattr(workspace, "active_projects", []) or [])
+    if first in active and rest:
+        return f"{first}::{rest}"
+    return text
 
 
 # ═══════════════════════════════════════════════════════════
@@ -96,20 +111,20 @@ def _pattern_to_cypher_name(pattern: str, var: str = "n") -> Tuple[str, Optional
 
     # 无通配符 → 精确匹配
     if "*" not in pattern and "?" not in pattern and "[" not in pattern:
-        return (f'{var}.name = "{pattern}"', None)
+        return (f"{var}.name = {json.dumps(pattern)}", None)
 
     # *suffix → ENDS WITH
     if pattern.startswith("*") and "*" not in pattern[1:] and "?" not in pattern and "[" not in pattern:
-        return (f'{var}.name ENDS WITH "{pattern[1:]}"', None)
+        return (f"{var}.name ENDS WITH {json.dumps(pattern[1:])}", None)
 
     # prefix* → STARTS WITH
     if pattern.endswith("*") and "*" not in pattern[:-1] and "?" not in pattern and "[" not in pattern:
-        return (f'{var}.name STARTS WITH "{pattern[:-1]}"', None)
+        return (f"{var}.name STARTS WITH {json.dumps(pattern[:-1])}", None)
 
     # *middle* → CONTAINS
     if (pattern.startswith("*") and pattern.endswith("*")
             and "*" not in pattern[1:-1] and "?" not in pattern and "[" not in pattern):
-        return (f'{var}.name CONTAINS "{pattern[1:-1]}"', None)
+        return (f"{var}.name CONTAINS {json.dumps(pattern[1:-1])}", None)
 
     # 复杂 glob → 后处理
     return ("", pattern)
@@ -133,6 +148,10 @@ def _build_cypher(segments: List[dict]) -> Tuple[str, List[tuple]]:
         post_filters: [(var, "name", glob_pattern), ...]
     """
     post_filters = []
+    for seg in segments:
+        labels = list(seg.get("labels_and", [])) + list(seg.get("labels_or", []))
+        if any(not is_valid_label(label) for label in labels):
+            return "MATCH (n) WHERE false RETURN n", []
 
     # 分离节点段和变长标记
     node_segs = []
@@ -155,12 +174,9 @@ def _build_cypher(segments: List[dict]) -> Tuple[str, List[tuple]]:
     # 单段
     if len(node_segs) == 1:
         seg = node_segs[0]
-        labels_str = "".join(f":{l}" for l in seg["labels_and"])
+        labels_str = cypher_label_clause(seg["labels_and"])
         where_parts = []
         var = "n"
-
-        if seg["project"]:
-            where_parts.append(f'n.project = "{seg["project"]}"')
 
         clause, post_pat = _pattern_to_cypher_name(seg["pattern"], var)
         if clause:
@@ -182,10 +198,7 @@ def _build_cypher(segments: List[dict]) -> Tuple[str, List[tuple]]:
 
     for i, seg in enumerate(node_segs):
         var = var_names[i]
-        labels_str = "".join(f":{l}" for l in seg["labels_and"])
-
-        if seg["project"]:
-            where_parts.append(f'{var}.project = "{seg["project"]}"')
+        labels_str = cypher_label_clause(seg["labels_and"])
 
         clause, post_pat = _pattern_to_cypher_name(seg["pattern"], var)
         if clause:
@@ -255,6 +268,35 @@ def _get_project_name(workspace) -> str:
     return "local"
 
 
+def _query_projects(workspace, project: str | None) -> list[str | None]:
+    if project:
+        return [project]
+    active = list(getattr(workspace, "active_projects", []) or [])
+    return active or [None]
+
+
+def _tag_row_project(row: dict, project: str | None) -> dict:
+    if not project:
+        return row
+    tagged = {}
+    for key, value in row.items():
+        if isinstance(value, dict):
+            copy = dict(value)
+            copy.setdefault("__project", project)
+            tagged[key] = copy
+        else:
+            tagged[key] = value
+    return tagged
+
+
+def _execute_projects(workspace, cypher: str, project: str | None) -> list[dict]:
+    rows = []
+    for candidate in _query_projects(workspace, project):
+        project_rows = workspace.cypher(cypher, project=candidate)
+        rows.extend(_tag_row_project(row, candidate) for row in project_rows)
+    return rows
+
+
 def _knowledge_priority(labels: List[str]) -> int:
     label_set = set(labels or [])
     if "knowledge" not in label_set:
@@ -282,6 +324,7 @@ def glob_command(workspace, ref: str, offset: int = 0,
         offset: 起始索引
         limit: 每页最大条数
     """
+    ref = normalize_project_slash_ref(workspace, ref)
     page_conf = TOOL_PAGINATION["glob"]
     if limit is None:
         limit = page_conf.default_limit
@@ -294,8 +337,8 @@ def glob_command(workspace, ref: str, offset: int = 0,
     project, segments = parse_urn(ref)
     cypher, post_filters = _build_cypher(segments)
 
-    # 执行 Cypher
-    results = workspace.cypher(cypher, project=project)
+    # 执行 Cypher。project:: 是整条 glob 的路由，不是节点属性过滤。
+    results = _execute_projects(workspace, cypher, project)
 
     # 后处理（复杂 glob / label OR）
     if post_filters:
@@ -317,13 +360,14 @@ def glob_command(workspace, ref: str, offset: int = 0,
                 break
         if not main_info:
             continue
-        main_info = normalize_knowledge_meta(main_info.get("project"), main_info.get("labels"), main_info)
+        node_project = main_info.get("__project") or project
+        main_info = normalize_knowledge_meta(node_project, main_info.get("labels"), main_info)
 
-        name = display_ref_for_node(workspace, project, main_info, row=row, main_var=main_var)
+        name = display_ref_for_node(workspace, node_project, main_info, row=row, main_var=main_var)
         labels = main_info.get("labels", [])
         info_str = get_info(labels, main_info or {})
         entity_name = format_entity_name(name, labels)
-        all_items.append((_knowledge_priority(labels), entity_name.lower(), entity_name, info_str))
+        all_items.append((_knowledge_priority(labels), entity_name.lower(), node_project, entity_name, info_str))
 
     if not all_items:
         return "No objects found"
@@ -336,8 +380,10 @@ def glob_command(workspace, ref: str, offset: int = 0,
         return f"No results at offset {offset}. Total results: {total}"
 
     lines = []
-    for _, _, entity_name, info in page:
-        lines.append(f"{entity_name}\t{info}")
+    show_project = project is None and len(_query_projects(workspace, project)) > 1
+    for _, _, node_project, entity_name, info in page:
+        prefix = f"{node_project}::\t" if show_project and node_project else ""
+        lines.append(f"{prefix}{entity_name}\t{info}")
     output = "\n".join(lines)
 
     end = offset + len(page)

@@ -5,6 +5,7 @@ DESCRIPTION = "执行 Cypher 图查询语言，检索知识图谱中的实体和
 DETAIL = """\
 参数：
 - query (必填): Cypher 查询语句
+- project: 可选，指定目标 project database；一条 Cypher 只在一个 project 中执行
 - offset: 起始偏移，默认 0
 - limit: 最大返回条数，默认 100
 
@@ -30,7 +31,7 @@ DETAIL = """\
 11. 删除节点：MATCH (n {name: "loan"}) DELETE n
 12. 创建边：MATCH (a {name: "x"}), (b {name: "y"}) CREATE EDGE (a)--(b)
 
-每个实体都有以下标准属性：name, labels, project, 以及具体类型的业务属性
+每个实体都有以下标准属性：name, labels, 以及具体类型的业务属性。project 是 Cypher 执行路由，不是节点属性，不要写 `n.project` 条件。
 标签类型：file, db, csv, json, table, view, col, fk, rel, overlap, dir, knowledge, chunk, disambig
 """
 

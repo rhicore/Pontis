@@ -31,7 +31,10 @@ def generate(workspace: Workspace) -> None:
         return
 
     for ext_suffix in [".db", ".sqlite", ".sqlite3", ".duckdb"]:
-        db_rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext_suffix}' RETURN n")
+        db_rows = workspace.cypher(
+            "MATCH (n) WHERE n.name ENDS WITH $suffix RETURN n",
+            params={"suffix": ext_suffix},
+        )
         for db_row in db_rows:
             db_ref = db_row["n"]["name"]
             try:
@@ -80,13 +83,19 @@ def _generate_for_db(db_ref: str, workspace: Workspace, llm) -> bool:
 def _get_table_info(db_ref: str, workspace: Workspace) -> List[dict]:
     """读取数据库下所有表的元数据"""
     tables = []
-    tbl_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t:table) RETURN t')
+    tbl_rows = workspace.cypher(
+        "MATCH (d {name: $db_ref})--(t:table) RETURN t",
+        params={"db_ref": db_ref},
+    )
     for tbl_row in tbl_rows:
         table_ref = tbl_row["t"]["name"]
         table_meta = get_entity_meta(workspace, db_table_ref(db_ref, table_ref))
         if table_meta:
             columns = []
-            col_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c')
+            col_rows = workspace.cypher(
+                "MATCH (d {name: $db_ref})--(t {name: $table_ref})--(c:col) RETURN c",
+                params={"db_ref": db_ref, "table_ref": table_ref},
+            )
             for col_row in col_rows:
                 col_name = col_row["c"]["name"]
                 col_ref = db_column_ref(db_ref, table_ref, col_name)
@@ -112,7 +121,10 @@ def _get_table_info(db_ref: str, workspace: Workspace) -> List[dict]:
 def _get_view_info(db_ref: str, workspace: Workspace) -> List[dict]:
     """读取数据库下所有视图的元数据"""
     views = []
-    view_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(v:view) RETURN v')
+    view_rows = workspace.cypher(
+        "MATCH (d {name: $db_ref})--(v:view) RETURN v",
+        params={"db_ref": db_ref},
+    )
     for view_row in view_rows:
         view_ref = view_row["v"]["name"]
         view_meta = get_entity_meta(workspace, db_view_ref(db_ref, view_ref))

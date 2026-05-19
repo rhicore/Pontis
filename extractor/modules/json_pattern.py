@@ -349,11 +349,20 @@ def _write_pattern(file_path: str, pat: dict, workspace: Workspace) -> None:
     safe_name = pat["name"].replace("/", "_").replace("\\", "_")
     entity_name = f"{safe_name}.pattern"
 
-    workspace.cypher(f'CREATE (p:pattern {{name: "{entity_name}"}})')
-    workspace.cypher('MATCH (n {name: $name}) SET n += $props', params={"name": entity_name, "props": {
-        "name": pat["name"],
-        "type": pat["type"],
-        "pattern": pat["pattern"],
-        "ai_summary": "",
-    }})
-    workspace.cypher(f'MATCH (f {{name: "{file_path}"}}),(p {{name: "{entity_name}"}}) CREATE (f)--(p)')
+    workspace.cypher(
+        "CREATE (p:pattern {name: $name}) SET p += $props",
+        params={
+            "name": entity_name,
+            "props": {
+                "labels": ["pattern"],
+                "source_pattern_name": pat["name"],
+                "type": pat["type"],
+                "pattern": pat["pattern"],
+                "ai_summary": "",
+            },
+        },
+    )
+    workspace.cypher(
+        "MATCH (f {name: $file_path}), (p {name: $entity_name}) CREATE (f)--(p)",
+        params={"file_path": file_path, "entity_name": entity_name},
+    )

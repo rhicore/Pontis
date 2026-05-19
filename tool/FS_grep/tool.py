@@ -279,22 +279,29 @@ def _sort_by_mtime(files: List[str]) -> List[str]:
 
 
 def _source_path_for(workspace, rel_path: str = ".") -> Optional[str]:
-    labels = ":dir" if rel_path in ("", ".") else ""
+    root = getattr(workspace, "project_path", "") or ""
+    if rel_path in ("", "."):
+        return root if root and os.path.isdir(root) else None
+
     rows = workspace.cypher(
-        f"MATCH (n{labels} {{path: $path}}) RETURN n.src AS src",
-        params={"path": rel_path or "."},
+        "MATCH (n:file {path: $path}) RETURN coalesce(n._file_open, n.file_open) AS open_file",
+        params={"path": rel_path},
     )
     if not rows and rel_path not in ("", "."):
         rows = workspace.cypher(
-            "MATCH (n {name: $name}) RETURN n.src AS src",
+            "MATCH (n:file {name: $name}) RETURN coalesce(n._file_open, n.file_open) AS open_file",
             params={"name": os.path.basename(rel_path)},
         )
-    if len(rows) != 1:
-        return None
-    src = rows[0].get("src")
-    if src and src.has("path"):
-        return src.get("path")
-    return None
+    if len(rows) == 1:
+        path = getattr(rows[0].get("open_file"), "path", None)
+        if path:
+            return path
+
+    if root and not os.path.isabs(rel_path):
+        path = os.path.join(root, rel_path)
+        if os.path.exists(path):
+            return path
+    return rel_path if os.path.isabs(rel_path) and os.path.exists(rel_path) else None
 
 
 def grep_command(
@@ -344,7 +351,7 @@ def grep_command(
         offset=offset,
     )
 
-    # Resolve search path through storage's Cypher src port only.
+    # Resolve search path through storage handle properties only.
     if params.path:
         search_rel = os.path.join(current_cwd, params.path) if current_cwd and not os.path.isabs(params.path) else params.path
     else:

@@ -1,6 +1,7 @@
-"""Search tool — BM25 语义检索。
+"""Search tool — vector semantic search with BM25 fallback.
 
-基于 brief/detail 的 BM25 评分，支持自然语言查询。
+优先使用 Neo4j detail embedding vector index；没有 embedding 配置或索引时，
+回退到基于 brief/detail 的 BM25 评分。
 """
 import math
 import re
@@ -8,10 +9,19 @@ from collections import Counter
 from typing import List, Optional
 
 from tool.config import TOOL_PAGINATION
-from tool.glob.tool import _apply_post_filters, _build_cypher, parse_urn
+from tool.glob.tool import (
+    _apply_post_filters,
+    _build_cypher,
+    _execute_projects,
+    normalize_project_slash_ref,
+    parse_urn,
+)
 from tool.utils.display_ref import display_ref_for_node, node_selector
 from tool.utils.formatters import format_entity_name, get_info
 from tool.utils.knowledge_meta import normalize_knowledge_meta
+from utils.embedding import load_embedding_config
+
+VECTOR_INDEX_PREFIX = "pontis_detail_embedding"
 
 
 # ========== Tokenizer ==========
@@ -75,13 +85,14 @@ def _knowledge_score_factor(labels: List[str]) -> float:
 
 
 def _candidate_nodes(workspace, ref: str) -> list[dict] | None:
+    ref = normalize_project_slash_ref(workspace, ref)
     ref = (ref or "").strip()
     if ref in ("", "*"):
         return None
 
     project, segments = parse_urn(ref)
     cypher, post_filters = _build_cypher(segments)
-    rows = workspace.cypher(cypher, project=project)
+    rows = _execute_projects(workspace, cypher, project)
     if post_filters:
         rows = _apply_post_filters(rows, post_filters)
 
@@ -96,16 +107,110 @@ def _candidate_nodes(workspace, ref: str) -> list[dict] | None:
                 break
         if not main_info:
             continue
-        key = main_info.get("id") or (
-            main_info.get("project", ""),
-            tuple(main_info.get("labels", [])),
-            main_info.get("name", ""),
+        key = (
+            main_info.get("__project", ""),
+            main_info.get("id")
+            or main_info.get("_ref")
+            or main_info.get("ref")
+            or main_info.get("path")
+            or (tuple(main_info.get("labels", [])), main_info.get("name", "")),
         )
         if key in seen:
             continue
         seen.add(key)
         out.append(main_info)
     return out
+
+
+def _node_key(node: dict) -> tuple:
+    return (
+        node.get("__project", ""),
+        node.get("id")
+        or node.get("_ref")
+        or node.get("ref")
+        or node.get("path")
+        or (tuple(node.get("labels", [])), node.get("name", "")),
+    )
+
+
+def _candidate_key_set(workspace, ref: str) -> set[tuple] | None:
+    candidates = _candidate_nodes(workspace, ref)
+    if candidates is None:
+        return None
+    return {_node_key(node) for node in candidates}
+
+
+def _vector_search(workspace, query: str, ref: str = "", fetch_k: int = 100) -> List[tuple]:
+    ref = normalize_project_slash_ref(workspace, ref)
+    embed_config = load_embedding_config()
+    client = embed_config.get_client()
+    if not client:
+        return []
+    vector = client.embed_one(query)
+    if not vector:
+        return []
+
+    try:
+        allowed = _candidate_key_set(workspace, ref)
+    except Exception:
+        allowed = None
+
+    project, _ = parse_urn(ref or "")
+    docs = []
+    seen = set()
+    for candidate_project in _query_projects_for_search(workspace, project):
+        for index_name in _vector_indexes(workspace, candidate_project):
+            try:
+                rows = workspace.cypher(
+                    f"CALL db.index.vector.queryNodes('{index_name}', $k, $vector) "
+                    "YIELD node, score "
+                    "RETURN node AS n, score",
+                    params={"k": int(fetch_k), "vector": vector},
+                    project=candidate_project,
+                )
+            except Exception:
+                continue
+            for row in rows:
+                node = row.get("n") or {}
+                if candidate_project:
+                    node = dict(node)
+                    node.setdefault("__project", candidate_project)
+                key = _node_key(node)
+                if key in seen:
+                    continue
+                if allowed is not None and key not in allowed:
+                    continue
+                seen.add(key)
+                labels = node.get("labels", [])
+                node_project = node.get("__project")
+                node = normalize_knowledge_meta(node_project, labels, node)
+                name = node.get("name", "")
+                if not name:
+                    continue
+                info = get_info(labels, node)
+                docs.append((float(row.get("score") or 0.0), name, node, info, labels, node_project))
+    docs.sort(key=lambda x: (-x[0], _knowledge_priority(x[4]), x[1].lower()))
+    return docs
+
+
+def _vector_indexes(workspace, project: str | None) -> list[str]:
+    try:
+        rows = workspace.cypher(
+            "SHOW INDEXES YIELD name, type "
+            f"WHERE type = 'VECTOR' AND name STARTS WITH '{VECTOR_INDEX_PREFIX}_' "
+            "RETURN name",
+            project=project,
+        )
+    except Exception:
+        return []
+    return sorted({row.get("name") for row in rows if row.get("name")})
+
+
+def _query_projects_for_search(workspace, project: str | None) -> list[str | None]:
+    if project:
+        return [project]
+    active = list(getattr(workspace, "active_projects", []) or [])
+    return active or [None]
 
 
 def _bm25_search(workspace, query: str, ref: str = "",
@@ -118,11 +223,12 @@ def _bm25_search(workspace, query: str, ref: str = "",
     docs = []
     candidates = _candidate_nodes(workspace, ref)
     if candidates is None:
-        rows = workspace.cypher("MATCH (n) RETURN n")
+        rows = _execute_projects(workspace, "MATCH (n) RETURN n", None)
         candidates = [row.get("n", {}) for row in rows]
 
     for n in candidates:
-        n = normalize_knowledge_meta(n.get("project"), n.get("labels"), n)
+        node_project = n.get("__project")
+        n = normalize_knowledge_meta(node_project, n.get("labels"), n)
         name = n.get("name", "")
         if not name:
             continue
@@ -140,7 +246,7 @@ def _bm25_search(workspace, query: str, ref: str = "",
         labels = n.get("labels", [])
         info = get_info(labels, n)
 
-        docs.append((name, n, tokens, info, labels, n.get("project")))
+        docs.append((name, n, tokens, info, labels, node_project))
 
     if not docs:
         return []
@@ -193,12 +299,16 @@ def search_command(
     current_cwd: str = ""
 ) -> str:
     """BM25 语义检索，搜索实体的 brief 和 detail。"""
+    ref = normalize_project_slash_ref(workspace, ref)
     page_conf = TOOL_PAGINATION["search"]
     if limit is None:
         limit = page_conf.default_limit
     limit = min(limit, page_conf.max_limit)
 
-    results = _bm25_search(workspace, query, ref)
+    fetch_k = max(limit + offset, min(page_conf.max_limit, max(100, (limit + offset) * 5)))
+    results = _vector_search(workspace, query, ref, fetch_k=fetch_k)
+    if not results:
+        results = _bm25_search(workspace, query, ref)
 
     if not results:
         return "No objects found"

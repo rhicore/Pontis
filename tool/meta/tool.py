@@ -3,7 +3,7 @@
 模式1：meta(ref) → 自身 meta + related 分组
 模式2：meta(ref, neighbor_label) → 只看匹配 neighbor_label 的邻居
 """
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 from tool.config import resolve_meta_config
 from tool.utils.display_ref import display_ref_for_node, node_selector
@@ -21,7 +21,7 @@ def _get_project_name(workspace) -> str:
 
 
 def _label_matches(entity_labels: List[str], query: str) -> bool:
-    from storage.labels import label_matches
+    from storage.query_inspector import label_matches
     return label_matches(entity_labels, query)
 
 
@@ -30,6 +30,68 @@ def _adjacency_group_key(labels: List[str]) -> str | None:
         if label in _ADJACENCY_KEYS:
             return label
     return None
+
+
+def _quote_ident(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _trim_value(value: Any, max_len: int = 120) -> Any:
+    if isinstance(value, str) and len(value) > max_len:
+        return value[:max_len] + "..."
+    return value
+
+
+def _compute_column_properties(meta: dict, labels: List[str], props: List[str]) -> dict:
+    """Compute lightweight column stats through the resolved database handle.
+
+    These values are only computed when explicitly requested. They are runtime
+    metadata, not persisted graph facts.
+    """
+    wanted = set(props) & {"sample", "topk", "cardinality"}
+    if not wanted or "col" not in set(labels or []):
+        return {}
+
+    db_connect = meta.get("_db_connect") or meta.get("db_connect")
+    if not callable(db_connect):
+        return {}
+
+    table = meta.get("table_name")
+    column = meta.get("column_name")
+    if not table or not column:
+        return {}
+
+    table_sql = _quote_ident(table)
+    column_sql = _quote_ident(column)
+    result: dict[str, Any] = {}
+    conn = db_connect(readonly=True)
+    try:
+        cur = conn.cursor()
+        if "cardinality" in wanted:
+            cur.execute(f"SELECT COUNT(DISTINCT {column_sql}) FROM {table_sql}")
+            row = cur.fetchone()
+            result["cardinality"] = row[0] if row else 0
+        if "sample" in wanted:
+            cur.execute(
+                f"SELECT DISTINCT {column_sql} FROM {table_sql} "
+                f"WHERE {column_sql} IS NOT NULL LIMIT 20"
+            )
+            result["sample"] = [_trim_value(row[0]) for row in cur.fetchall()]
+        if "topk" in wanted:
+            cur.execute(
+                f"SELECT {column_sql}, COUNT(*) AS c FROM {table_sql} "
+                f"WHERE {column_sql} IS NOT NULL "
+                f"GROUP BY {column_sql} ORDER BY c DESC LIMIT 10"
+            )
+            result["topk"] = [
+                {"value": _trim_value(value), "count": count}
+                for value, count in cur.fetchall()
+            ]
+    except Exception as exc:
+        result["_error"] = str(exc)
+    finally:
+        conn.close()
+    return result
 
 
 def _format_neighbor_list(workspace, project_name: str, project: str | None, neighbors: List[dict]) -> str:
@@ -91,14 +153,20 @@ def meta_command(
         lines = []
         missing = []
         raw_meta = dict(meta)
+        computed = _compute_column_properties(raw_meta, labels, props)
         for p in props:
             value = get_display_property_value(raw_meta, labels, p)
+            if value is None and p in computed:
+                value = computed[p]
             if value is None:
                 missing.append(p)
             else:
                 lines.append(f"{p}: {_format_meta_value(value, None)}")
         if missing:
-            available = sorted(raw_meta.keys())
+            available = sorted(
+                key for key in set(list(raw_meta.keys()) + list(computed.keys()))
+                if not key.startswith("_")
+            )
             lines.append(f"未找到: {', '.join(missing)}. 可用字段: {', '.join(available)}")
         return "\n".join(lines)
 
@@ -119,6 +187,9 @@ def meta_command(
     hidden_keys = set(getattr(resolve_meta_config(labels), "hidden_keys", set()))
     for key in hidden_keys:
         plain_meta.pop(key, None)
+    for key in list(plain_meta.keys()):
+        if key.startswith("_"):
+            plain_meta.pop(key, None)
     for key in _ADJACENCY_KEYS:
         plain_meta.pop(key, None)
 
@@ -138,8 +209,11 @@ def meta_command(
         from tool.utils.formatters import _format_meta_value
         lines = []
         missing = []
+        computed = _compute_column_properties(raw_meta, labels, props)
         for p in props:
             value = get_display_property_value(raw_meta, labels, p)
+            if value is None and p in computed:
+                value = computed[p]
             if value is None and p in adjacency:
                 value = "\n".join(adjacency[p])
             if value is None:
@@ -147,7 +221,10 @@ def meta_command(
             else:
                 lines.append(f"{p}: {_format_meta_value(value, None)}")
         if missing:
-            available = sorted(set(list(raw_meta.keys()) + list(adjacency.keys())))
+            available = sorted(
+                key for key in set(list(raw_meta.keys()) + list(adjacency.keys()) + list(computed.keys()))
+                if not key.startswith("_")
+            )
             lines.append(f"未找到: {', '.join(missing)}. 可用字段: {', '.join(available)}")
         return "\n".join(lines)
 

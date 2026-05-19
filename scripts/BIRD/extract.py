@@ -34,6 +34,10 @@ AGENT_PIPELINE = [
     "agent_readme",
 ]
 
+EMBEDDING_PIPELINE = [
+    "semantic_embedding",
+]
+
 _CONSOLE_FMT = "%(asctime)s %(levelname)-5s | %(message)s"
 _LOG_DATE = "%H:%M:%S"
 
@@ -78,6 +82,7 @@ def extract_one(
         "join_detect": 0.0,
         "disambiguate": 0.0,
         "readme": 0.0,
+        "embedding": 0.0,
     }
 
     with file_log_handler(str(pontis_dir / "extract.log")):
@@ -133,6 +138,18 @@ def extract_one(
                 logger.info(f"Disambiguate phase done: {result['disambiguate']:.1f}s")
             if result["readme"]:
                 logger.info(f"README phase done: {result['readme']:.1f}s")
+
+        registry = get_registry()
+        embedding_pipeline = [name for name in EMBEDDING_PIPELINE if name in registry]
+        embedding_timings = run_modules(
+            embedding_pipeline,
+            workspace,
+            config=config,
+            options=RunOptions(continue_on_error=True, collect_timing=True),
+        )
+        result["embedding"] = embedding_timings.get("semantic_embedding", 0.0)
+        if result["embedding"]:
+            logger.info(f"Embedding phase done: {result['embedding']:.1f}s")
 
         logger.info(f"=== {name} done ===")
 

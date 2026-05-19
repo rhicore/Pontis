@@ -1,2 +1,1 @@
-"""Shared helpers for source modules."""
-
+"""Utilities shared by source modules."""

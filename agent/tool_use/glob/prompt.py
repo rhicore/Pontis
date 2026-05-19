@@ -15,7 +15,8 @@ DETAIL = """\
 每个 segment：`name_pattern[:tag1[:tag2[|tag3]]]`
 
 组成部分：
-- project:: — 项目前缀，省略时搜索当前项目
+- project:: — 项目路由前缀，作用于整条 glob；省略时在所有当前打开的项目里搜索
+- 项目名前缀必须写 `project::...`，不要写 `project/...`
 - name_pattern — 名称 glob 模式（* ? []），无标签时匹配文件名
 - :tag — 标签过滤，`:` 分隔 AND，`|` 分隔 OR
 - / segment — 多段用 `/` 连接，每段代表一跳遍历
@@ -64,6 +65,8 @@ DETAIL = """\
 |---|---|
 | `financial::*:table` | financial 项目的所有表 |
 | `bird::*:knowledge` | BIRD 跨库经验库中的知识实体 |
+
+错误写法：`financial/*:table`。这会被理解成路径遍历，不是项目路由。
 
 """
 

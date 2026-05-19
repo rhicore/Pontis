@@ -54,32 +54,36 @@ def query_command(workspace, sql: str, file: str, limit: int = _DEFAULT_LIMIT) -
         if not os.path.isfile(file):
             return f"错误：数据库文件不存在: {file}"
         db_path = file
-        src = None
+        db_connect = None
     else:
         try:
             rows = workspace.cypher(
-                "MATCH (f:file:db) WHERE f.path = $path RETURN f.src AS src",
+                "MATCH (f:file:db) WHERE f.path = $path "
+                "RETURN coalesce(f._db_connect, f.db_connect) AS db_connect",
                 params={"path": file},
             )
             if len(rows) != 1:
                 basename = os.path.basename(file)
                 rows = workspace.cypher(
-                    "MATCH (f:file:db) WHERE f.name = $name RETURN f.src AS src",
+                    "MATCH (f:file:db) WHERE f.name = $name "
+                    "RETURN coalesce(f._db_connect, f.db_connect) AS db_connect",
                     params={"name": basename},
                 )
             if len(rows) != 1:
                 raise ValueError("not unique")
-            src = rows[0].get("src")
-            if src is None:
+            db_connect = rows[0].get("db_connect")
+            if db_connect is None:
                 raise ValueError("not found")
-            db_path = src.get("path") if src.has("path") else None
+            db_path = getattr(db_connect, "db_path", None)
+            if not db_path:
+                raise ValueError("not found")
         except Exception:
             return f"错误：数据库文件不存在或不唯一: {file}"
 
     # 执行查询
     try:
-        if src is not None and src.has("db_connect"):
-            conn = src.get("db_connect")(readonly=True)
+        if db_connect is not None:
+            conn = db_connect(readonly=True)
         else:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         cursor = conn.cursor()

@@ -39,14 +39,21 @@ def generate(
     logger.info("=== Generating approximate DB column profiles ===")
 
     for ext_suffix in [".db", ".sqlite", ".sqlite3", ".duckdb"]:
-        db_rows = workspace.cypher(f"MATCH (n) WHERE n.name ENDS WITH '{ext_suffix}' RETURN n")
+        db_rows = workspace.cypher(
+            "MATCH (n) WHERE n.name ENDS WITH $suffix RETURN n",
+            params={"suffix": ext_suffix},
+        )
         for db_row in db_rows:
             db_ref = db_row["n"]["name"]
-            tbl_rows = workspace.cypher(f'MATCH (d {{name: "{db_ref}"}})--(t:table) RETURN t')
+            tbl_rows = workspace.cypher(
+                "MATCH (d {name: $db_ref})--(t:table) RETURN t",
+                params={"db_ref": db_ref},
+            )
             for tbl_row in tbl_rows:
                 table_ref = tbl_row["t"]["name"]
                 col_rows = workspace.cypher(
-                    f'MATCH (d {{name: "{db_ref}"}})--(t {{name: "{table_ref}"}})--(c:col) RETURN c'
+                    "MATCH (d {name: $db_ref})--(t {name: $table_ref})--(c:col) RETURN c",
+                    params={"db_ref": db_ref, "table_ref": table_ref},
                 )
                 for col_row in col_rows:
                     col_name = col_row["c"]["name"]

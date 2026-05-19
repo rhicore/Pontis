@@ -1,448 +1,503 @@
-"""Storage public contract tests.
+"""Neo4j storage integration tests.
 
-All graph operations in this file go through `cypher(...)`.
-The test intentionally avoids Store private methods: storage core must be
-validated as a Cypher graph engine, not as a ref/name/path resolver.
+Prerequisites:
+  source .neo4j/neo4j.env
+  uv run python -m storage.neo4j.instances start storage_test
 
-Usage: python3 scripts/storage/test_store.py
+The tests exercise the current storage architecture:
+- Workspace.cypher selects source modules through query triggers.
+- Source modules submit their own Cypher writes.
+- Neo4j executes the final user query.
+- Workspace resolves returned pointer strings.
 """
 
+from __future__ import annotations
+
 import os
-import shutil
 import sqlite3
 import sys
 import tempfile
-import traceback
+from pathlib import Path
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, ROOT)
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from storage import stores as store_factory
-from storage.config import GraphConfig, ProjectConfig, SourceConfig
+from storage.config import GraphConfig, ProjectConfig, SourceConfig, StoreConfig, load_config
+from storage.stores.access import DbConnect, FileOpen
+from storage.stores.utils.fs_adapter import LocalSourceAdapter
+from storage.triggers import TriggerRouter
 from storage.workspace import Workspace
 
-
-passed = 0
-failed = 0
-errors = []
+_ALLOW_SHARED_TEST_DB = os.environ.get("PONTIS_ALLOW_SHARED_NEO4J_STORAGE_TEST") == "1"
+_TEST_PROJECT = os.environ.get("PONTIS_STORAGE_TEST_PROJECT", "storage_test")
 
 
-def ok(name, cond, detail=""):
-    global passed, failed
-    if cond:
-        passed += 1
-        print(f"  ✓ {name}")
-    else:
-        failed += 1
-        msg = f"  ✗ {name}"
-        if detail:
-            msg += f" — {detail}"
-        print(msg)
-        errors.append(name)
-
-
-def empty_project():
-    tmp = tempfile.mkdtemp(prefix="pontis_empty_")
-    os.makedirs(os.path.join(tmp, ".pontis"), exist_ok=True)
-    return tmp
-
-
-def make_store(path):
-    return store_factory.create_store(
-        ProjectConfig(source=SourceConfig(type="fs", path=path)))
-
-
-def make_graph_store(db_path=None):
-    if db_path is None:
-        root = tempfile.mkdtemp(prefix="pontis_graph_")
-        db_path = os.path.join(root, "store.db")
-    return store_factory.create_store(
-        ProjectConfig(
-            source=SourceConfig(type="graph"),
-            graph=GraphConfig(type="sqlite", path=db_path),
-        )
+def _graph_config() -> GraphConfig:
+    project = load_config().projects.get(_TEST_PROJECT)
+    if project:
+        return project.graph
+    return GraphConfig(
+        uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
+        database=os.environ.get("NEO4J_DATABASE", "neo4j"),
+        user=os.environ.get("NEO4J_USER", "neo4j"),
+        password=os.environ.get("NEO4J_PASSWORD", ""),
     )
 
 
-def names(rows, var="n"):
-    return {row[var].get("name") for row in rows}
+def _is_shared_default_graph(graph) -> bool:
+    uri = (getattr(graph, "uri", "") or "").rstrip("/")
+    database = getattr(graph, "database", "") or "neo4j"
+    return database == "neo4j" and uri in {"", "bolt://localhost:7687", "bolt://127.0.0.1:7687"}
 
 
-def first(rows, var="n"):
-    return rows[0][var] if rows else {}
-
-
-def external_entity_shape(node):
-    return isinstance(node, dict) and "id" in node and "labels" in node and "label" not in node and "eid" not in node
-
-
-def create_node(s, label, **props):
-    props_text = ", ".join(
-        f"{k}: {repr(v)}" if not isinstance(v, (int, float)) else f"{k}: {v}"
-        for k, v in props.items()
+def _build_workspace(project_roots: dict[str, Path]) -> Workspace:
+    ws = Workspace.__new__(Workspace)
+    ws._config = StoreConfig(
+        projects={
+            name: ProjectConfig(
+                name=name,
+                source=SourceConfig(type="fs", path=str(root)),
+                graph=_graph_config(),
+            )
+            for name, root in project_roots.items()
+        }
     )
-    query = f"CREATE (n:{label} {{{props_text}}})" if props_text else f"CREATE (n:{label})"
-    return s.cypher(query)[0]["created"]
+    ws._stores = {}
+    ws._modules = {}
+    ws._trigger_router = TriggerRouter()
+    for name in project_roots:
+        ws._register_project(name)
+    return ws
 
 
-def create_edge_by_name(s, a_name, b_name):
-    return s.cypher(
-        "MATCH (a {name: $a}), (b {name: $b}) CREATE (a)--(b)",
-        params={"a": a_name, "b": b_name},
-    )
+def _clear_graph(ws: Workspace, batch_size: int = 1000):
+    for store in ws._stores.values():
+        graph = getattr(store, "_graph", None)
+        database = getattr(graph, "database", "") or "neo4j"
+        if _is_shared_default_graph(graph) and not _ALLOW_SHARED_TEST_DB:
+            raise RuntimeError(
+                "Refusing to clear shared default Neo4j graph. "
+                "Run storage tests against pontis.yml project 'storage_test', "
+                "or explicitly set "
+                "PONTIS_ALLOW_SHARED_NEO4J_STORAGE_TEST=1."
+            )
+        while True:
+            rows = store.execute_cypher(
+                "MATCH (n) WITH n LIMIT $limit "
+                "DETACH DELETE n "
+                "RETURN count(n) AS deleted",
+                params={"limit": batch_size},
+            )
+            deleted = rows[0]["deleted"] if rows else 0
+            if deleted == 0:
+                break
+        return
 
 
-def test_crud(s):
-    print("\n[1] CRUD via Cypher")
-
-    created = create_node(s, "test", name="t1", v=1)
-    ent_id = created["id"]
-    ok("CREATE returns id", ent_id.startswith("ent_"), f"got {created}")
-    ok("external entity fields", external_entity_shape(created), f"got {created}")
-    ok("ordinary name returned", created.get("name") == "t1", f"got {created}")
-
-    rows = s.cypher("MATCH (n {name: $name}) RETURN n", params={"name": "t1"})
-    ok("MATCH by ordinary name", len(rows) == 1 and rows[0]["n"]["id"] == ent_id, f"got {rows}")
-
-    rows_by_id = s.cypher("MATCH (n {id: $id}) RETURN n", params={"id": ent_id})
-    ok("MATCH by id", len(rows_by_id) == 1 and rows_by_id[0]["n"]["name"] == "t1")
-
-    s.cypher("MATCH (n {id: $id}) SET n.v = 2, n.extra = 'yes'", params={"id": ent_id})
-    updated = first(s.cypher("MATCH (n {id: $id}) RETURN n", params={"id": ent_id}))
-    ok("SET ordinary props", updated.get("v") == 2 and updated.get("extra") == "yes", f"got {updated}")
-
-    s.cypher("MATCH (n {id: $id}) SET n.id = 'bad_id'", params={"id": ent_id})
-    same_id = first(s.cypher("MATCH (n {id: $id}) RETURN n", params={"id": ent_id}))
-    bad_id = s.cypher("MATCH (n {id: 'bad_id'}) RETURN n")
-    ok("SET id ignored", same_id.get("id") == ent_id and bad_id == [], f"got {same_id} / {bad_id}")
-
-    s.cypher("MATCH (n {id: $id}) SET n.labels = $labels", params={"id": ent_id, "labels": ["test", "updated"]})
-    relabeled = first(s.cypher("MATCH (n {id: $id}) RETURN n", params={"id": ent_id}))
-    ok("SET labels", set(relabeled.get("labels", [])) == {"test", "updated"}, f"got {relabeled}")
-
-    s.cypher("MATCH (n {id: $id}) DELETE n", params={"id": ent_id})
-    gone = s.cypher("MATCH (n {id: $id}) RETURN n", params={"id": ent_id})
-    ok("DELETE by id", gone == [], f"got {gone}")
+def _assert_equal(actual, expected, msg: str = ""):
+    assert actual == expected, f"{msg}\nexpected={expected!r}\nactual={actual!r}"
 
 
-def test_edges(s):
-    print("\n[2] Edges via Cypher")
-
-    for name in ("a", "b", "c"):
-        create_node(s, "node", name=name)
-    create_edge_by_name(s, "a", "b")
-    create_edge_by_name(s, "b", "c")
-    create_edge_by_name(s, "a", "b")
-
-    rows = s.cypher("MATCH (a {name: 'a'})--(b) RETURN b")
-    ok("neighbor forward", names(rows, "b") == {"b"}, f"got {rows}")
-
-    rows = s.cypher("MATCH (b {name: 'b'})--(n) RETURN n")
-    ok("neighbor bidirectional and dedup", names(rows) == {"a", "c"}, f"got {rows}")
-
-    s.cypher("MATCH (n {name: 'c'}) DELETE n")
-    rows = s.cypher("MATCH (b {name: 'b'})--(n) RETURN n")
-    ok("delete cascades edges", names(rows) == {"a"}, f"got {rows}")
+def _assert_true(value, msg: str):
+    assert value, msg
 
 
-def build_graph(s):
-    create_node(s, "db", name="shop", path="shop.sqlite")
-    for table, rc, cc in [("users", 1000, 4), ("orders", 50000, 6), ("products", 300, 5)]:
-        create_node(s, "table", name=table, row_count=rc, column_count=cc)
-        create_edge_by_name(s, "shop", table)
-
-    cols = [
-        ("users", "id", ["col", "INT"], {"cardinality": 1000}),
-        ("users", "name", ["col", "TEXT"], {"cardinality": 980}),
-        ("users", "email", ["col", "TEXT"], {"cardinality": 1000}),
-        ("users", "age", ["col", "INT"], {"cardinality": 45}),
-        ("orders", "id", ["col", "INT"], {"cardinality": 50000}),
-        ("orders", "user_id", ["col", "INT"], {"cardinality": 800}),
-        ("orders", "amount", ["col", "REAL"], {"cardinality": 12000}),
-        ("orders", "status", ["col", "TEXT"], {"cardinality": 5}),
-        ("orders", "note", ["col", "TEXT"], {"cardinality": 200}),
-        ("orders", "ts", ["col", "TEXT"], {"cardinality": 45000}),
-        ("products", "id", ["col", "INT"], {"cardinality": 300}),
-        ("products", "name", ["col", "TEXT"], {"cardinality": 300}),
-        ("products", "price", ["col", "REAL"], {"cardinality": 250}),
-        ("products", "cat", ["col", "TEXT"], {"cardinality": 15}),
-        ("products", "stock", ["col", "INT"], {"cardinality": 80}),
-    ]
-    for table, col, labels, props in cols:
-        full = f"{table}.{col}"
-        label_text = ":".join(labels)
-        props_text = ", ".join([f"name: {full!r}"] + [f"{k}: {v!r}" for k, v in props.items()])
-        s.cypher(f"CREATE (n:{label_text} {{{props_text}}})")
-        create_edge_by_name(s, table, full)
-
-    create_node(s, "fk", name="fk_o_u")
-    create_edge_by_name(s, "orders.user_id", "fk_o_u")
-    create_edge_by_name(s, "users.id", "fk_o_u")
-
-    create_node(s, "overlap", name="ol_price_amt", similarity=0.85)
-    create_edge_by_name(s, "products.price", "ol_price_amt")
-    create_edge_by_name(s, "orders.amount", "ol_price_amt")
-
-    create_node(s, "disambig", name="dis_name", note="users.name=person, products.name=item")
-    create_edge_by_name(s, "users.name", "dis_name")
-    create_edge_by_name(s, "products.name", "dis_name")
-
-    create_node(s, "convention", name="conv_id", content="All id columns are INT auto-increment PKs")
-    create_node(s, "pattern", name="pat_ts", content="Timestamps use ISO 8601")
-
-
-def test_cypher_match_and_traversal(s):
-    print("\n[3] Cypher Match and Traversal")
-    build_graph(s)
-
-    ok("MATCH :table", names(s.cypher("MATCH (n:table) RETURN n")) == {"users", "orders", "products"})
-    ok("MATCH :col:INT", names(s.cypher("MATCH (n:col:INT) RETURN n")) == {
-        "users.id", "users.age", "orders.id", "orders.user_id", "products.id", "products.stock"
-    })
-    ok("inline prop", first(s.cypher("MATCH (n:table {row_count: 1000}) RETURN n")).get("name") == "users")
-    ok("WHERE =", first(s.cypher("MATCH (n:table) WHERE n.row_count = 50000 RETURN n")).get("name") == "orders")
-    ok("WHERE >", names(s.cypher("MATCH (n:table) WHERE n.row_count > 1000 RETURN n")) == {"orders"})
-    ok("WHERE <=", names(s.cypher("MATCH (n:table) WHERE n.row_count <= 300 RETURN n")) == {"products"})
-    ok("WHERE !=", names(s.cypher("MATCH (n:table) WHERE n.name != 'orders' RETURN n")) == {"users", "products"})
-    ok("STARTS WITH", len(s.cypher("MATCH (n) WHERE n.name STARTS WITH 'orders.' RETURN n")) == 6)
-    ok("ENDS WITH", len(s.cypher("MATCH (n:col) WHERE n.name ENDS WITH '.id' RETURN n")) == 3)
-    ok("CONTAINS", names(s.cypher("MATCH (n:col) WHERE n.name CONTAINS '.user' RETURN n")) == {"orders.user_id"})
-
-    ok("1-hop", len(s.cypher("MATCH (d:db)--(t:table) RETURN d, t")) == 3)
-    ok("2-hop", len(s.cypher("MATCH (d:db)--(t:table)--(c:col) RETURN c")) == 15)
-    ok("3-hop disambig", names(s.cypher("MATCH (d:db)--(t:table)--(c:col)--(x:disambig) RETURN c"), "c") == {"users.name", "products.name"})
-    ok("FK path", len(s.cypher("MATCH (c1:col)--(fk:fk)--(c2:col) RETURN c1, c2")) == 2)
-    ok("overlap path", len(s.cypher("MATCH (c1:col)--(o:overlap)--(c2:col) RETURN c1, c2")) == 2)
-    ok("varlen", len(s.cypher("MATCH (d:db {name: 'shop'})-[*1..3]-(n) RETURN DISTINCT n")) >= 15)
-    ok("cartesian + WHERE", "orders.user_id" in names(s.cypher("""
-        MATCH (a:table), (b:col:INT)
-        WHERE a.name = 'users' AND b.cardinality > 500
-        RETURN b
-    """), "b"))
-
-
-def test_cypher_writes(s):
-    print("\n[4] Cypher Writes")
-
-    created = s.cypher("CREATE (n:demo {name: 'w1', x: 10})")[0]["created"]
-    ok("CREATE node", created.get("name") == "w1" and created.get("x") == 10, f"got {created}")
-
-    s.cypher("MATCH (n:demo {name: 'w1'}) SET n.x = 20")
-    ok("SET =", first(s.cypher("MATCH (n:demo {name: 'w1'}) RETURN n")).get("x") == 20)
-
-    s.cypher("MATCH (n:demo {name: 'w1'}) SET n += $p", params={"p": {"y": "hello", "tags": [1, 2, 3]}})
-    row = first(s.cypher("MATCH (n:demo {name: 'w1'}) RETURN n"))
-    ok("SET += merge", row.get("x") == 20 and row.get("y") == "hello", f"got {row}")
-    ok("param WHERE", len(s.cypher("MATCH (n:demo) WHERE n.y = $v RETURN n", params={"v": "hello"})) == 1)
-
-    create_edge_by_name(s, "users", "w1")
-    ok("CREATE edge", len(s.cypher("MATCH (a {name: 'users'})--(b {name: 'w1'}) RETURN a, b")) == 1)
-
-    s.cypher("MATCH (n:demo {name: 'w1'}) DELETE n")
-    ok("DELETE", s.cypher("MATCH (n:demo {name: 'w1'}) RETURN n") == [])
-    ok("edge cleaned", s.cypher("MATCH (a {name: 'users'})--(b {name: 'w1'}) RETURN a, b") == [])
-
-
-def test_virtual_and_src():
-    print("\n[5] Virtual Entities and src via Workspace.cypher")
-
-    p = empty_project()
-    db_path = os.path.join(p, "test.db")
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT)")
-    conn.execute("CREATE TABLE orders(order_id INTEGER, user_id INTEGER, FOREIGN KEY(user_id) REFERENCES users(id))")
-    conn.execute("INSERT INTO users VALUES (1, 'a'), (2, 'b')")
-    conn.execute("INSERT INTO orders VALUES (10, 1), (11, 2)")
-    conn.commit()
+def _create_sqlite(path: Path, schema_sql: str):
+    conn = sqlite3.connect(path)
+    conn.executescript(schema_sql)
     conn.close()
 
-    txt_path = os.path.join(p, "notes.txt")
-    with open(txt_path, "w", encoding="utf-8") as f:
-        f.write("hello\nworld\n")
 
-    csv_path = os.path.join(p, "people.csv")
-    with open(csv_path, "w", encoding="utf-8") as f:
-        f.write("id,name,score\n1,Ada,9.5\n2,Bob,8.0\n")
-
-    json_path = os.path.join(p, "config.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        f.write('{"users": [{"id": 1, "name": "Ada"}], "active": true}\n')
-
-    yaml_path = os.path.join(p, "settings.yml")
-    with open(yaml_path, "w", encoding="utf-8") as f:
-        f.write("service:\n  name: pontis\n  enabled: true\n")
-
-    ws = Workspace(project_path=p)
-    db_rows = ws.cypher("MATCH (f:file:db) WHERE f.name = 'test.db' RETURN f, f.src AS src")
-    ok("db file virtual row", len(db_rows) == 1, f"got {db_rows}")
-    if db_rows:
-        f = db_rows[0]["f"]
-        src = db_rows[0]["src"]
-        ok("virtual file external fields", external_entity_shape(f), f"got {f}")
-        ok("virtual file ordinary props", f.get("name") == "test.db" and f.get("path") == "test.db", f"got {f}")
-        ok("src db_connect", src is not None and src.has("db_connect"))
-
-    table_rows = ws.cypher('MATCH (d:file:db {name: "test.db"})--(t:table) RETURN t')
-    ok("db schema tables", names(table_rows, "t") == {"users", "orders"}, f"got {table_rows}")
-
-    col_rows = ws.cypher("""
-        MATCH (d:file:db {name: "test.db"})--(t:table {name: "users"})--(c:col {name: "id"})
-        RETURN c
-    """)
-    ok("db schema column by ordinary props", len(col_rows) == 1, f"got {col_rows}")
-    if col_rows:
-        ok("db schema external fields", external_entity_shape(col_rows[0]["c"]), f"got {col_rows[0]['c']}")
-
-    fk_rows = ws.cypher("MATCH (n:fk) RETURN n")
-    ok("db schema fk", "orders.user_id->users.id" in names(fk_rows), f"got {fk_rows}")
-
-    text_rows = ws.cypher("MATCH (f:file) WHERE f.name = 'notes.txt' RETURN f.src AS src")
-    ok("text file src row", len(text_rows) == 1, f"got {text_rows}")
-    if text_rows:
-        src = text_rows[0]["src"]
-        with src.get("open")("r", encoding="utf-8") as fh:
-            content = fh.read()
-        ok("text src open", content == "hello\nworld\n", f"got {content!r}")
-
-    text_meta_rows = ws.cypher("MATCH (f:file:text {name: 'notes.txt'}) RETURN f")
-    text_meta = first(text_meta_rows, "f")
-    ok("text light meta", text_meta.get("line_count") == 2 and text_meta.get("char_count") == 12, f"got {text_meta}")
-
-    csv_rows = ws.cypher("MATCH (f:file:csv {name: 'people.csv'}) RETURN f")
-    csv_meta = first(csv_rows, "f")
-    ok("csv file light meta", (
-        csv_meta.get("delimiter") == ","
-        and csv_meta.get("column_count") == 3
-        and csv_meta.get("row_count") == 2
-    ), f"got {csv_meta}")
-
-    csv_col_rows = ws.cypher("MATCH (f:file:csv {name: 'people.csv'})--(c:col) RETURN c")
-    csv_cols = {row["c"]["name"]: row["c"].get("col_type") for row in csv_col_rows}
-    ok("csv schema virtual columns", csv_cols == {"id": "INT", "name": "TEXT", "score": "FLOAT"}, f"got {csv_cols}")
-    if csv_col_rows:
-        ok("csv column external fields", all(external_entity_shape(row["c"]) for row in csv_col_rows), f"got {csv_col_rows}")
-
-    score_rows = ws.cypher("MATCH (c:col) WHERE c.ref = 'people.csv--score' RETURN c")
-    ok("csv column ref lookup", len(score_rows) == 1 and first(score_rows, "c").get("source_column") == "score", f"got {score_rows}")
-
-    json_rows = ws.cypher("MATCH (f:file:json {name: 'config.json'}) RETURN f")
-    json_meta = first(json_rows, "f")
-    ok("json serialized light meta", (
-        json_meta.get("structure_type") == "object"
-        and json_meta.get("top_level_keys") == ["users", "active"]
-        and json_meta.get("key_count") == 2
-    ), f"got {json_meta}")
-
-    yaml_rows = ws.cypher("MATCH (f:file:yaml {name: 'settings.yml'}) RETURN f")
-    yaml_meta = first(yaml_rows, "f")
-    ok("yaml serialized light meta", (
-        yaml_meta.get("structure_type") == "mapping"
-        and yaml_meta.get("top_level_keys") == ["service"]
-        and yaml_meta.get("key_count") == 1
-    ), f"got {yaml_meta}")
-
-    ws.cypher("MATCH (f:file {name: 'notes.txt'}) SET f.note = 'kept'")
-    note_rows = ws.cypher("MATCH (f:file {name: 'notes.txt'}) RETURN f")
-    ok("Cypher SET materializes virtual", first(note_rows, "f").get("note") == "kept", f"got {note_rows}")
-
-    ws.cypher("MATCH (c:col {ref: 'people.csv--score'}) SET c.note = 'numeric score'")
-    materialized_col = ws.cypher("MATCH (c:col) WHERE c.ref = 'people.csv--score' RETURN c")
-    ok("Cypher SET materializes csv column", first(materialized_col, "c").get("note") == "numeric score", f"got {materialized_col}")
-
-    edge_rows = ws.cypher(
-        "MATCH (a:file {name: 'notes.txt'}), (b:file:db {name: 'test.db'}) CREATE (a)--(b)"
+def _prepare_alpha(root: Path):
+    (root / "docs").mkdir(parents=True)
+    (root / "data").mkdir(parents=True)
+    (root / "archive").mkdir(parents=True)
+    (root / "README.md").write_text("alpha\nreadme\n", encoding="utf-8")
+    (root / "docs" / "README.md").write_text("nested\nreadme\n", encoding="utf-8")
+    (root / "docs" / "notes.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    (root / "data" / "people.csv").write_text(
+        "id,name,score\n1,Alice,9.5\n2,Bob,8.0\n",
+        encoding="utf-8",
     )
-    linked = ws.cypher("MATCH (a:file {name: 'notes.txt'})--(b:file:db {name: 'test.db'}) RETURN a, b")
-    ok("Cypher CREATE edge materializes virtual endpoints", edge_rows and len(linked) == 1, f"got {edge_rows}, {linked}")
+    (root / "archive" / "people.csv").write_text(
+        "id,name,score\n3,Carol,7.5\n",
+        encoding="utf-8",
+    )
+    (root / "data" / "events.tsv").write_text(
+        "event_id\tname\n10\tlogin\n",
+        encoding="utf-8",
+    )
+    (root / "payload.parquet").write_text("not really parquet\n", encoding="utf-8")
 
-    shutil.rmtree(p, ignore_errors=True)
-
-
-def test_extractor_registry_after_source_migration():
-    print("\n[6] Extractor Registry After Source Module Migration")
-
-    from extractor.engine import get_registry
-
-    registry = get_registry()
-    removed = {"csv_basic", "serialized_basic", "csv_info", "text_info"}
-    ok("removed source modules are absent", removed.isdisjoint(registry), f"got {sorted(removed & set(registry))}")
-    ok("profiling modules remain", {"csv_column_stats", "db_column_stats_approx", "json_pattern"}.issubset(registry))
-
-
-def test_graph_only():
-    print("\n[7] Graph-only Project")
-
-    root = tempfile.mkdtemp(prefix="pontis_graph_only_")
-    db_path = os.path.join(root, "store.db")
-    s = make_graph_store(db_path)
-    s.cypher("CREATE (n:knowledge {name: 'README', brief: 'x', detail: 'y'})")
-
-    rows = s.cypher("MATCH (n:knowledge) RETURN n")
-    ok("graph-only cypher", len(rows) == 1 and rows[0]["n"]["name"] == "README", f"got {rows}")
-    rows2 = s.cypher("MATCH (n:knowledge) RETURN n.src AS src")
-    ok("graph-only src is None", len(rows2) == 1 and rows2[0]["src"] is None, f"got {rows2}")
-
-    shutil.rmtree(root, ignore_errors=True)
+    _create_sqlite(
+        root / "app.sqlite",
+        """
+        CREATE TABLE users (user_id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE orders (
+            order_id INTEGER PRIMARY KEY,
+            user_id INTEGER,
+            amount REAL,
+            FOREIGN KEY(user_id) REFERENCES users(user_id)
+        );
+        CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT);
+        CREATE TABLE books (id INTEGER PRIMARY KEY, author_id INTEGER, title TEXT);
+        CREATE VIEW user_names AS SELECT name FROM users;
+        INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob');
+        INSERT INTO orders VALUES (10, 1, 12.5), (11, 2, 8.0);
+        INSERT INTO authors VALUES (1, 'Ann');
+        INSERT INTO books VALUES (100, 1, 'Graph Systems');
+        """,
+    )
 
 
-def test_concurrency_and_persistence():
-    print("\n[8] Persistence and Concurrent Visibility")
+def _prepare_beta(root: Path):
+    (root / "README.md").write_text("beta\nreadme\n", encoding="utf-8")
+    (root / "data.csv").write_text("id,value\n1,blue\n", encoding="utf-8")
+    _create_sqlite(
+        root / "app.sqlite",
+        """
+        CREATE TABLE users (id INTEGER PRIMARY KEY, handle TEXT);
+        INSERT INTO users VALUES (1, 'beta_user');
+        """,
+    )
 
-    p = empty_project()
-    a = make_store(p)
-    b = make_store(p)
 
-    a.cypher("CREATE (n:p {name: 'p1', v: 1})")
-    b_rows = b.cypher("MATCH (n:p {name: 'p1'}) RETURN n")
-    ok("second store sees create", len(b_rows) == 1 and b_rows[0]["n"]["v"] == 1, f"got {b_rows}")
+def test_single_project_complex(ws: Workspace):
+    project = "alpha"
 
-    b.cypher("MATCH (n:p {name: 'p1'}) SET n.v = 2")
-    a_rows = a.cypher("MATCH (n:p {name: 'p1'}) RETURN n")
-    ok("first store sees update", len(a_rows) == 1 and a_rows[0]["n"]["v"] == 2, f"got {a_rows}")
+    files = ws.cypher(
+        "MATCH (f:file) RETURN f.path AS path, labels(f) AS labels ORDER BY path",
+        project=project,
+    )
+    paths = {row["path"] for row in files}
+    _assert_equal(
+        paths,
+        {
+            "README.md",
+            "app.sqlite",
+            "archive/people.csv",
+            "data/events.tsv",
+            "data/people.csv",
+            "docs/README.md",
+            "docs/notes.txt",
+            "payload.parquet",
+        },
+        "FS module should publish nested files and suffix labels.",
+    )
+    parquet = next(row for row in files if row["path"] == "payload.parquet")
+    _assert_true("parquet" in parquet["labels"], "FS should derive arbitrary suffix labels dynamically.")
+    sqlite_labels = next(row for row in files if row["path"] == "app.sqlite")["labels"]
+    _assert_true("sqlite" in sqlite_labels, "FS should label .sqlite by suffix.")
 
-    b.cypher("CREATE (n:p {name: 'p2'})")
-    b.cypher("MATCH (a {name: 'p1'}), (b {name: 'p2'}) CREATE (a)--(b)")
-    c = make_store(p)
-    ok("persisted meta", first(c.cypher("MATCH (n:p {name: 'p1'}) RETURN n")).get("v") == 2)
-    ok("persisted edge", len(c.cypher("MATCH (a {name: 'p1'})--(b {name: 'p2'}) RETURN a, b")) == 1)
+    csv_cols = ws.cypher(
+        "MATCH (c:col) WHERE c._ref STARTS WITH 'data/people.csv--' "
+        "RETURN c.name AS name, c.col_type AS col_type ORDER BY c.ordinal",
+        project=project,
+    )
+    _assert_equal(
+        csv_cols,
+        [
+            {"name": "id", "col_type": "INT"},
+            {"name": "name", "col_type": "TEXT"},
+            {"name": "score", "col_type": "FLOAT"},
+        ],
+        "CSV schema module should infer nested CSV columns.",
+    )
 
-    c.cypher("MATCH (n:p {name: 'p1'}) DELETE n")
-    d = make_store(p)
-    ok("delete persists", d.cypher("MATCH (n:p {name: 'p1'}) RETURN n") == [])
-    ok("edge cleaned persists", d.cypher("MATCH (a {name: 'p1'})--(b {name: 'p2'}) RETURN a, b") == [])
+    csv_file = ws.cypher(
+        "MATCH (f:csv:text {path: 'data/people.csv'}) "
+        "RETURN f.line_count AS line_count, f.char_count AS char_count",
+        project=project,
+    )
+    _assert_equal(len(csv_file), 1, "CSV and text modules should merge onto one file node.")
+    _assert_equal(csv_file[0]["line_count"], 3, "Text module should add text metadata to CSV node.")
 
-    shutil.rmtree(p, ignore_errors=True)
+    db = ws.cypher(
+        "MATCH (d:db {path: 'app.sqlite'}) "
+        "RETURN d.table_count AS table_count, d.view_count AS view_count",
+        project=project,
+    )
+    _assert_equal(db, [{"table_count": 4, "view_count": 1}], "DB schema module should merge db metadata onto sqlite file node.")
+
+    tables = ws.cypher(
+        "MATCH (t:table) RETURN t.name AS name, t.column_count AS columns ORDER BY name",
+        project=project,
+    )
+    _assert_equal(
+        tables,
+        [
+            {"name": "authors", "columns": 2},
+            {"name": "books", "columns": 3},
+            {"name": "orders", "columns": 3},
+            {"name": "users", "columns": 2},
+        ],
+        "SQLite module should publish table schema without scanning table rows.",
+    )
+
+    explicit_fk = ws.cypher(
+        "MATCH (from:col {_ref: 'app.sqlite--orders--user_id'})--"
+        "(fk:fk)--(to:col {_ref: 'app.sqlite--users--user_id'}) "
+        "RETURN fk.name AS name, fk.confidence AS confidence",
+        project=project,
+    )
+    _assert_equal(
+        explicit_fk,
+        [{"name": "orders.user_id->users.user_id", "confidence": 1.0}],
+        "Explicit FK should be merged by related column nodes.",
+    )
+
+    inferred_fk = ws.cypher(
+        "MATCH (from:col {_ref: 'app.sqlite--books--author_id'})--"
+        "(fk:fk)--(to:col {_ref: 'app.sqlite--authors--id'}) "
+        "RETURN fk.name AS name, fk.confidence AS confidence",
+        project=project,
+    )
+    _assert_equal(
+        inferred_fk,
+        [{"name": "books.author_id->authors.id", "confidence": 0.7}],
+        "Inferred FK should also be expressed through related column nodes.",
+    )
+
+    view = ws.cypher(
+        "MATCH (v:view {_ref: 'app.sqlite--user_names'})--"
+        "(c:col {_ref: 'app.sqlite--user_names--name'}) "
+        "RETURN v.name AS view_name, v.column_count AS columns, c.name AS col_name",
+        project=project,
+    )
+    _assert_equal(
+        view,
+        [{"view_name": "user_names", "columns": 1, "col_name": "name"}],
+        "SQLite views and their columns should be exposed and connected.",
+    )
+
+
+def test_idempotent_refresh(ws: Workspace):
+    project = "alpha"
+
+    before = ws.cypher(
+        "MATCH (n) RETURN count(n) AS nodes",
+        project=project,
+    )[0]["nodes"]
+    for _ in range(3):
+        ws.cypher(
+            "MATCH (t:table) RETURN t.name AS name",
+            project=project,
+        )
+        ws.cypher(
+            "MATCH (f:csv:text {path: 'data/people.csv'}) RETURN f.name AS name",
+            project=project,
+        )
+    after = ws.cypher(
+        "MATCH (n) RETURN count(n) AS nodes",
+        project=project,
+    )[0]["nodes"]
+    _assert_equal(after, before, "Repeated trigger refreshes should not duplicate nodes.")
+
+    rel_count = ws.cypher(
+        "MATCH (:col {_ref: 'app.sqlite--orders--user_id'})-[r:RELATED_TO]-"
+        "(:fk {name: 'orders.user_id->users.user_id'}) "
+        "RETURN count(r) AS rels",
+        project=project,
+    )[0]["rels"]
+    _assert_equal(rel_count, 1, "Repeated FK refreshes should not duplicate relationships.")
+
+    duplicate_edges = ws.cypher(
+        "MATCH (a)-[r:RELATED_TO]->(b) "
+        "WITH coalesce(a.path, a._ref, a.ref) AS a_key, coalesce(b.path, b._ref, b.ref) AS b_key, count(r) AS rels "
+        "WHERE rels > 1 "
+        "RETURN a_key, b_key, rels ORDER BY a_key, b_key",
+        project=project,
+    )
+    _assert_equal(duplicate_edges, [], "Repeated refreshes should not create duplicate RELATED_TO edges.")
+
+
+def test_same_name_paths_and_label_merging(ws: Workspace):
+    project = "alpha"
+
+    readmes = ws.cypher(
+        "MATCH (f:file:text {name: 'README.md'}) "
+        "RETURN f.path AS path, f.line_count AS lines, f.labels AS labels ORDER BY path",
+        project=project,
+    )
+    _assert_equal(
+        [row["path"] for row in readmes],
+        ["README.md", "docs/README.md"],
+        "Same-name files in different directories should remain distinct by path.",
+    )
+    for row in readmes:
+        _assert_equal(row["lines"], 2, "Each same-name README should keep its own text metadata.")
+        _assert_equal(
+            row["labels"].count("file"),
+            1,
+            "Label merging should not duplicate labels after multiple modules refresh the same file.",
+        )
+        _assert_equal(
+            row["labels"].count("text"),
+            1,
+            "Text labels should be merged once even when text queries run repeatedly.",
+        )
+
+    csv_columns = ws.cypher(
+        "MATCH (c:col {name: 'score'}) "
+        "WHERE c._ref ENDS WITH '--score' "
+        "RETURN c._ref AS ref, c.col_type AS col_type ORDER BY ref",
+        project=project,
+    )
+    _assert_equal(
+        csv_columns,
+        [
+            {"ref": "archive/people.csv--score", "col_type": "FLOAT"},
+            {"ref": "data/people.csv--score", "col_type": "FLOAT"},
+        ],
+        "Same-name CSV files in different directories should expose separate column nodes.",
+    )
+
+    csv_files = ws.cypher(
+        "MATCH (f:csv:text {name: 'people.csv'}) "
+        "RETURN f.path AS path, f.line_count AS lines ORDER BY path",
+        project=project,
+    )
+    _assert_equal(
+        csv_files,
+        [
+            {"path": "archive/people.csv", "lines": 2},
+            {"path": "data/people.csv", "lines": 3},
+        ],
+        "Text and CSV metadata should merge onto the correct same-name file node.",
+    )
+
+
+def test_query_trigger_order_and_pointer_resolution(ws: Workspace):
+    project = "alpha"
+
+    fresh = _build_workspace({"alpha": Path(ws._stores[project].project_path)})
+    _clear_graph(fresh)
+
+    csv_col = fresh.cypher(
+        "MATCH (c:col {_ref: 'data/people.csv--score'}) "
+        "RETURN c.name AS name, c.source_column AS source_column",
+        project=project,
+    )
+    _assert_equal(len(csv_col), 1, "A first query for :col should trigger CSV schema materialization.")
+    _assert_equal(csv_col[0]["source_column"], "score", "CSV column should preserve the source column.")
+
+    text_after_col = fresh.cypher(
+        "MATCH (t:text {path: 'data/people.csv'}) "
+        "RETURN t.line_count AS lines, t._file_open AS open_file",
+        project=project,
+    )
+    _assert_equal(len(text_after_col), 1, "A later :text query should add text metadata to an existing CSV file node.")
+    _assert_equal(text_after_col[0]["lines"], 3, "Text refresh after CSV refresh should keep correct line count.")
+    _assert_true(isinstance(text_after_col[0]["open_file"], FileOpen), "Text file should reuse file_open after mixed trigger order.")
+
+    db_col = fresh.cypher(
+        "MATCH (c:col {_ref: 'app.sqlite--orders--amount'}) "
+        "RETURN c._db_connect AS connect, c.name AS name, c.table_name AS table_name, c.column_name AS column_name",
+        project=project,
+    )
+    _assert_equal(len(db_col), 1, "DB columns should materialize on a :col query even after CSV columns exist.")
+    _assert_true(isinstance(db_col[0]["connect"], DbConnect), "DB column should expose db_connect.")
+    _assert_equal(db_col[0]["table_name"], "orders", "DB column should preserve table name.")
+    _assert_equal(db_col[0]["column_name"], "amount", "DB column should preserve column name.")
+
+    db_connect = fresh.cypher(
+        "MATCH (d:db {path: 'app.sqlite'}) RETURN d._db_connect AS connect",
+        project=project,
+    )[0]["connect"]
+    _assert_true(isinstance(db_connect, DbConnect), "db_connect pointer should resolve.")
+    _assert_true(callable(db_connect), "db_connect should be callable.")
+
+    _clear_graph(fresh)
+
+
+def test_no_project_node_property(ws: Workspace):
+    rows = ws.cypher(
+        "MATCH (n) WHERE n.project IS NOT NULL RETURN count(n) AS nodes",
+        project="alpha",
+    )
+    _assert_equal(rows, [{"nodes": 0}], "Project must be a Workspace.cypher route, not a node property.")
+
+
+def test_project_database_config(alpha_root: Path, beta_root: Path):
+    alpha_graph = _graph_config()
+    beta_graph = _graph_config()
+    alpha_graph.database = "alpha-graph"
+    beta_graph.database = "beta-graph"
+
+    config = StoreConfig(
+        projects={
+            "alpha": ProjectConfig(
+                name="alpha",
+                source=SourceConfig(type="fs", path=str(alpha_root)),
+                graph=alpha_graph,
+            ),
+            "beta": ProjectConfig(
+                name="beta",
+                source=SourceConfig(type="fs", path=str(beta_root)),
+                graph=beta_graph,
+            ),
+        }
+    )
+
+    _assert_equal(config.projects["alpha"].graph.database, "alpha-graph")
+    _assert_equal(config.projects["beta"].graph.database, "beta-graph")
+
+
+def test_source_adapter_root_confinement(alpha_root: Path, beta_root: Path):
+    adapter = LocalSourceAdapter(str(alpha_root))
+    try:
+        adapter.absolute_path(f"../{beta_root.name}")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("LocalSourceAdapter should reject paths outside source root.")
+
+
+def test_pointer_resolution(ws: Workspace):
+    file_open = ws.cypher(
+        "MATCH (t:text {path: 'README.md'}) RETURN t._file_open AS open_file",
+        project="alpha",
+    )[0]["open_file"]
+    _assert_true(isinstance(file_open, FileOpen), "file_open pointer should resolve on text files.")
+    with file_open("r", encoding="utf-8") as f:
+        _assert_true("alpha" in f.read(), "file_open should accept normal open() parameters.")
+
+    table = ws.cypher(
+        "MATCH (t:table {name: 'orders'}) RETURN t",
+        project="alpha",
+    )[0]["t"]
+    table_connect = table["_db_connect"]
+    _assert_true(isinstance(table_connect, DbConnect), "table db_connect pointer should resolve.")
+    _assert_equal(table_connect.table, "orders", "DB table node context should be preserved.")
+    _assert_true(callable(table_connect), "DB table connect should be callable.")
 
 
 def main():
-    try:
-        p = empty_project()
-        s = make_store(p)
-        test_crud(s)
-        test_edges(s)
-        test_cypher_match_and_traversal(s)
-        test_cypher_writes(s)
-        shutil.rmtree(p, ignore_errors=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        alpha = tmp_root / "alpha"
+        beta = tmp_root / "beta"
+        alpha.mkdir()
+        beta.mkdir()
+        _prepare_alpha(alpha)
+        _prepare_beta(beta)
 
-        test_virtual_and_src()
-        test_extractor_registry_after_source_migration()
-        test_graph_only()
-        test_concurrency_and_persistence()
+        ws = _build_workspace({"alpha": alpha})
+        _clear_graph(ws)
 
-    except Exception:
-        print("\n💥 UNEXPECTED ERROR:")
-        traceback.print_exc()
-        return 1
+        test_single_project_complex(ws)
+        test_idempotent_refresh(ws)
+        test_same_name_paths_and_label_merging(ws)
+        test_query_trigger_order_and_pointer_resolution(ws)
+        test_no_project_node_property(ws)
+        test_project_database_config(alpha, beta)
+        test_source_adapter_root_confinement(alpha, beta)
+        test_pointer_resolution(ws)
 
-    print("\n" + "=" * 50)
-    print(f"Results: {passed}/{passed + failed} passed")
-    if errors:
-        print("Failed:")
-        for e in errors:
-            print(f"  - {e}")
-    print("=" * 50)
-    return 0 if failed == 0 else 1
+        _clear_graph(ws)
+    print("storage neo4j integration tests passed")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

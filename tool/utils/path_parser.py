@@ -20,7 +20,7 @@ from typing import Optional
 class ParsedPath:
     """Result of parsing a path::entity pattern."""
     file_pattern: str          # Physical file glob pattern
-    entity_pattern: Optional[str] = None  # Entity glob pattern (None if no ::)
+    entity_pattern: Optional[str] = None  # glob pattern after optional project::
     raw: str = ""              # Original input
 
     @property
@@ -56,7 +56,7 @@ def parse_path_pattern(pattern: str) -> ParsedPath:
 class ResolvedTarget:
     """A resolved physical file + optional entity path."""
     file_path: str            # Relative path to physical file
-    entity_path: Optional[str] = None  # Entity path within the file (e.g., "users.table")
+    entity_path: Optional[str] = None  # path within the file (e.g., "users.table")
     display_path: str = ""    # For display: file::entity
 
     def __post_init__(self):

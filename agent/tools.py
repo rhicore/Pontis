@@ -73,7 +73,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "URN glob pattern, e.g. '*.db' for files, '*.*.*:col' for columns, supports / hop, ** varlen, :: project",
+                            "description": "URN glob pattern, e.g. '*.db' for files, '*.*.*:col' for columns, supports / hop, ** varlen, and project:: routing",
                         },
                         "offset": {
                             "type": "integer",
@@ -244,6 +244,10 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                         "query": {
                             "type": "string",
                             "description": "Cypher query statement",
+                        },
+                        "project": {
+                            "type": "string",
+                            "description": "Optional project route. One Cypher call executes against one project database.",
                         },
                         "offset": {
                             "type": "integer",
@@ -464,6 +468,7 @@ def _exec_cypher(workspace, arguments: dict) -> str:
         query=arguments["query"],
         offset=arguments.get("offset", 0),
         limit=arguments.get("limit", 100),
+        project=arguments.get("project"),
     )
 
 
@@ -571,32 +576,3 @@ def build_registry(spec) -> ToolRegistry:
             registry.register(name, write_schemas[name], _WRITE_EXECUTORS[name])
 
     return registry
-
-
-# ==================== 向后兼容封装 ====================
-
-def build_readonly_registry() -> ToolRegistry:
-    """向后兼容：构建只读模式工具集。"""
-    from agent.config import AgentSpec, resolve_mode
-    spec = AgentSpec(mode="readonly")
-    resolve_mode(spec)
-    return build_registry(spec)
-
-
-def build_writer_registry() -> ToolRegistry:
-    """向后兼容：构建写入模式工具集。"""
-    from agent.config import AgentSpec, resolve_mode
-    spec = AgentSpec(mode="writer")
-    resolve_mode(spec)
-    return build_registry(spec)
-
-
-# ==================== 向后兼容 ====================
-
-def execute_tool(name: str, arguments: dict, workspace) -> str:
-    """执行工具（向后兼容）。"""
-    from agent.config import AgentSpec, resolve_mode
-    spec = AgentSpec()
-    resolve_mode(spec)
-    registry = build_registry(spec)
-    return registry.execute(name, arguments, workspace)

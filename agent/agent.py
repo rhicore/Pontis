@@ -8,7 +8,6 @@ from typing import Dict, Iterator, List, Optional, Tuple, Union
 
 from openai import OpenAI
 
-from storage import Store
 from storage.workspace import Workspace
 from agent.utils import load_agent_config
 from agent.config import default_spec
@@ -20,18 +19,6 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 _MAX_TOOL_RESULT = 8000
-
-
-# ═══════════════════════════════════════════════════════════
-#  向后兼容重导出 — 外部仍可 from agent.agent import XXX
-# ═══════════════════════════════════════════════════════════
-
-def __getattr__(name):
-    if name in ("ModeConfig", "_MODE_PRESETS", "AgentSpec",
-                "resolve_mode", "create_agent"):
-        import agent.config as _cfg
-        return getattr(_cfg, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -303,47 +290,67 @@ class PontusAgent:
             self.logger.info(f"LLM text: {msg.content}")
 
     @staticmethod
-    def _parse_args(args_str: str) -> dict:
-        try:
-            return json.loads(args_str)
-        except (json.JSONDecodeError, TypeError):
-            if not isinstance(args_str, str):
-                return {}
-            repaired = []
-            in_string = False
-            escape = False
-            for ch in args_str:
-                if in_string:
-                    if escape:
-                        repaired.append(ch)
-                        escape = False
-                        continue
-                    if ch == "\\":
-                        repaired.append(ch)
-                        escape = True
-                        continue
-                    if ch == '"':
-                        repaired.append(ch)
-                        in_string = False
-                        continue
-                    if ch == "\n":
-                        repaired.append("\\n")
-                        continue
-                    if ch == "\r":
-                        repaired.append("\\r")
-                        continue
-                    if ch == "\t":
-                        repaired.append("\\t")
-                        continue
+    def _parse_args(args_str) -> dict:
+        if args_str is None:
+            return {}
+        if isinstance(args_str, dict):
+            return args_str
+        if hasattr(args_str, "model_dump"):
+            dumped = args_str.model_dump()
+            return dumped if isinstance(dumped, dict) else {}
+        if hasattr(args_str, "to_dict"):
+            dumped = args_str.to_dict()
+            return dumped if isinstance(dumped, dict) else {}
+        if not isinstance(args_str, str):
+            return {}
+
+        for loader in (json.loads, json.JSONDecoder(strict=False).decode):
+            try:
+                parsed = loader(args_str)
+                return parsed if isinstance(parsed, dict) else {}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+        repaired = []
+        in_string = False
+        escape = False
+        for ch in args_str:
+            if in_string:
+                if escape:
                     repaired.append(ch)
+                    escape = False
+                    continue
+                if ch == "\\":
+                    repaired.append(ch)
+                    escape = True
+                    continue
+                if ch == '"':
+                    repaired.append(ch)
+                    in_string = False
+                    continue
+                if ch == "\n":
+                    repaired.append("\\n")
+                    continue
+                if ch == "\r":
+                    repaired.append("\\r")
+                    continue
+                if ch == "\t":
+                    repaired.append("\\t")
                     continue
                 repaired.append(ch)
-                if ch == '"':
-                    in_string = True
+                continue
+            repaired.append(ch)
+            if ch == '"':
+                in_string = True
+
+        repaired_args = "".join(repaired)
+        for loader in (json.loads, json.JSONDecoder(strict=False).decode):
             try:
-                return json.loads("".join(repaired))
-            except json.JSONDecodeError:
-                return {}
+                parsed = loader(repaired_args)
+                return parsed if isinstance(parsed, dict) else {}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        return {}
 
     def reset_conversation(self):
         """Clear conversation history (keep system prompt) for a fresh session."""

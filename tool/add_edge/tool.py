@@ -1,19 +1,21 @@
-"""Add Edge tool — 通过 Cypher CREATE 添加无向边。"""
+"""Add Edge tool — 通过 RELATED_TO 关系连接已有节点。"""
 
+from storage.query_inspector import cypher_label_clause
 from tool.utils.resolve import resolve_entity_selector
 
 
 def _selector_pattern(selector: dict, var: str, prefix: str) -> tuple[str, dict]:
-    labels = "".join(f":{label}" for label in selector.get("labels", []))
+    labels = cypher_label_clause(selector.get("labels", []))
     if selector.get("path"):
         return f"({var}{labels} {{path: ${prefix}_path}})", {f"{prefix}_path": selector["path"]}
     if selector.get("ref"):
-        return f"({var}{labels} {{ref: ${prefix}_ref}})", {f"{prefix}_ref": selector["ref"]}
+        ref_key = selector.get("ref_key") or "_ref"
+        return f"({var}{labels} {{{ref_key}: ${prefix}_ref}})", {f"{prefix}_ref": selector["ref"]}
     return f"({var}{labels} {{name: ${prefix}_name}})", {f"{prefix}_name": selector["name"]}
 
 
 def add_edge_command(workspace, edges: list) -> str:
-    """通过 Cypher 为已有节点添加无向边。
+    """通过 Cypher 为已有节点添加 RELATED_TO 边。
 
     edges 中 a/b 支持两种模式：
       - 精确名称 → 直接匹配
@@ -67,7 +69,7 @@ def add_edge_command(workspace, edges: list) -> str:
         a_pat, a_params = _selector_pattern(e["a_selector"], "a", "a")
         b_pat, b_params = _selector_pattern(e["b_selector"], "b", "b")
         rows = workspace.cypher(
-            f"MATCH {a_pat}, {b_pat} CREATE (a)--(b)",
+            f"MATCH {a_pat}, {b_pat} MERGE (a)-[r:RELATED_TO]->(b) RETURN count(r) AS created",
             params={**a_params, **b_params},
             project=e["project"],
         )

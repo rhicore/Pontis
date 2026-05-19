@@ -31,6 +31,7 @@ COORDINATOR_PROMPT = """\
 - **不要输出纯文本总结** — 任务完成后直接停止，不要输出"我已完成…"等总结性文字
 - **路径式引用** — 表和列优先使用路径 ref：表如 `financial.sqlite/account`，列如 `financial.sqlite/account/account_id`；不要使用 `table.column`
 - **文件优先读 meta** — README、CSV、JSON、文本文件优先读取已有 `brief/detail`，不要直接读取原始文件正文，除非确实没有现成摘要
+- **避免 all=true** — 正常总结时用 `property=["brief","detail","sample","topk","cardinality","null_percentage"]` 精确读取；不要用 `meta(..., all=true)` 扫全部字段
 
 ## 总结质量要求
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from utils.llm import LLMClient, apply_yaml
+from utils.embedding import EmbeddingConfig
 
 
 @dataclass
@@ -25,6 +26,11 @@ class Config:
     brief_max_words: int = 20
     table_brief_max_words: int = 15
     log_level: str = "INFO"
+    embedding_provider: str = ""
+    embedding_model: str = "text-embedding-3-small"
+    embedding_api_key: Optional[str] = None
+    embedding_dimensions: int = 1536
+    embedding_batch_size: int = 64
 
     def get_llm(self) -> Optional[LLMClient]:
         """从此配置创建 LLM 客户端。"""
@@ -36,6 +42,16 @@ class Config:
             model=self.llm_model,
             thinking=self.llm_thinking,
             thinking_effort=self.llm_thinking_effort,
+        )
+
+    def get_embedding_config(self) -> EmbeddingConfig:
+        return EmbeddingConfig(
+            enabled=bool(self.embedding_api_key),
+            provider=self.embedding_provider,
+            model=self.embedding_model,
+            api_key=self.embedding_api_key or "",
+            dimensions=self.embedding_dimensions,
+            batch_size=self.embedding_batch_size,
         )
 
 
@@ -56,6 +72,11 @@ def load_config(path: Optional[str] = None) -> Config:
         "sample_size": _defaults.SAMPLE_SIZE,
         "top_k": _defaults.TOP_K,
         "log_level": _defaults.LOG_LEVEL,
+        "embedding_provider": _defaults.EMBEDDING_PROVIDER,
+        "embedding_model": _defaults.EMBEDDING_MODEL,
+        "embedding_api_key": _defaults.EMBEDDING_API_KEY,
+        "embedding_dimensions": _defaults.EMBEDDING_DIMENSIONS,
+        "embedding_batch_size": _defaults.EMBEDDING_BATCH_SIZE,
     }
 
     EXTRACTOR_YAML_MAPPING = {
@@ -69,6 +90,11 @@ def load_config(path: Optional[str] = None) -> Config:
         "sample_size": "sample_size",
         "top_k": "top_k",
         "log_level": "log_level",
+        "embedding_provider": "embedding_provider",
+        "embedding_model": "embedding_model",
+        "embedding_api_key": "embedding_api_key",
+        "embedding_dimensions": "embedding_dimensions",
+        "embedding_batch_size": "embedding_batch_size",
     }
 
     # 1. ~/.pontis/config.yml
@@ -87,6 +113,17 @@ def load_config(path: Optional[str] = None) -> Config:
         cfg["api_key"] = env_key
     if env_url and cfg["provider"] == "https://api.deepseek.com":
         cfg["provider"] = env_url
+    if not cfg["embedding_api_key"]:
+        cfg["embedding_api_key"] = (
+            os.environ.get("PONTIS_EMBEDDING_API_KEY")
+            or os.environ.get("DASHSCOPE_API_KEY")
+            or os.environ.get("OPENAI_API_KEY", "")
+        )
+    if not cfg["embedding_provider"]:
+        cfg["embedding_provider"] = (
+            os.environ.get("PONTIS_EMBEDDING_PROVIDER")
+            or os.environ.get("OPENAI_BASE_URL", "")
+        )
 
     return Config(
         pontis_dir_name=cfg["pontis_dir_name"],
@@ -100,4 +137,9 @@ def load_config(path: Optional[str] = None) -> Config:
         llm_enabled=bool(cfg["api_key"]),
         llm_thinking=cfg.get("thinking", True),
         llm_thinking_effort=cfg.get("thinking_effort", "high"),
+        embedding_provider=cfg.get("embedding_provider", ""),
+        embedding_model=cfg.get("embedding_model", "text-embedding-3-small"),
+        embedding_api_key=cfg.get("embedding_api_key") or None,
+        embedding_dimensions=int(cfg.get("embedding_dimensions") or 1536),
+        embedding_batch_size=int(cfg.get("embedding_batch_size") or 64),
     )

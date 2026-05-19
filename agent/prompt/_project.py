@@ -25,10 +25,10 @@ def build_project_context(project_path: str, spec=None) -> str:
             parts.append("- 类型: source project")
             parts.append(f"- 路径: {path}")
         else:
-            graph_path = config.resolve_graph_path(name)
+            graph_uri = config.resolve_graph_uri(name)
             parts.append("- 类型: graph-only project")
-            if graph_path:
-                parts.append(f"- 路径: {graph_path}")
+            if graph_uri:
+                parts.append(f"- 图存储: {graph_uri}")
 
     return "\n".join(parts)
 
