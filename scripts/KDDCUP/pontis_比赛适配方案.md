@@ -1,75 +1,18 @@
-# Pontis 参赛适配方案
+# Pontis 参赛适配方案与交接记录
 
-本文档记录在当前 Pontis 代码基本定型的前提下，如何把 Pontis 包装成 KDD Cup 2026 Data Agents 可提交方案。
+本文档记录当前 Pontis 适配 KDD Cup 2026 Data Agents 的方案、已经完成的改动、验证结果和下一步接手事项。
 
-## 目标
+## 当前结论
 
-比赛评测不会进入交互式命令行，也不会手动指定单题。提交镜像启动后必须自动完成：
-
-1. 遍历 `/input/task_*`
-2. 读取每题的 `task.json` 和 `context/`
-3. 调用比赛注入的模型服务
-4. 写出 `/output/task_<id>/prediction.csv`
-5. 把运行日志写到 `/logs/runtime.log`
-
-因此，适配重点不是重写 Pontis，而是在 Pontis 外层新增一个 KDD runner。
-
-## 当前 Pontis 与比赛要求的差距
-
-### 1. 入口形态不同
-
-Pontis 当前主要入口是：
-
-```bash
-pontis <project>
-pontis <project>:find ...
-pontis <project>:query ...
-```
-
-这是面向人工交互或单次工具调用的入口。
-
-比赛需要的是非交互式批处理入口：
-
-```bash
-python scripts/KDDCUP/run_kdd.py --input /input --output /output --logs /logs
-```
-
-这个入口应负责遍历所有 task，并且每完成一题就立即写出 `prediction.csv`。
-
-### 2. 输出格式不同
-
-Pontis agent 当前最终回答通常是自然语言。
-
-比赛只认 CSV：
+比赛提交的是 Docker 镜像，不是代码仓库，也不是 `prediction.csv` 压缩包。官方评测会启动镜像并挂载：
 
 ```text
-/output/task_<id>/prediction.csv
+/input   只读，包含所有 task_<id>
+/output  可写，要求输出 /output/task_<id>/prediction.csv
+/logs    可写，保存运行日志
 ```
 
-所以 KDD runner 需要约束 agent 最终输出为结构化表格：
-
-```json
-{
-  "columns": ["column_a", "column_b"],
-  "rows": [
-    ["value_a", "value_b"]
-  ]
-}
-```
-
-然后由 runner 统一写 CSV。
-
-### 3. 模型配置变量不同
-
-Pontis 当前主要使用：
-
-```text
-PONTIS_AGENT_API_KEY
-OPENAI_API_KEY
-OPENAI_BASE_URL
-```
-
-比赛评测注入：
+官方还会注入：
 
 ```text
 MODEL_API_URL
@@ -77,242 +20,568 @@ MODEL_API_KEY
 MODEL_NAME
 ```
 
-KDD 入口需要在启动时把比赛变量映射到 Pontis/OpenAI-compatible 配置：
+当前 Pontis 的核心能力继续保留：
 
 ```text
-OPENAI_BASE_URL = MODEL_API_URL
-OPENAI_API_KEY = MODEL_API_KEY
-PONTIS_AGENT_API_KEY = MODEL_API_KEY
-PONTIS_AGENT_MODEL = MODEL_NAME
+extractor / explorer / agent / graph / find / read / grep / jd / query
 ```
 
-更稳的做法是在 KDD runner 内部直接读取 `MODEL_*`，不要依赖本地开发配置文件。
+提交版新增一层 KDD runner，用来适配官方目录、模型环境变量、Docker 入口和每题 Neo4j 隔离。
 
-### 4. Graph backend 运行环境不同
+## 关键设计
 
-当前 Pontis 默认依赖 Neo4j：
+采用“容器内自启动 Neo4j”方案。
+
+每个 task 固定一个独立 Neo4j 端口和独立运行目录，**不做端口复用**：
 
 ```text
-bolt://localhost:7687
+task_11  -> bolt 7700 -> /logs/neo4j/task_11
+task_19  -> bolt 7701 -> /logs/neo4j/task_19
+task_22  -> bolt 7702 -> /logs/neo4j/task_22
+...
 ```
 
-比赛只启动一个提交容器。官方不会额外启动 Neo4j 服务。
+并发数只控制同时运行的 task 数。默认并发为 4，任意时刻最多 4 个 Neo4j 进程在跑，但每个 task 的端口和目录仍然唯一。
 
-可选方案：
-
-| 方案 | 说明 | 建议 |
-| --- | --- | --- |
-| 无 Neo4j KDD adapter | 只复用 Pontis 的 source/tool/agent 思路，每题临时分析 context | 第一版推荐 |
-| 容器内自启动 Neo4j | 镜像内安装 Neo4j，ENTRYPOINT 启动并等待 bolt 可用 | 可做，但工程风险高 |
-| 嵌入式本地 graph backend | 为 Pontis 增加 SQLite/local graph backend | 中期更优 |
-
-第一版参赛应优先保证能稳定写出结果，所以建议先做无外部服务版本。
-
-### 5. 并发与隔离
-
-hidden B-board 任务量较大，runner 需要支持并发。
-
-要求：
-
-- 每个 task 独立工作目录
-- 每个 task 独立 trace/log
-- 不修改 `/input`
-- 不让多个 task 共用同一个可写 graph namespace
-- task 失败不能影响其他 task
-
-如果继续使用 Neo4j，需要额外处理数据库隔离、锁竞争和清理；无 Neo4j adapter 会简单很多。
-
-## 推荐目录组织
-
-当前 `KDDCUP/` 已经在 `.gitignore` 中，适合作为本地资料和数据目录：
+官方 `/input` 是只读的，所以提交 runner 不直接把 `/input/task_x` 当 Pontis project。每题会先复制或硬链接到：
 
 ```text
-KDDCUP/
-├── overview.md
-├── 技术规范.md
-├── public/
-├── downloaded_file.zip
-├── kddcup2026-data-agents-starter-kit/
-├── runs/
-├── logs/
-├── submissions/
-└── pontis_比赛适配方案.md
+/logs/work/task_x
 ```
 
-建议真正进 git 的比赛代码放在：
+Pontis 的 `.pontis`、extract 日志、临时配置都写在 `/logs` 下。
+
+## 已新增文件
+
+### `scripts/KDDCUP/run_submission.py`
+
+Docker 提交入口 runner。
+
+职责：
+
+- 遍历 `/input/task_*`
+- 给每个 task 固定分配端口：`7700 + task_index`
+- 复制或硬链接 task 到 `/logs/work/task_id`
+- 为每题生成动态 Pontis config：
 
 ```text
-scripts/KDDCUP/
-├── run_kdd.py
-├── evaluate_public.py
-├── Dockerfile
-├── build_image.sh
-└── README.md
+/logs/configs/task_id.pontis.yml
 ```
 
-`KDDCUP/` 放数据、官方材料、运行结果和提交包；`scripts/KDDCUP/` 放我们自己写的可复现代码。
+- 启动该 task 独立 Neo4j
+- 等待 Bolt 可连接
+- 调 `extract_public.extract_one(...)`
+- 调 `test_public.run_task(...)`
+- 写 `/output/task_id/prediction.csv`
+- 停掉该 task 的 Neo4j
+- task 失败时写 fallback `prediction.csv`，避免全局中断
 
-## 第一版 MVP
+默认参数：
 
-第一版目标是先跑通 public 50 题和 Docker 提交流程。
+```text
+--input-root /input
+--output-root /output
+--logs-root /logs
+--task-workers 4
+--bolt-base 7700
+--max-rounds 80
+--effort max
+--neo4j-heap-max 768m
+--neo4j-pagecache 128m
+```
 
-### 必做
+注意：默认不保留 `/logs/work/task_x` 和 `/logs/neo4j/task_x/data`，防止 B-board 几百个任务撑爆 `/logs`。保留的是：
 
-1. 新增 `scripts/KDDCUP/run_kdd.py`
-   - 默认读取 `/input`
-   - 默认写入 `/output`
-   - 默认日志目录 `/logs`
-   - 支持本地参数覆盖
+```text
+/logs/runtime.log
+/logs/submission_summary.json
+/logs/port_assignments.json
+/logs/tasks/task_x/submission.log
+/logs/tasks/task_x/result.json
+/logs/tasks/task_x/trace.log
+/logs/tasks/task_x/extract_result.json
+/logs/tasks/task_x/kdd_extract.log
+```
 
-2. 新增 task runner
-   - 读取 `task.json`
-   - 扫描 `context/`
-   - 给 agent 提供文件列表、CSV/JSON/doc 预览、SQLite schema、SQL 执行、Python 执行工具
-   - 要求最终返回 `columns` 和 `rows`
+### `scripts/KDDCUP/entrypoint.sh`
 
-3. 新增 CSV 写出逻辑
-   - 每题完成后立即写 `/output/task_<id>/prediction.csv`
-   - 即使失败也尽量写一个空表或错误 trace，避免整个进程中断
+Docker ENTRYPOINT。
 
-4. 新增模型配置适配
-   - 官方评测读取 `MODEL_API_URL`
-   - 本地调试允许 `.env` 或命令行传入
-   - 不在镜像中硬编码 key
+职责：
 
-5. 新增 Dockerfile
-   - `linux/amd64`
-   - 设置 `ENTRYPOINT`
-   - 启动命令把 stdout/stderr tee 到 `/logs/runtime.log`
+- 创建 `/output`、`/logs`
+- 映射官方模型环境变量：
 
-6. 新增本地 public evaluator
-   - 读取 `KDDCUP/public/output/task_*/gold.csv`
-   - 对比本地预测结果
-   - 实现列签名匹配、数值两位小数归一、空值归一
+```text
+MODEL_API_URL  -> OPENAI_BASE_URL
+MODEL_API_KEY  -> OPENAI_API_KEY
+MODEL_NAME     -> PONTIS_AGENT_MODEL
+```
 
-### 可延后
+- 设置默认：
 
-- Neo4j 容器内启动
-- 跨题 memory
-- 复杂 graph 写入
-- 多 agent 协同
-- 对 extreme 长文档的专门 memory manager
+```text
+NEO4J_PASSWORD=pontis_kdd_neo4j
+PONTIS_AGENT_MAX_TOKENS=8192
+KDD_TASK_WORKERS=4
+```
 
-## Pontis 能复用的能力
-
-第一版不需要完整启动 Pontis graph，也可以复用 Pontis 的思想和部分模块：
-
-| 能力 | 复用方式 |
-| --- | --- |
-| SQLite schema/query | 复用或仿照 `tool/query` |
-| 文件发现 | 复用 `find` |
-| 文档搜索 | 复用 `find` / `grep` |
-| agent loop | 可以复用 `agent/agent.py`，但需要结构化 answer 工具 |
-| guardrails | 保留 SQL 只读、路径限制、轮数限制 |
-| extractor 思路 | 每题启动前生成轻量 schema/profile |
-
-如果复用现有 `PontusAgent`，需要避免它初始化 Neo4j workspace；否则 KDD runner 会在无 Neo4j 环境失败。
-
-## 建议实现顺序
-
-### Step 1: 先做纯 runner
-
-写一个不依赖 Neo4j 的最小 ReAct runner，工具范围限制在 task 的 `context/` 内：
-
-- `list_context`
-- `read_csv`
-- `read_json`
-- `read_doc`
-- `inspect_sqlite_schema`
-- `execute_context_sql`
-- `execute_python`
-- `answer`
-
-这一步可以直接参考官方 starter kit，但把 prompt 和工具策略改成 Pontis 风格。
-
-### Step 2: 跑 public 50 题
-
-本地运行：
+- 启动：
 
 ```bash
-python scripts/KDDCUP/run_kdd.py \
-  --input KDDCUP/public/input \
-  --output KDDCUP/runs/local_v1/output \
-  --logs KDDCUP/runs/local_v1/logs
+python /app/scripts/KDDCUP/run_submission.py ... 2>&1 | tee /logs/runtime.log
 ```
 
-然后评分：
+### `scripts/KDDCUP/Dockerfile`
 
-```bash
-python scripts/KDDCUP/evaluate_public.py \
-  --gold KDDCUP/public/output \
-  --pred KDDCUP/runs/local_v1/output
+提交镜像 Dockerfile。
+
+安装：
+
+- Python 3.12 slim
+- OpenJDK 17
+- Neo4j Community
+- Pontis Python 依赖
+
+镜像入口：
+
+```dockerfile
+ENTRYPOINT ["/app/scripts/KDDCUP/entrypoint.sh"]
 ```
 
-### Step 3: 做 Docker dry run
+### `scripts/KDDCUP/build_submission.sh`
+
+构建和保存镜像。
+
+默认队伍 ID 和版本由命令传入：
 
 ```bash
-docker build --platform=linux/amd64 \
-  -t pontis-kdd:local \
-  -f scripts/KDDCUP/Dockerfile .
+scripts/KDDCUP/build_submission.sh team1569 v1
+```
+
+输出：
+
+```text
+KDDCUP/submissions/team1569_v1.tar.gz
+```
+
+如果官方给的队伍 ID 是纯 `1569` 而不是 `team1569`，构建时改成：
+
+```bash
+scripts/KDDCUP/build_submission.sh 1569 v1
+```
+
+### `.dockerignore`
+
+避免把以下内容打进镜像：
+
+```text
+.git
+.venv
+.neo4j
+.env
+example_data
+KDDCUP
+rubbish
+scripts/KDDCUP/kddcup2026-data-agents-starter-kit
+*.tar.gz
+*.zip
+```
+
+## 已修改文件
+
+### `agent/utils.py`
+
+增加官方模型变量支持：
+
+```text
+MODEL_API_URL
+MODEL_API_KEY
+MODEL_NAME
+PONTIS_AGENT_MODEL
+PONTIS_AGENT_MAX_TOKENS
+```
+
+提交环境优先读取 `MODEL_*`，避免硬编码 API key 或 base URL。
+
+### `storage/config.py`
+
+增加动态 config 支持：
+
+```text
+PONTIS_CONFIG_PATH
+PONTIS_CONFIG
+```
+
+`run_submission.py` 会给每个 task 写一个独立 `pontis.yml`，并通过 `PONTIS_CONFIG_PATH` 让 Pontis 连接该 task 的 Neo4j 端口。
+
+### 之前已修的提交相关问题
+
+- `scripts/KDDCUP/extract_public.py` 中 `query_command(file=...)` 已改为 `ref=...`
+- `tool/query/tool.py` 支持 CSV/JSON 数字列类型推断，空白字符串转 `NULL`
+- CSV cache 增加格式版本，避免复用旧的全 TEXT 缓存
+- `agent/config.py` 的 `reflection` mode 已改成只读工具，不再默认暴露写图工具
+- `agent/tool_use/create_entity/prompt.py` 已移除 BIRD `knowledge` 示例
+- `tool/grep/tool.py` 修正 `files_with_matches` 总数显示
+- `scripts/tool/test_tools.py` 增加 CSV 空值 AVG 和 JSON 数字列回归测试
+
+## Starter Kit 的作用
+
+目录：
+
+```text
+scripts/KDDCUP/kddcup2026-data-agents-starter-kit
+```
+
+这是官方给的最小 baseline / 参考框架，不是 Pontis 的依赖。
+
+它提供：
+
+- 数据集 loader：遍历 `data/public/input/task_<id>`
+- 简单 ReAct agent
+- 文件/SQL/Python 工具：
+
+```text
+list_context
+read_csv
+read_json
+read_doc
+inspect_sqlite_schema
+execute_context_sql
+execute_python
+answer
+```
+
+- 批量 runner
+- 每题 timeout
+- `trace.json` / `prediction.csv` / `summary.json` 输出组织
+
+它不提供：
+
+- Neo4j
+- Pontis graph
+- Pontis extractor / explorer
+- find/read/grep/jd/query 工具
+- JSON pattern / CSV summary / text chunk / DB summary
+
+所以它的价值是参考提交结构、runner 设计和 `answer` 终止工具思路，而不是直接替换 Pontis。
+
+### 已验证 starter kit
+
+用它自己的 `uv run` 环境测试：
+
+```bash
+uv run dabench --help
+```
+
+可以运行。
+
+用临时 config 指向 Pontis public 数据：
+
+```yaml
+dataset:
+  root_path: /nfsdat2/home/bcchenslm/Projects/Pontis/example_data/KDDCUP/public/input
+agent:
+  model: dummy
+  api_base: http://127.0.0.1:9/v1
+  api_key: dummy
+  max_steps: 2
+  temperature: 0.0
+run:
+  output_dir: /tmp/dabench_pontis_runs
+  run_id: status_check
+  max_workers: 1
+  task_timeout_seconds: 60
+```
+
+结果：
+
+- `status` 能识别 public 50 个 task
+- difficulty 分布：`easy=15, medium=23, hard=11, extreme=1`
+- `inspect-task task_250` 能列出复杂 task 的 CSV/DB/JSON/knowledge 文件
+
+`run-task` 在当前机器无真实模型服务时失败是正常的。另外当前 shell 有：
+
+```text
+ALL_PROXY=socks5://...
+```
+
+starter kit 的 httpx/openai 缺 `socksio`，所以报过 socks 依赖错误。这个不影响 Pontis Docker 提交方案。
+
+## 已验证 Pontis 提交入口
+
+已运行：
+
+```bash
+.venv/bin/python3 -m py_compile scripts/KDDCUP/run_submission.py scripts/KDDCUP/test_public.py scripts/KDDCUP/extract_public.py agent/utils.py storage/config.py
+```
+
+通过。
+
+已运行：
+
+```bash
+scripts/tool/test_tools.py
+```
+
+结果：
+
+```text
+82 passed, 0 failed
+```
+
+已运行：
+
+```bash
+git diff --check
+```
+
+通过。
+
+已运行一次极短超时 smoke：
+
+```bash
+.venv/bin/python3 scripts/KDDCUP/run_submission.py \
+  --input-root example_data/KDDCUP/public/input \
+  --output-root /tmp/pontis_submit_out \
+  --logs-root /tmp/pontis_submit_logs \
+  --limit 1 \
+  --task-workers 1 \
+  --task-timeout-seconds 5 \
+  --debug
+```
+
+结果：
+
+- runner 能发现 task
+- 能生成 `port_assignments.json`
+- 能生成每题动态 config
+- 能写 fallback `/tmp/pontis_submit_out/task_11/prediction.csv`
+- 能写 `/tmp/pontis_submit_logs/submission_summary.json`
+- 超时/失败不会导致主进程崩溃
+
+本机失败原因不是 runner 逻辑，而是本机没有 Java / Neo4j：
+
+```text
+java: command not found
+```
+
+Dockerfile 里会安装 Java 和 Neo4j，所以最终必须用 Docker dry run 验证。
+
+## Docker 状态
+
+当前服务器有 Docker client，但当前用户没有 Docker daemon 权限：
+
+```text
+permission denied while trying to connect to /var/run/docker.sock
+```
+
+所以本机无法实际 build。
+
+可以在 WSL2 + Docker Desktop 上 build。建议仓库放在 WSL Linux 文件系统里，不要放 `/mnt/c/...`。
+
+WSL 检查：
+
+```bash
+docker version
+docker ps
+```
+
+如果能看到 server 信息，就可以 build。
+
+构建：
+
+```bash
+scripts/KDDCUP/build_submission.sh team1569 v1
+```
+
+或：
+
+```bash
+bash scripts/KDDCUP/build_submission.sh team1569 v1
+```
+
+输出：
+
+```text
+KDDCUP/submissions/team1569_v1.tar.gz
+```
+
+Docker dry run，先少量任务：
+
+```bash
+mkdir -p KDDCUP/runs/docker_smoke/output KDDCUP/runs/docker_smoke/logs
 
 docker run --rm \
-  -v "$PWD/KDDCUP/public/input:/input:ro" \
+  --cpus=16 \
+  --memory=64g \
+  -v "$PWD/example_data/KDDCUP/public/input:/input:ro" \
+  -v "$PWD/KDDCUP/runs/docker_smoke/output:/output:rw" \
+  -v "$PWD/KDDCUP/runs/docker_smoke/logs:/logs:rw" \
+  -e MODEL_API_URL="$MODEL_API_URL" \
+  -e MODEL_API_KEY="$MODEL_API_KEY" \
+  -e MODEL_NAME="$MODEL_NAME" \
+  team1569:v1 \
+  --limit 1 \
+  --task-workers 1
+```
+
+检查：
+
+```bash
+find KDDCUP/runs/docker_smoke/output -name prediction.csv -print
+tail -n 100 KDDCUP/runs/docker_smoke/logs/runtime.log
+cat KDDCUP/runs/docker_smoke/logs/submission_summary.json
+```
+
+再跑多题：
+
+```bash
+docker run --rm \
+  --cpus=16 \
+  --memory=64g \
+  -v "$PWD/example_data/KDDCUP/public/input:/input:ro" \
   -v "$PWD/KDDCUP/runs/docker_v1/output:/output:rw" \
   -v "$PWD/KDDCUP/runs/docker_v1/logs:/logs:rw" \
   -e MODEL_API_URL="$MODEL_API_URL" \
   -e MODEL_API_KEY="$MODEL_API_KEY" \
   -e MODEL_NAME="$MODEL_NAME" \
-  pontis-kdd:local
+  team1569:v1 \
+  --task-workers 4
 ```
 
-### Step 4: 再考虑接入 Pontis graph
+## 官方提交
 
-如果 MVP 已经稳定，再评估是否值得把 Neo4j 带进容器。
+提交包命名：
 
-判断标准：
+```text
+<team_id>_v<N>.tar.gz
+```
 
-- public 分数是否明显被 schema/relationship 理解限制
-- Neo4j 启动和写入是否占用过多时间
-- 多 worker 是否互相污染
-- Docker 镜像是否接近 10GB 限制
+镜像名：
 
-## 提交镜像要求
+```text
+<team_id>:v<N>
+```
 
-比赛提交需要：
+当前默认按：
+
+```text
+team1569:v1
+team1569_v1.tar.gz
+```
+
+如果官方队伍 ID 原文是 `1569`，不要加 `team` 前缀。
+
+邮件：
+
+```text
+To: kddcup@hkust-gz.edu.cn
+Subject: [KDDCup2026 Data Agents] Submission - team1569 - v1
+
+Team ID: team1569
+Version: v1
+Sharing link: <Google Drive link>
+```
+
+必须使用队长注册邮箱发送。
+
+## 当前风险与下一步
+
+### P0：必须 Docker dry run
+
+当前最大未验证点是 Docker 镜像内 Neo4j 能否正常启动，以及 Pontis 是否能在容器中完成至少 1 个 task 的 extract + solve。
+
+必须先跑：
 
 ```bash
-docker build --platform=linux/amd64 -t <team_id>:v<N> -f scripts/KDDCUP/Dockerfile .
-docker save <team_id>:v<N> | gzip > KDDCUP/submissions/<team_id>_v<N>.tar.gz
+docker run ... team1569:v1 --limit 1 --task-workers 1
 ```
 
-注意：
+再考虑全量。
 
-- 必须用 `docker save`，不是 `docker export`
-- image 名称必须是 `<team_id>:v<N>`
-- archive 名称必须是 `<team_id>_v<N>.tar.gz`
-- 输出路径必须是 `/output/task_<id>/prediction.csv`
-- 镜像内不能硬编码 API key
-- 评测时无外网，只能访问 `MODEL_API_URL`
+### P0：确认 team_id
 
-## 风险清单
+用户提供的是 `1569`。需要确认官方要求的 image name 是：
 
-| 风险 | 处理 |
-| --- | --- |
-| agent 输出自然语言，无法解析成 CSV | 强制使用 `answer` 工具 |
-| 某题失败导致全局退出 | per-task try/except，失败后继续 |
-| 超时导致结果丢失 | 每题完成立即落盘 |
-| 大 CSV 读入爆内存 | 默认 preview，精确计算交给 SQL/Python 分块 |
-| SQL 写操作误改数据 | 只允许 SELECT / WITH，只读连接 |
-| 文件路径逃逸 | 所有路径必须 resolve 在 task `context/` 内 |
-| 模型变量不兼容 | KDD runner 直接读取 `MODEL_*` |
-| Neo4j 不可用 | 第一版不依赖 Neo4j |
+```text
+team1569:v1
+```
 
-## 总结
+还是：
 
-当前 Pontis 不需要 fork 出一个单独项目。更合适的方式是：
+```text
+1569:v1
+```
 
-- Pontis 保持为核心能力库
-- `scripts/KDDCUP/` 作为比赛提交层
-- `KDDCUP/` 作为本地数据、官方资料、运行产物目录
+提交前以官方邮件/系统分配的原文为准。
 
-第一版先做无 Neo4j、结构化输出、Docker 可提交的 MVP。等 public 50 题和 Docker dry run 稳定后，再决定是否把完整 Pontis graph 能力接入比赛版本。
+### P1：建议增加 `answer` 终止工具
+
+当前 `scripts/KDDCUP/test_public.py` 仍是让 agent 最后输出 JSON，再由 runner parse。
+
+starter kit 的 `answer(columns, rows)` 终止工具更稳。建议下一步给 Pontis 增加 KDD 专用 `answer` 工具，agent 调用后直接保存结构化结果，减少 JSON parse 失败。
+
+### P1：Dockerfile 依赖下载风险
+
+Dockerfile 当前用：
+
+```dockerfile
+curl -fsSL https://dist.neo4j.org/neo4j-community-${NEO4J_VERSION}-unix.tar.gz
+```
+
+这是 build 阶段下载，评测阶段不会联网。WSL build 时需要能访问该 URL。
+
+如果 WSL 网络不稳定，可以先手动下载 Neo4j tarball 并改 Dockerfile 为本地 COPY。
+
+### P1：Neo4j 资源
+
+默认每个 Neo4j：
+
+```text
+heap max 768m
+pagecache 128m
+```
+
+并发 4 理论上可控，但还要加 Python/LLM/tool 开销。Docker dry run 时如果 OOM，先降：
+
+```bash
+--task-workers 2
+```
+
+或降低：
+
+```bash
+--neo4j-heap-max 512m
+--neo4j-pagecache 64m
+```
+
+### P2：starter kit 不必进入镜像
+
+`.dockerignore` 已排除：
+
+```text
+scripts/KDDCUP/kddcup2026-data-agents-starter-kit
+```
+
+原因：它是参考框架，不是当前 Pontis 提交运行依赖；打进去只会增大镜像。
+
+## 接手提醒
+
+不要再误跑：
+
+```bash
+scripts/KDDCUP/test_public.py --extract-first ...
+scripts/KDDCUP/extract_public.py --force --clear-task-graph ...
+```
+
+除非明确要重提取 public 数据。
+
+当前任务重点不是再优化 public 分数，而是：
+
+1. WSL/Docker build
+2. Docker `--limit 1` dry run
+3. 修 Docker/Neo4j 启动问题
+4. Docker 多题 dry run
+5. 生成 `team1569_v1.tar.gz`
+6. 上传 Google Drive 并按官方邮件格式提交

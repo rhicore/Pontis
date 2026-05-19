@@ -1,0 +1,12 @@
+.git
+.venv
+.neo4j
+__pycache__
+*.pyc
+.env
+example_data
+rubbish
+KDDCUP
+scripts/KDDCUP/kddcup2026-data-agents-starter-kit
+*.tar.gz
+*.zip

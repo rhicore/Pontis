@@ -96,6 +96,9 @@ def load_config(config_path: str = None, project_path: str = None) -> StoreConfi
     sources = []
     if config_path:
         sources.append(config_path)
+    env_config = os.environ.get("PONTIS_CONFIG_PATH") or os.environ.get("PONTIS_CONFIG")
+    if env_config:
+        sources.append(env_config)
     if project_path:
         for filename in ("pontis.yml", "pontis.yaml"):
             p = os.path.join(project_path, filename)

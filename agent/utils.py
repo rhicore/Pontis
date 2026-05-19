@@ -41,11 +41,33 @@ def load_agent_config(project_path: str = None) -> dict:
             apply_yaml(cfg, os.path.join(project_path, filename), AGENT_YAML_MAPPING)
 
     # 3. 环境变量覆盖
+    model_url = os.environ.get("MODEL_API_URL", "")
+    model_key = os.environ.get("MODEL_API_KEY", "")
+    model_name = os.environ.get("MODEL_NAME", "")
     env_key = os.environ.get("OPENAI_API_KEY", "")
     env_url = os.environ.get("OPENAI_BASE_URL", "")
-    if not cfg["api_key"]:
-        cfg["api_key"] = env_key
-    if env_url and cfg["provider"] == "https://api.deepseek.com":
+    env_model = os.environ.get("PONTIS_AGENT_MODEL", "")
+    env_max_tokens = os.environ.get("PONTIS_AGENT_MAX_TOKENS", "")
+
+    if model_url:
+        cfg["provider"] = model_url
+    elif env_url and cfg["provider"] == "https://api.deepseek.com":
         cfg["provider"] = env_url
+
+    if model_key:
+        cfg["api_key"] = model_key
+    elif not cfg["api_key"]:
+        cfg["api_key"] = env_key
+
+    if model_name:
+        cfg["model"] = model_name
+    elif env_model:
+        cfg["model"] = env_model
+
+    if env_max_tokens:
+        try:
+            cfg["max_tokens"] = int(env_max_tokens)
+        except ValueError:
+            pass
 
     return cfg
