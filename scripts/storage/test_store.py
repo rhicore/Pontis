@@ -92,6 +92,7 @@ def _clear_graph(ws: Workspace, batch_size: int = 1000):
             deleted = rows[0]["deleted"] if rows else 0
             if deleted == 0:
                 break
+        store.invalidate_modules()
         return
 
 

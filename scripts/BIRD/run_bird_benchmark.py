@@ -33,6 +33,19 @@ from scripts.BIRD.common import PROJECT_ROOT, get_data_dir, get_db_base
 
 logger = logging.getLogger(__name__)
 
+# BIRD 求解阶段不使用专门的 agent mode。
+# 这里显式声明脚本需要的工具、prompt 段和 guardrail，避免通用 agent 配置
+# 被 benchmark 特例污染。
+BIRD_BENCHMARK_TOOLS = ["glob", "grep", "meta", "search", "query"]
+BIRD_BENCHMARK_PROMPTS = [
+    "base", "tool", "ontology", "meta", "sql",
+    "guardrail", "project", "readme",
+]
+BIRD_BENCHMARK_GUARDRAILS = [
+    "round_limit", "exploration_check",
+    "sql_check", "bridge_check", "disambig_check",
+]
+
 # ═══════════════════════════════════════════════════════════
 #  Prompts
 # ═══════════════════════════════════════════════════════════
@@ -63,12 +76,23 @@ QUERY_PROMPT_TEMPLATE = """\
 
 
 关于 `bird` 经验的使用：
-- 最终输出 SQL 前，至少先浏览一次 `bird` 的知识实体总表，确认是否存在相关经验
-- bird数据集的其中一个实体是README, 这部分内容应该已经在上文提及过了
+- `bird::README` 已经在系统提示词中给出，不要再用 `meta` 重复读取 README。
+- 不要用 `glob("bird::*:knowledge")` 或类似方式全量浏览 bird 知识库；这会返回大量 train example，浪费上下文。
 - 你在给当前在写SQL最需要参考的是BIRD数据集的SQL写作风格,这并不是SQL对错的问题,而仅仅是BIRD数据集本身会有一定的SQL写作偏好,
 - 在bird project库中, 会有一些example类型的知识实体, 这些是BIRD train数据集在其他数据库上的query/evidence/golden_sql,尽管他们的数据库schema和当前的数据库不一样, 但他们的SQL写作风格和表达习惯是非常值得参考的, 
-- 你应该利用语义检索来检索相关的SQL写作经验, 来指导你写出符合BIRD数据集风格的SQL(因为这些SQL的数据集和当前数据集并不重合, 所以你在编写查询语句时尽量要避免关注当前数据库具体的schema, 而是要关注SQL写作风格和表达习惯), 
+- 只有当题目确实需要跨库 SQL 风格参考时，才用语义检索 **search工具** 在 `bird::*:example` 中检索少量相关经验, 来指导你写出符合BIRD数据集风格的SQL(因为这些SQL的数据集和当前数据集并不重合, 所以你在编写查询语句时尽量要避免关注当前数据库具体的schema, 而是要关注SQL写作风格和表达习惯), 
 - 你可以在检索到相关经验后, 先分析总结出这些经验的SQL写作风格和表达习惯是什么, 然后再把这些总结出的SQL写作风格和表达习惯迁移应用到你当前的SQL写作中来, 以此来提升你SQL的质量和BIRD数据集的风格一致性
+
+## 数据库探索纪律
+
+1. `query` 只用于验证，不要拿来代替 schema 探索。
+2. 用定向 `glob` 找数据库、表、列、fk、disambig；不要把 `glob("*")` 当成默认起手式。
+3. 若某个 `db/*:fk` 入口为空，再退回项目级 `*:fk`。
+4. 若某列 `meta` 已明确没有 `sample/topk` 等字段，不要重复追问；直接改用一次最小 `query` 验证。
+5. 如果 README、列元数据或知识节点已经明确给出可执行规则，不要为了重复确认同一规则继续连做多次 `query`。
+6. 优先复用工具返回的完整展示 ref；`glob` / `search` 返回什么，就尽量原样拿去喂给 `meta` / `update_meta` / `add_edge`。
+7. CSV、JSON、文本文件如果 `meta(detail)` 已经给出可读内容，就不要再读取原文件。
+8. 找数据库文件时，优先用 `*:file:db`，不要只猜 `*.db`。
 
 
 ---
@@ -669,13 +693,20 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
     tracker.start_test(db_id)
 
     def run_one(q: dict) -> dict:
-        from agent.agent import create_agent, AgentSpec
+        from agent.config import create_agent, AgentSpec
+        from agent.guardrail import build_guardrails
 
         qid = q.get('question_id', 0)
         collector = TraceCollector()
 
-        spec = AgentSpec(mode="benchmark", effort="max")
+        spec = AgentSpec(
+            mode="readonly",
+            effort="max",
+            tools=list(BIRD_BENCHMARK_TOOLS),
+            prompts=list(BIRD_BENCHMARK_PROMPTS),
+        )
         spec.projects = [db_id, "bird"]
+        spec.guardrails = build_guardrails(spec, BIRD_BENCHMARK_GUARDRAILS)
         agent = create_agent(
             str(db_dir),
             spec,

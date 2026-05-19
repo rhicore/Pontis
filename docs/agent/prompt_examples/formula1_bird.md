@@ -1,6 +1,6 @@
 # Prompt Example: formula_1, bird
 
-- mode: `benchmark`
+- mode: BIRD script explicit config (`readonly` base mode, custom tools/prompts/guardrails)
 - project_path: `/nfsdat2/home/bcchenslm/Projects/Pontis`
 - projects: `['formula_1', 'bird']`
 

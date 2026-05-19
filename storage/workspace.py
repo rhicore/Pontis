@@ -98,19 +98,43 @@ class Workspace:
         store = self._get_store(project)
         if not store:
             return []
-        with store.execution_lock:
-            parsed = parse_cypher(query, params=params)
-            event = TriggerEvent(
-                type="query",
-                project=store.project_name,
-                query=query,
-                parsed_query=parsed,
-            )
-            modules = self._modules_for_event(self.modules(store.project_name), event)
-            if modules:
-                store.publish_modules(modules)
-            rows = store.execute_cypher(query, params=params)
+        parsed = parse_cypher(query, params=params)
+        event = TriggerEvent(
+            type="write" if parsed.action != "RETURN" else "query",
+            project=store.project_name,
+            query=query,
+            parsed_query=parsed,
+            reason="cypher_write" if parsed.action != "RETURN" else "cypher_read",
+        )
+        modules = self._modules_for_event(self.modules(store.project_name), event)
+
+        if event.type == "write":
+            with store.execution_lock:
+                if modules:
+                    store.publish_modules(modules, force=True)
+                rows = store.execute_cypher(query, params=params)
+                store.invalidate_modules()
             return self._resolve_result_pointers(rows, store.project_name)
+
+        if modules:
+            with store.execution_lock:
+                store.publish_modules(modules)
+
+        rows = store.execute_cypher(query, params=params)
+        return self._resolve_result_pointers(rows, store.project_name)
+
+    def refresh_sources(self, project: str = None, modules: list[str] | None = None) -> None:
+        """Force selected source modules to publish into Neo4j."""
+        store = self._get_store(project)
+        if not store:
+            return
+        selected = [
+            mod for mod in self.modules(store.project_name)
+            if not modules or mod.name in set(modules)
+        ]
+        with store.execution_lock:
+            store.invalidate_modules(modules)
+            store.publish_modules(selected, force=True)
 
     def _modules_for_query(self, modules: list, parsed, raw_query: str = "") -> list:
         event = TriggerEvent(type="query", project="", query=raw_query, parsed_query=parsed)

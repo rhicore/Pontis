@@ -43,11 +43,6 @@ _MODE_PRESETS = {
         prompts=["base", "tool", "ontology", "meta", "sql", "guardrail", "writer", "sub_agent", "readme"],
         guardrail_builders=["round_limit", "exploration_check", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
     ),
-    "benchmark": ModeConfig(
-        tools=["glob", "grep", "meta", "search", "bash", "query"],
-        prompts=["base", "tool", "ontology", "meta", "sql", "guardrail", "project", "readme"],
-        guardrail_builders=["round_limit", "exploration_check", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
-    ),
     "reflection": ModeConfig(
         tools=["glob", "grep", "meta", "search", "bash", "query",
                "create_entity", "update_meta", "add_edge", "delete"],

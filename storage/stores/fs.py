@@ -72,6 +72,21 @@ class FSModule(StoreModule):
                 return True
         return False
 
+    def source_fingerprint(self) -> str | None:
+        if not self.project_path:
+            return None
+        parts = []
+        for root, dirs, files in self.ctx.source.walk():
+            dirs[:] = [d for d in dirs if d != ".pontis"]
+            for name in dirs + files:
+                rel = os.path.join(root, name) if root else name
+                try:
+                    stat = self.ctx.source.stat(rel)
+                except OSError:
+                    continue
+                parts.append(f"{rel}:{stat.st_mtime_ns}:{stat.st_size}")
+        return "|".join(sorted(parts))
+
     def cypher_statements(self) -> list[CypherStatement]:
         nodes = self.iter_virtual_nodes()
         edges = self.iter_virtual_edges(nodes)

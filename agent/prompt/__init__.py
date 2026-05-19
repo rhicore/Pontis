@@ -44,7 +44,7 @@ def build_prompt_parts(spec) -> list[str]:
 
     # 2. 工具使用方式
     if "tool" in spec.prompts:
-        parts.append(get_tool_prompt())
+        parts.append(get_tool_prompt(spec))
 
     # 3. ontology / 图拓扑说明
     if "ontology" in spec.prompts:

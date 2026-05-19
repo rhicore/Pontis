@@ -9,7 +9,7 @@
 
 运行配置：
 
-- `mode="benchmark"`
+- BIRD script explicit config: `readonly` base mode with custom tools/prompts/guardrails
 - `project_path=/nfsdat2/home/bcchenslm/Projects/Pontis`
 
 ## 当前显式拼装顺序
@@ -28,7 +28,7 @@
 10. `project`
 11. `readme`
 
-对于 `benchmark` mode，这次实际命中的段是：
+对于 BIRD 脚本显式配置，这次实际命中的段是：
 
 1. `base`
 2. `tool`

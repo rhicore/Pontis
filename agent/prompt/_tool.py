@@ -1,17 +1,31 @@
 """工具层 — 工具选择策略与工作流引导。"""
 
 
-def get_tool_prompt() -> str:
-    return r"""## 工具使用
+_TOOL_DESCRIPTIONS = {
+    "glob": "发现实体和关系，适合回答“有哪些”“连着什么”",
+    "meta": "读取单个实体的 detail / brief 等属性",
+    "query": "只在需要真实数据验证时使用",
+    "search": "名称不确定时做模糊检索",
+    "cypher": "处理 glob 不方便表达的复杂图查询",
+    "grep": "最后手段，用于搜索普通文件内容",
+    "bash": "最后手段，用于执行 shell 命令",
+}
+
+
+def get_tool_prompt(spec=None) -> str:
+    tool_names = list(getattr(spec, "tools", []) or _TOOL_DESCRIPTIONS.keys())
+    lines = []
+    for name in tool_names:
+        desc = _TOOL_DESCRIPTIONS.get(name)
+        if desc:
+            lines.append(f"- **{name}**：{desc}")
+    tool_list = "\n".join(lines)
+
+    return f"""## 工具使用
 
 ### 工具选择
 
-- **glob**：发现实体和关系，适合回答“有哪些”“连着什么”
-- **meta**：读取单个实体的 detail / brief 等属性
-- **query**：只在需要真实数据验证时使用
-- **search**：名称不确定时做模糊检索
-- **cypher**：处理 glob 不方便表达的复杂图查询
-- **bash / grep**：最后手段
+{tool_list}
 
 ### 使用纪律
 

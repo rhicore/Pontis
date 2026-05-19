@@ -93,6 +93,7 @@ class StoreModule:
     modules or Store internals.
     """
     name = "module"
+    refresh_interval_seconds = 300.0
 
     def __init__(self, ctx: ModuleContext | None = None):
         self.ctx = ctx
@@ -107,7 +108,7 @@ class StoreModule:
 
     def wants(self, event) -> bool:
         """Return whether this module should run for a trigger event."""
-        if getattr(event, "type", "") != "query":
+        if getattr(event, "type", "") not in {"query", "write", "refresh"}:
             return False
         return self.should_materialize_for_query(
             getattr(event, "parsed_query", None),
@@ -131,6 +132,14 @@ class StoreModule:
         returned statements in order.
         """
         return []
+
+    def source_fingerprint(self) -> str | None:
+        """Return a cheap source-state fingerprint for refresh skipping.
+
+        Store uses this only after `refresh_interval_seconds` has elapsed. A
+        module may return None to rely on TTL-only freshness.
+        """
+        return None
 
     def resolve_pointer(self, kind: str, payload: str, *, node: dict | None = None):
         """Resolve a returned `<pontis:project:module:kind:payload>` string.

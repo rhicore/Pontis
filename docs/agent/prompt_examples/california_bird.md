@@ -1,6 +1,6 @@
 # Prompt Example: california_schools, bird
 
-- mode: `benchmark`
+- mode: BIRD script explicit config (`readonly` base mode, custom tools/prompts/guardrails)
 - project_path: `/nfsdat2/home/bcchenslm/Projects/Pontis`
 - projects: `['california_schools', 'bird']`
 

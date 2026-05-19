@@ -8,6 +8,11 @@ normalization.
 from __future__ import annotations
 
 import os
+import threading
+
+
+_DRIVERS_GUARD = threading.Lock()
+_DRIVERS = {}
 
 
 def _node_to_dict(node) -> dict:
@@ -89,17 +94,21 @@ class Neo4jGraph:
                 "Install it with: pip install neo4j"
             ) from exc
         auth = (self.user, self.password) if self.user else None
-        self._driver = GraphDatabase.driver(
-            self.uri,
-            auth=auth,
-            notifications_min_severity="OFF",
-            warn_notification_severity="OFF",
-        )
+        key = (self.uri, self.user, self.password)
+        with _DRIVERS_GUARD:
+            driver = _DRIVERS.get(key)
+            if driver is None:
+                driver = GraphDatabase.driver(
+                    self.uri,
+                    auth=auth,
+                    notifications_min_severity="OFF",
+                    warn_notification_severity="OFF",
+                )
+                _DRIVERS[key] = driver
+            self._driver = driver
 
     def close(self):
-        if self._driver is not None:
-            self._driver.close()
-            self._driver = None
+        self._driver = None
 
     def _session(self):
         kwargs = {"database": self.database} if self.database else {}

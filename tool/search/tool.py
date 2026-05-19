@@ -5,6 +5,7 @@
 """
 import math
 import re
+import threading
 from collections import Counter
 from typing import List, Optional
 
@@ -22,6 +23,11 @@ from tool.utils.knowledge_meta import normalize_knowledge_meta
 from utils.embedding import load_embedding_config
 
 VECTOR_INDEX_PREFIX = "pontis_detail_embedding"
+_EMBED_CACHE_LOCK = threading.Lock()
+_EMBED_CACHE: dict[tuple, list[float]] = {}
+_EMBED_KEY_LOCKS: dict[tuple, threading.Lock] = {}
+_VECTOR_INDEX_CACHE_LOCK = threading.Lock()
+_VECTOR_INDEX_CACHE: dict[tuple, list[str]] = {}
 
 
 # ========== Tokenizer ==========
@@ -140,26 +146,83 @@ def _candidate_key_set(workspace, ref: str) -> set[tuple] | None:
     return {_node_key(node) for node in candidates}
 
 
+def _simple_ref_labels(ref: str) -> tuple[set[str], set[str]] | None:
+    """Return label filters for simple one-hop refs like `*:col`.
+
+    Complex path refs still use the existing candidate materialization path.
+    """
+    _, segments = parse_urn(ref or "")
+    if len(segments) != 1:
+        return None
+    seg = segments[0]
+    if seg.get("pattern") not in ("", "*"):
+        return None
+    return set(seg.get("labels_and") or []), set(seg.get("labels_or") or [])
+
+
+def _labels_pass(labels: list[str], labels_and: set[str], labels_or: set[str]) -> bool:
+    label_set = set(labels or [])
+    if labels_and and not labels_and.issubset(label_set):
+        return False
+    if labels_or and not (labels_or & label_set):
+        return False
+    return True
+
+
+def _cached_query_embedding(embed_config, client, query: str) -> list[float]:
+    key = (embed_config.provider, embed_config.model, embed_config.dimensions, query)
+    with _EMBED_CACHE_LOCK:
+        cached = _EMBED_CACHE.get(key)
+        if cached is not None:
+            return list(cached)
+        key_lock = _EMBED_KEY_LOCKS.get(key)
+        if key_lock is None:
+            key_lock = threading.Lock()
+            _EMBED_KEY_LOCKS[key] = key_lock
+    with key_lock:
+        with _EMBED_CACHE_LOCK:
+            cached = _EMBED_CACHE.get(key)
+            if cached is not None:
+                return list(cached)
+        vector = client.embed_one(query)
+        with _EMBED_CACHE_LOCK:
+            if not vector:
+                _EMBED_KEY_LOCKS.pop(key, None)
+                return []
+            if len(_EMBED_CACHE) > 512:
+                _EMBED_CACHE.clear()
+            _EMBED_CACHE[key] = list(vector)
+            _EMBED_KEY_LOCKS.pop(key, None)
+            return vector
+
+
 def _vector_search(workspace, query: str, ref: str = "", fetch_k: int = 100) -> List[tuple]:
     ref = normalize_project_slash_ref(workspace, ref)
     embed_config = load_embedding_config()
     client = embed_config.get_client()
     if not client:
         return []
-    vector = client.embed_one(query)
+    vector = _cached_query_embedding(embed_config, client, query)
     if not vector:
         return []
 
-    try:
-        allowed = _candidate_key_set(workspace, ref)
-    except Exception:
+    simple_labels = _simple_ref_labels(ref)
+    if simple_labels is None:
+        try:
+            allowed = _candidate_key_set(workspace, ref)
+        except Exception:
+            allowed = None
+        labels_and: set[str] = set()
+        labels_or: set[str] = set()
+    else:
         allowed = None
+        labels_and, labels_or = simple_labels
 
     project, _ = parse_urn(ref or "")
     docs = []
     seen = set()
     for candidate_project in _query_projects_for_search(workspace, project):
-        for index_name in _vector_indexes(workspace, candidate_project):
+        for index_name in _vector_indexes(workspace, candidate_project, labels_and | labels_or):
             try:
                 rows = workspace.cypher(
                     f"CALL db.index.vector.queryNodes('{index_name}', $k, $vector) "
@@ -182,6 +245,8 @@ def _vector_search(workspace, query: str, ref: str = "", fetch_k: int = 100) -> 
                     continue
                 seen.add(key)
                 labels = node.get("labels", [])
+                if simple_labels is not None and not _labels_pass(labels, labels_and, labels_or):
+                    continue
                 node_project = node.get("__project")
                 node = normalize_knowledge_meta(node_project, labels, node)
                 name = node.get("name", "")
@@ -193,17 +258,39 @@ def _vector_search(workspace, query: str, ref: str = "", fetch_k: int = 100) -> 
     return docs
 
 
-def _vector_indexes(workspace, project: str | None) -> list[str]:
-    try:
-        rows = workspace.cypher(
-            "SHOW INDEXES YIELD name, type "
-            f"WHERE type = 'VECTOR' AND name STARTS WITH '{VECTOR_INDEX_PREFIX}_' "
-            "RETURN name",
-            project=project,
-        )
-    except Exception:
-        return []
-    return sorted({row.get("name") for row in rows if row.get("name")})
+def _index_label(index_name: str) -> str:
+    return index_name[len(VECTOR_INDEX_PREFIX) + 1:] if index_name.startswith(f"{VECTOR_INDEX_PREFIX}_") else ""
+
+
+def _vector_indexes(workspace, project: str | None, labels: set[str] | None = None) -> list[str]:
+    cache_key = (id(workspace), project)
+    with _VECTOR_INDEX_CACHE_LOCK:
+        cached = _VECTOR_INDEX_CACHE.get(cache_key)
+    if cached is not None:
+        indexes = cached
+    else:
+        try:
+            rows = workspace.cypher(
+                "SHOW INDEXES YIELD name, type "
+                f"WHERE type = 'VECTOR' AND name STARTS WITH '{VECTOR_INDEX_PREFIX}_' "
+                "RETURN name",
+                project=project,
+            )
+        except Exception:
+            return []
+        indexes = sorted({row.get("name") for row in rows if row.get("name")})
+        with _VECTOR_INDEX_CACHE_LOCK:
+            if len(_VECTOR_INDEX_CACHE) > 128:
+                _VECTOR_INDEX_CACHE.clear()
+            _VECTOR_INDEX_CACHE[cache_key] = indexes
+    labels = set(labels or [])
+    if labels:
+        direct = [name for name in indexes if _index_label(name) in labels]
+        if direct:
+            return direct
+        if "example" in labels and f"{VECTOR_INDEX_PREFIX}_knowledge" in indexes:
+            return [f"{VECTOR_INDEX_PREFIX}_knowledge"]
+    return indexes
 
 
 def _query_projects_for_search(workspace, project: str | None) -> list[str | None]:

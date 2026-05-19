@@ -41,6 +41,18 @@ class TextModule(StoreModule):
                 return True
         return False
 
+    def source_fingerprint(self) -> str | None:
+        if not self.project_path:
+            return None
+        parts = []
+        for rel in self._iter_text_files():
+            try:
+                stat = self.ctx.source.stat(rel)
+            except OSError:
+                continue
+            parts.append(f"{rel}:{stat.st_mtime_ns}:{stat.st_size}")
+        return "|".join(parts)
+
     def iter_virtual_nodes(self) -> list[dict]:
         nodes = []
         for rel in self._iter_text_files():

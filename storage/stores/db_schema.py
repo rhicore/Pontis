@@ -81,6 +81,18 @@ class SQLiteSchemaModule(StoreModule):
                 return True
         return False
 
+    def source_fingerprint(self) -> str | None:
+        if not self.project_path:
+            return None
+        parts = []
+        for rel in self._iter_db_files():
+            try:
+                stat = self.ctx.source.stat(rel)
+            except OSError:
+                continue
+            parts.append(f"{rel}:{stat.st_mtime_ns}:{stat.st_size}")
+        return "|".join(parts)
+
     def iter_virtual_nodes(self) -> list[dict]:
         nodes: List[dict] = []
         for db_rel in self._iter_db_files():
@@ -194,10 +206,8 @@ class SQLiteSchemaModule(StoreModule):
             statements.append(CypherStatement(
                 query=(
                     "UNWIND $edges AS edge "
-                    "MATCH (a) "
-                    "WHERE a.path = edge.a OR a._ref = edge.a OR a.ref = edge.a "
-                    "MATCH (b) "
-                    "WHERE b.path = edge.b OR b._ref = edge.b OR b.ref = edge.b "
+                    "MATCH (a {_ref: edge.a}) "
+                    "MATCH (b {_ref: edge.b}) "
                     "MERGE (a)-[:RELATED_TO]->(b)"
                 ),
                 params={
