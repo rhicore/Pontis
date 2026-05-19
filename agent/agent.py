@@ -313,8 +313,10 @@ class PontusAgent:
 
         repaired = []
         in_string = False
+        string_is_key = False
         escape = False
-        for ch in args_str:
+        stack = []
+        for idx, ch in enumerate(args_str):
             if in_string:
                 if escape:
                     repaired.append(ch)
@@ -325,8 +327,12 @@ class PontusAgent:
                     escape = True
                     continue
                 if ch == '"':
-                    repaired.append(ch)
-                    in_string = False
+                    nxt = PontusAgent._next_nonspace(args_str, idx + 1)
+                    if (string_is_key and nxt == ":") or (not string_is_key and nxt in {",", "}", "]", None}):
+                        repaired.append(ch)
+                        in_string = False
+                    else:
+                        repaired.append('\\"')
                     continue
                 if ch == "\n":
                     repaired.append("\\n")
@@ -342,6 +348,22 @@ class PontusAgent:
             repaired.append(ch)
             if ch == '"':
                 in_string = True
+                string_is_key = bool(stack and stack[-1] in {"object_key", "object_key_or_end"})
+            elif ch == "{":
+                stack.append("object_key_or_end")
+            elif ch == "[":
+                stack.append("array_value_or_end")
+            elif ch == ":" and stack and stack[-1] in {"object_key", "object_key_or_end", "object_colon"}:
+                stack[-1] = "object_value"
+            elif ch == "," and stack:
+                if stack[-1].startswith("object_"):
+                    stack[-1] = "object_key"
+                elif stack[-1].startswith("array_"):
+                    stack[-1] = "array_value"
+            elif ch == "}" and stack and stack[-1].startswith("object_"):
+                stack.pop()
+            elif ch == "]" and stack and stack[-1].startswith("array_"):
+                stack.pop()
 
         repaired_args = "".join(repaired)
         for loader in (json.loads, json.JSONDecoder(strict=False).decode):
@@ -350,7 +372,49 @@ class PontusAgent:
                 return parsed if isinstance(parsed, dict) else {}
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
+
+        balanced_args = PontusAgent._append_missing_json_closers(repaired_args)
+        if balanced_args != repaired_args:
+            for loader in (json.loads, json.JSONDecoder(strict=False).decode):
+                try:
+                    parsed = loader(balanced_args)
+                    return parsed if isinstance(parsed, dict) else {}
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
         return {}
+
+    @staticmethod
+    def _next_nonspace(text: str, start: int) -> str | None:
+        for ch in text[start:]:
+            if not ch.isspace():
+                return ch
+        return None
+
+    @staticmethod
+    def _append_missing_json_closers(text: str) -> str:
+        stack = []
+        in_string = False
+        escape = False
+        for ch in text:
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch in "{[":
+                stack.append("}" if ch == "{" else "]")
+            elif ch in "}]":
+                if not stack or stack[-1] != ch:
+                    return text
+                stack.pop()
+        if in_string or not stack:
+            return text
+        return text + "".join(reversed(stack))
 
     def reset_conversation(self):
         """Clear conversation history (keep system prompt) for a fresh session."""

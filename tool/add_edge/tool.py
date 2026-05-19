@@ -19,7 +19,7 @@ def add_edge_command(workspace, edges: list) -> str:
 
     edges 中 a/b 支持两种模式：
       - 精确名称 → 直接匹配
-      - glob 模式 → 必须匹配唯一实体
+      - ref 模式 → 必须匹配唯一实体
     """
     if not edges:
         return "错误: edges 不能为空"

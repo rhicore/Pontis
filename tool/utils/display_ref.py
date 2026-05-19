@@ -6,6 +6,7 @@ from tool.utils.resolve import selector_match_pattern, selector_params
 def node_selector(project: str | None, node_meta: dict) -> dict:
     return {
         "project": project,
+        "id": node_meta.get("id"),
         "name": node_meta.get("name", ""),
         "labels": list(node_meta.get("labels", [])),
         "path": node_meta.get("path"),
@@ -20,7 +21,7 @@ def display_ref_for_node(
     row: dict | None = None,
     main_var: str | None = None,
 ) -> str:
-    """Build a display ref consistent with glob/meta outputs."""
+    """Build a display ref consistent with find/meta outputs."""
     labels = set(node_meta.get("labels", []))
     name = node_meta.get("name", "?")
     path = node_meta.get("path")
@@ -87,6 +88,32 @@ def display_ref_for_node(
             if "file" in set(f.get("labels", [])):
                 return f"{f.get('name', '')}/{name}"
 
+    if "pattern" in labels:
+        file_path = None
+        if row:
+            for var, info in row.items():
+                if var == main_var or not isinstance(info, dict):
+                    continue
+                if "file" in set(info.get("labels", [])):
+                    file_path = info.get("path") or info.get("name")
+                    break
+        if file_path:
+            return f"{file_path}/{name}"
+
+        selector = node_selector(project, node_meta)
+        match = selector_match_pattern(selector, "n")
+        rows = workspace.cypher(
+            f"MATCH (f:file)--{match} RETURN f",
+            params=selector_params(selector),
+            project=project,
+        )
+        for extra in rows:
+            f = extra.get("f") or {}
+            if "file" in set(f.get("labels", [])):
+                file_path = f.get("path") or f.get("name")
+                if file_path:
+                    return f"{file_path}/{name}"
+
     return name
 
 
@@ -94,8 +121,11 @@ def _display_ref_from_ref(labels: set[str], ref: str | None) -> str | None:
     if not ref or "--" not in ref:
         return None
     parts = [part for part in ref.split("--") if part]
-    if "col" in labels and len(parts) >= 3:
-        return f"{parts[0]}/{parts[1]}/{parts[2]}"
+    if "col" in labels:
+        if len(parts) >= 3:
+            return f"{parts[0]}/{parts[1]}/{parts[2]}"
+        if len(parts) >= 2:
+            return f"{parts[0]}/{parts[1]}"
     if ("table" in labels or "view" in labels) and len(parts) >= 2:
         return f"{parts[0]}/{parts[1]}"
     return None

@@ -4,37 +4,26 @@
 - 匹配所有 *.json VFS 节点
 - 读取 JSON 数据
 - 提取重复模式（ARRAY 2+ 元素，DICT 2+ key）
-- 在 _entity/ 下创建 .pattern 子节点
+- 创建 pattern 子节点
 
-.pattern 节点包含：
-  source_path: context/json/users.json
+pattern 节点通过边连接到源 JSON 文件，节点自身只保存 JSON 片段结构：
   json_path:   $.users.[v]
   type:        DICT                                                  # DICT 或 ARRAY
   pattern:     each pair patterns "user_...": {role: STR}           # 模式描述
 """
 import json
-import hashlib
-import os
 import random
 import re
 import logging
 from storage.workspace import Workspace
-from extractor.modules.utils.src import file_exists, open_text_file
+from tool.utils.workspace_access import OpenFileSource, resolve_file_sources
 
 logger = logging.getLogger(__name__)
 
 
-def pattern_name_prefix(source_path: str) -> str:
-    """Return a short, stable prefix for pattern entities from one JSON file."""
-    base = os.path.basename(source_path.rstrip("/")) or "json"
-    safe_base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._-") or "json"
-    digest = hashlib.sha1(source_path.encode("utf-8")).hexdigest()[:8]
-    return f"{safe_base}.{digest}"
-
-
-def pattern_entity_name(source_path: str, json_path: str) -> str:
+def pattern_entity_name(json_path: str) -> str:
     safe_path = re.sub(r"[^A-Za-z0-9._$\[\]-]+", "_", json_path).strip("._") or "$"
-    return f"{pattern_name_prefix(source_path)}.{safe_path}.pattern"
+    return safe_path
 
 
 # ============ 类型推导 ============
@@ -300,32 +289,33 @@ def collect_patterns(data, path: str, patterns: list, max_depth: int = 20, _dept
 
 # ============ 主生成器 ============
 
-def generate(workspace: Workspace) -> None:
-    """为所有 JSON 文件生成 .pattern 子实体"""
+def generate(workspace: Workspace, max_file_size: int | None = None) -> None:
+    """为所有 JSON 文件生成 pattern 子实体"""
     logger.info("=== Generating JSON patterns ===")
 
     seen = set()
-    # 通过统一索引发现 JSON 文件（含虚拟实体）
-    rows = workspace.cypher("MATCH (n) RETURN n")
-    for row in rows:
-        props = row.get("n", {})
-        name = props.get("name", "")
-        if not name.endswith('.json'):
+    for source in resolve_file_sources(workspace, ".", labels=("json",), allow_directory=True):
+        if source.path in seen:
             continue
-        rel_path = props.get("path", name)
-        if rel_path in seen:
+        seen.add(source.path)
+        if max_file_size and source.file_size and int(source.file_size) > max_file_size:
+            logger.info(
+                "  JSON pattern skipped: %s (%.1f MB > %.1f MB limit)",
+                source.path,
+                int(source.file_size) / 1024 / 1024,
+                max_file_size / 1024 / 1024,
+            )
             continue
-        seen.add(rel_path)
         try:
-            _generate_for_json(rel_path, workspace)
+            _generate_for_json(source, workspace)
         except Exception as e:
-            logger.warning(f"Failed to generate patterns for {rel_path}: {e}")
+            logger.warning(f"Failed to generate patterns for {source.path}: {e}")
 
 
-def _generate_for_json(path: str, workspace: Workspace) -> bool:
-    """为单个 JSON 文件生成 .pattern 子实体"""
+def _generate_for_json(source: OpenFileSource, workspace: Workspace) -> bool:
+    """为单个 JSON 文件生成 pattern 子实体"""
     # 读取 JSON 数据
-    data = _load_json(path, workspace)
+    data = _load_json(source)
     if data is None:
         return False
 
@@ -336,54 +326,65 @@ def _generate_for_json(path: str, workspace: Workspace) -> bool:
     if not patterns:
         return False
 
-    # 为每个模式创建 .pattern 子实体
+    # 为每个模式创建 pattern 子实体
     for pat in patterns:
-        _write_pattern(path, pat, workspace)
+        _write_pattern(source.path, pat, workspace)
 
-    logger.info(f"  Patterns: {path} ({len(patterns)} entities)")
+    logger.info(f"  Patterns: {source.path} ({len(patterns)} entities)")
     return True
 
 
-def _load_json(path: str, workspace: Workspace):
+def _load_json(source: OpenFileSource):
     """从源文件加载 JSON 数据"""
-    meta_rows = workspace.cypher(
-        "MATCH (n:file) WHERE n.path = $path OR n.name = $path RETURN n",
-        params={"path": path},
-    )
-    meta = meta_rows[0].get("n") if meta_rows else None
-    rel_path = meta.get("path") if meta else None
-    if rel_path and file_exists(workspace, rel_path):
-        try:
-            with open_text_file(workspace, rel_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, Exception) as e:
-            logger.debug(f"Failed to load JSON from {rel_path}: {e}")
-
+    try:
+        with source.open_file('r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, Exception) as e:
+        logger.debug(f"Failed to load JSON from {source.path}: {e}")
     return None
 
 
 def _write_pattern(file_path: str, pat: dict, workspace: Workspace) -> None:
-    """写入单个 .pattern 实体"""
-    entity_name = pattern_entity_name(file_path, pat["name"])
+    """写入单个 pattern 实体"""
+    entity_name = pattern_entity_name(pat["name"])
+    json_path = pat["name"]
+    props = {
+        "labels": ["pattern"],
+        "name": entity_name,
+        "json_path": json_path,
+        "type": pat["type"],
+        "pattern": pat["pattern"],
+    }
+
+    existing = workspace.cypher(
+        "MATCH (f:file)--(p:pattern) "
+        "WHERE (f.path = $file_path OR f.name = $file_path) "
+        "AND p.json_path = $json_path "
+        "RETURN p LIMIT 1",
+        params={"file_path": file_path, "json_path": json_path},
+    )
+    if existing:
+        workspace.cypher(
+            "MATCH (f:file)--(p:pattern) "
+            "WHERE (f.path = $file_path OR f.name = $file_path) "
+            "AND p.json_path = $json_path "
+            "SET p += $props "
+            "RETURN p",
+            params={"file_path": file_path, "json_path": json_path, "props": props},
+        )
+        return
 
     workspace.cypher(
-        "MERGE (p:pattern {name: $name}) SET p += $props",
-        params={
-            "name": entity_name,
-            "props": {
-                "labels": ["pattern"],
-                "path": entity_name,
-                "source_path": file_path,
-                "json_path": pat["name"],
-                "source_pattern_name": pat["name"],
-                "type": pat["type"],
-                "pattern": pat["pattern"],
-            },
-        },
-    )
-    workspace.cypher(
-        "MATCH (f:file), (p:pattern {name: $entity_name}) "
+        "MATCH (f:file) "
         "WHERE f.path = $file_path OR f.name = $file_path "
-        "MERGE (f)-[:RELATED_TO]->(p)",
-        params={"file_path": file_path, "entity_name": entity_name},
+        "CREATE (p:pattern {name: $name}) "
+        "SET p.id = 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8) "
+        "SET p += $props "
+        "MERGE (f)-[:RELATED_TO]->(p) "
+        "RETURN p",
+        params={
+            "file_path": file_path,
+            "name": entity_name,
+            "props": props,
+        },
     )

@@ -146,6 +146,7 @@ def resolve_entity_selector(workspace, ref: str) -> tuple[dict | None, str | Non
         return None, err
     return {
         "project": node.get("__project") or None,
+        "id": node.get("id"),
         "name": node.get("name", ref),
         "labels": list(node.get("labels", [])),
         "path": node.get("path"),
@@ -161,6 +162,8 @@ def canonical_ref(node: dict, fallback: str = "") -> str:
 
 def selector_match_pattern(selector: dict, var: str = "n", name_param: str = "name") -> str:
     labels = cypher_label_clause(selector.get("labels", []))
+    if selector.get("id"):
+        return f"({var}{labels} {{id: $id}})"
     if selector.get("path"):
         return f"({var}{labels} {{path: $path}})"
     if selector.get("ref"):
@@ -171,7 +174,9 @@ def selector_match_pattern(selector: dict, var: str = "n", name_param: str = "na
 
 def selector_params(selector: dict, base: dict | None = None, name_param: str = "name") -> dict:
     params = dict(base or {})
-    if selector.get("path"):
+    if selector.get("id"):
+        params["id"] = selector["id"]
+    elif selector.get("path"):
         params["path"] = selector["path"]
     elif selector.get("ref"):
         params["ref"] = selector["ref"]
@@ -264,6 +269,15 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
     normalized_parts = [_strip_display_label_suffix(p) for p in parts]
     normalized_ref = "/".join(normalized_parts)
     requested_labels = _display_labels_from_last_segment(parts[-1] if parts else "")
+
+    pattern_node, pattern_err = _resolve_file_pattern_ref(
+        workspace,
+        project,
+        local_ref,
+        requested_labels,
+    )
+    if pattern_node or pattern_err:
+        return pattern_node, pattern_err
 
     candidates = []
     for ref in _candidate_structured_refs(normalized_ref):
@@ -361,6 +375,43 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
     return None, f"未找到匹配的实体: {local_ref}"
 
 
+def _resolve_file_pattern_ref(
+    workspace,
+    project: str | None,
+    local_ref: str,
+    requested_labels: set[str],
+) -> tuple[dict | None, str | None]:
+    raw_parts = [p for p in local_ref.split("/") if p]
+    if len(raw_parts) < 2:
+        return None, None
+
+    pattern_ref = _strip_display_label_suffix(raw_parts[-1])
+    if "pattern" not in requested_labels:
+        return None, None
+
+    file_ref = "/".join(_strip_display_label_suffix(part) for part in raw_parts[:-1])
+    json_path = pattern_ref
+    candidates = [pattern_ref]
+
+    rows = _run_cypher_projects(
+        workspace,
+        "MATCH (f:file)--(p:pattern) "
+        "WHERE (f.path = $file_ref OR f.name = $file_ref) "
+        "AND (p.name IN $candidates OR p.json_path IN $candidates) "
+        "RETURN p",
+        params={"file_ref": file_ref, "candidates": candidates},
+        project=project,
+    )
+    nodes = _dedupe_nodes(row.get("p") for row in rows if row.get("p"))
+    if requested_labels:
+        nodes = _filter_by_requested_labels(nodes, requested_labels)
+    if not nodes:
+        return None, f"未找到匹配的实体: {local_ref}"
+    if len(nodes) > 1:
+        return None, f"匹配到多个实体: {local_ref}"
+    return nodes[0], None
+
+
 def _resolve_direct_candidate(
     workspace,
     project: str | None,
@@ -430,7 +481,7 @@ def _dedupe_nodes(nodes) -> list[dict]:
 
 
 def _lookup_urn_nodes(workspace, ref: str) -> list[dict]:
-    from tool.glob.tool import _apply_post_filters, _build_cypher, _execute_projects, parse_urn
+    from tool.utils.ref_match import _apply_post_filters, _build_cypher, _execute_projects, parse_urn
 
     project, segments = parse_urn(ref)
     cypher, post_filters = _build_cypher(segments)

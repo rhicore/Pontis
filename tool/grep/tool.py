@@ -33,8 +33,8 @@ VCS_EXCLUDE = ['.git', '.svn', '.hg', '.bzr', '.jj', '.sl']
 class GrepParams:
     """Parsed grep parameters matching CC's interface."""
     pattern: str
-    path: Optional[str] = None
-    glob: Optional[str] = None
+    ref: Optional[str] = None
+    file_pattern: Optional[str] = None
     output_mode: str = "files_with_matches"  # content | files_with_matches | count
     context_before: Optional[int] = None  # -B
     context_after: Optional[int] = None   # -A
@@ -52,8 +52,8 @@ def _parse_grep_params(pattern: str, **kwargs) -> GrepParams:
     grep_conf = TOOL_PAGINATION["grep"]
     return GrepParams(
         pattern=pattern,
-        path=kwargs.get('path'),
-        glob=kwargs.get('glob'),
+        ref=kwargs.get('ref'),
+        file_pattern=kwargs.get('file_pattern'),
         output_mode=kwargs.get('output_mode', 'files_with_matches'),
         case_insensitive=kwargs.get('ignore_case', False),
         type_filter=kwargs.get('type'),
@@ -111,8 +111,8 @@ def _run_ripgrep(params: GrepParams, search_path: str) -> List[str]:
     if params.type_filter:
         args.extend(['--type', params.type_filter])
 
-    if params.glob:
-        for p in params.glob.split(','):
+    if params.file_pattern:
+        for p in params.file_pattern.split(','):
             p = p.strip()
             if p:
                 args.extend(['--glob', p])
@@ -333,9 +333,9 @@ def _physical_path_for_unique_source(source: OpenFileSource) -> str:
 def grep_command(
     workspace,
     pattern: str = "",
-    path: str = "",
+    ref: str = "",
     output_mode: str = "files_with_matches",
-    glob: Optional[str] = None,
+    file_pattern: Optional[str] = None,
     ignore_case: bool = False,
     head_limit: int = 250,
     offset: int = 0,
@@ -348,9 +348,9 @@ def grep_command(
     Args:
         workspace: Workspace 实例
         pattern: Regex pattern (ripgrep syntax)
-        path: File or directory to search
+        ref: File or directory graph ref to search
         output_mode: "content", "files_with_matches", or "count"
-        glob: File name filter
+        file_pattern: File name filter
         ignore_case: Case insensitive search
         head_limit: Max output entries
         offset: Starting index (0-based)
@@ -369,9 +369,9 @@ def grep_command(
 
     params = _parse_grep_params(
         pattern=pattern,
-        path=path,
+        ref=ref,
         output_mode=output_mode,
-        glob=glob,
+        file_pattern=file_pattern,
         ignore_case=ignore_case,
         head_limit=head_limit,
         offset=offset,
@@ -380,8 +380,9 @@ def grep_command(
     # Resolve search path through storage handles. grep/read only operate on
     # files marked :text; the local filesystem path is only used as an optional
     # ripgrep optimization after storage has returned an open_file handle.
-    if params.path:
-        search_rel = normalize_rel_path(params.path, current_cwd)
+    selector = (params.ref or "").strip()
+    if selector:
+        search_rel = normalize_rel_path(selector, current_cwd)
     else:
         search_rel = current_cwd or "."
 
@@ -391,11 +392,11 @@ def grep_command(
         labels=("text",),
         current_cwd="",
         allow_directory=True,
-        glob=params.glob,
+        file_pattern=params.file_pattern,
     )
 
     if not sources:
-        return f"Path does not exist or is not a text file: {params.path or '.'}"
+        return f"Ref does not exist or is not a text file: {selector or '.'}"
 
     root_path = getattr(workspace, "project_path", "") or "."
     raw_results = None
@@ -424,7 +425,7 @@ def grep_command(
         sorted_results = _sort_by_mtime(raw_results)
         limited, applied_limit = _apply_head_limit(sorted_results, params.head_limit, params.offset)
         limited = _to_relative_paths(limited, root_path)
-        return _format_files_output(limited, len(limited), applied_limit)
+        return _format_files_output(limited, len(sorted_results), applied_limit)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
-"""Glob tool — URN 语法查询，翻译为标准 Cypher。
+"""Ref matching — graph ref syntax translated to Cypher.
 
 语法：
-  pattern                              名称 glob
-  pattern:label:label                  名称 glob + 标签过滤
+  pattern                              名称通配匹配
+  pattern:label:label                  名称通配匹配 + 标签过滤
   pattern:label1|label2                OR 标签过滤
   seg1/seg2/seg3                       多跳遍历（/ 分隔）
   seg1/**/seg3                         变长遍历（** = [*1..N]）
@@ -17,14 +17,13 @@
 """
 import json
 from fnmatch import fnmatch
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from storage.query_inspector import cypher_label_clause, is_valid_label
 from tool.config import TOOL_PAGINATION
 from tool.utils.formatters import format_entity_name, get_info
 from tool.utils.display_ref import display_ref_for_node
 from tool.utils.knowledge_meta import normalize_knowledge_meta
-from tool.utils.resolve import selector_match_pattern
 
 
 # ═══════════════════════════════════════════════════════════
@@ -99,7 +98,7 @@ def normalize_project_slash_ref(workspace, ref: str) -> str:
 # ═══════════════════════════════════════════════════════════
 
 def _pattern_to_cypher_name(pattern: str, var: str = "n") -> Tuple[str, Optional[str]]:
-    """将 glob pattern 翻译为 Cypher WHERE 子句。
+    """将通配 pattern 翻译为 Cypher WHERE 子句。
 
     Returns:
         (cypher_clause, post_filter_pattern)
@@ -125,7 +124,7 @@ def _pattern_to_cypher_name(pattern: str, var: str = "n") -> Tuple[str, Optional
             and "*" not in pattern[1:-1] and "?" not in pattern and "[" not in pattern):
         return (f"{var}.name CONTAINS {json.dumps(pattern[1:-1])}", None)
 
-    # 复杂 glob → 后处理
+    # 复杂通配 → 后处理
     return ("", pattern)
 
 
@@ -144,7 +143,7 @@ def _build_cypher(segments: List[dict]) -> Tuple[str, List[tuple]]:
 
     Returns:
         (cypher_query, post_filters)
-        post_filters: [(var, "name", glob_pattern), ...]
+        post_filters: [(var, "name", wildcard_pattern), ...]
     """
     post_filters = []
     for seg in segments:
@@ -228,7 +227,7 @@ def _build_cypher(segments: List[dict]) -> Tuple[str, List[tuple]]:
 # ═══════════════════════════════════════════════════════════
 
 def _apply_post_filters(results: list, filters: list) -> list:
-    """对 Cypher 结果做 glob/label-or 后处理。"""
+    """对 Cypher 结果做通配/label-or 后处理。"""
     if not filters:
         return results
 
@@ -313,18 +312,18 @@ def _knowledge_priority(labels: List[str]) -> int:
     return 5
 
 
-def glob_command(workspace, ref: str, offset: int = 0,
-                 limit: Optional[int] = None, current_cwd: str = "") -> str:
+def match_ref_command(workspace, ref: str, offset: int = 0,
+                      limit: Optional[int] = None, current_cwd: str = "") -> str:
     """URN 语法查询，翻译为标准 Cypher 执行。
 
     Args:
         workspace: Workspace 实例
-        ref: URN pattern（glob 模式、标签过滤、多跳遍历）
+        ref: URN pattern（通配模式、标签过滤、多跳遍历）
         offset: 起始索引
         limit: 每页最大条数
     """
     ref = normalize_project_slash_ref(workspace, ref)
-    page_conf = TOOL_PAGINATION["glob"]
+    page_conf = TOOL_PAGINATION["find"]
     if limit is None:
         limit = page_conf.default_limit
         # bird 知识总表常作为索引页使用，默认多展示一些，减少翻页和漏看。
@@ -336,10 +335,10 @@ def glob_command(workspace, ref: str, offset: int = 0,
     project, segments = parse_urn(ref)
     cypher, post_filters = _build_cypher(segments)
 
-    # 执行 Cypher。project:: 是整条 glob 的路由，不是节点属性过滤。
+    # 执行 Cypher。project:: 是整条 ref 查询的路由，不是节点属性过滤。
     results = _execute_projects(workspace, cypher, project)
 
-    # 后处理（复杂 glob / label OR）
+    # 后处理（复杂通配 / label OR）
     if post_filters:
         results = _apply_post_filters(results, post_filters)
 
@@ -395,9 +394,9 @@ def glob_command(workspace, ref: str, offset: int = 0,
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 3:
-        print("Usage: python -m tool.glob.tool <project_name> <ref>")
+        print("Usage: python -m tool.utils.ref_match <project_name> <ref>")
         sys.exit(1)
 
     from storage.workspace import Workspace
     ws = Workspace(active_projects=[sys.argv[1]])
-    print(glob_command(ws, sys.argv[2]))
+    print(match_ref_command(ws, sys.argv[2]))

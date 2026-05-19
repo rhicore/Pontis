@@ -1,4 +1,4 @@
-"""Search tool — vector semantic search with BM25 fallback.
+"""Entity query matching — vector semantic lookup with BM25 fallback.
 
 优先使用 Neo4j detail embedding vector index；没有 embedding 配置或索引时，
 回退到基于 brief/detail 的 BM25 评分。
@@ -10,7 +10,7 @@ from collections import Counter
 from typing import List, Optional
 
 from tool.config import TOOL_PAGINATION
-from tool.glob.tool import (
+from tool.utils.ref_match import (
     _apply_post_filters,
     _build_cypher,
     _execute_projects,
@@ -377,7 +377,7 @@ def _bm25_search(workspace, query: str, ref: str = "",
     return results
 
 
-def search_command(
+def search_entities_command(
     workspace,
     ref: str,
     query: str,
@@ -385,9 +385,9 @@ def search_command(
     limit: Optional[int] = None,
     current_cwd: str = ""
 ) -> str:
-    """BM25 语义检索，搜索实体的 brief 和 detail。"""
+    """语义检索实体的 brief 和 detail。"""
     ref = normalize_project_slash_ref(workspace, ref)
-    page_conf = TOOL_PAGINATION["search"]
+    page_conf = TOOL_PAGINATION["find"]
     if limit is None:
         limit = page_conf.default_limit
     limit = min(limit, page_conf.max_limit)

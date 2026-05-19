@@ -13,7 +13,7 @@ BIRD benchmark 的 train 和 dev 使用**完全不同的数据库**（0 重叠�
 | 维度 | 传统 RAG (mask + retrieve) | Pontis 经验提取 |
 |---|---|---|
 | 存储内容 | 字段名 mask 后的 golden SQL | 抽象知识（模式、约定、术语） |
-| 检索方式 | 向量相似度匹配问题 | agent 按需 glob/meta |
+| 检索方式 | 向量相似度匹配问题 | agent 按需 find/meta |
 | 跨库迁移性 | 低（依赖 schema 相似度） | 高（知识已脱离具体 schema） |
 | 知识类型 | 单一（SQL 片段） | 多维（约定、模式、术语、教训、示例） |
 | 质量控制 | 人工审核 | 正确性验证 + agent 反思 |
@@ -124,7 +124,7 @@ meta:
 │                                              │
 │  dev.json ──→ Agent ──→ SQL 生成             │
 │                │                             │
-│                ├── glob "knowledge:*"        │
+│                ├── find(ref="*:knowledge")   │
 │                ├── meta("xxx.convention")    │
 │                └── 应用相关知识指导 SQL 生成   │
 └─────────────────────────────────────────────┘
@@ -231,10 +231,10 @@ lessons = store.find_nodes("knowledge:*.lesson")
 
 SQL 模式、术语、示例是**参考性知识**，agent 按需查询。
 
-agent 的 _sql.py 中已有 glob/meta 工具链，知识实体和数据实体用同样的方式访问：
-- `glob "knowledge:*.convention"` → 发现所有约定
+agent 的 _sql.py 中已有 find/meta 工具链，知识实体和数据实体用同样的方式访问：
+- `find(ref="*:knowledge:convention")` → 发现所有约定
 - `meta("no_extra_filter.convention")` → 读取详情
-- `glob "knowledge:*.pattern"` → 发现所有 SQL 模式
+- `find(ref="*:knowledge:pattern")` → 发现所有 SQL 模式
 
 ### 知识检索时机
 
@@ -245,7 +245,7 @@ agent 在生成 SQL 的过程中，以下时机自然触发知识检索：
 3. **遇到不熟悉的术语时**：查看是否有相关的 term
 4. **生成 SQL 后自检时**：对照 convention 检查
 
-不需要额外的检索逻辑——agent 已经有 glob/meta 工具，知识实体和数据实体用同样的方式访问。
+不需要额外的检索逻辑——agent 已经有 find/meta 工具，知识实体和数据实体用同样的方式访问。
 
 ---
 

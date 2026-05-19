@@ -13,11 +13,11 @@ MAX_LIMIT = 500
 MAX_VALUE_CHARS = 120
 
 
-def _split_vfs_path(path: str) -> tuple[str, list[str]]:
-    if "#" in path:
-        file_path, inner = path.split("#", 1)
+def _split_vfs_path(ref: str) -> tuple[str, list[str]]:
+    if "#" in ref:
+        file_path, inner = ref.split("#", 1)
     else:
-        file_path, inner = path, ""
+        file_path, inner = ref, ""
     inner = inner.strip()
     if inner.startswith("/"):
         inner = inner[1:]
@@ -26,29 +26,30 @@ def _split_vfs_path(path: str) -> tuple[str, list[str]]:
     return file_path, [unquote(part) for part in inner.split("/") if part != ""]
 
 
-def _join_child_path(file_path: str, parent: list[str], child: str) -> str:
-    parts = parent + [child]
-    encoded = "/".join(quote(str(part), safe="") for part in parts)
-    return f"{file_path}#/{encoded}"
-
-
 def _type_name(value) -> str:
     if value is None:
-        return "null"
+        return "NULL"
     if isinstance(value, dict):
-        return "object"
+        return "DICT"
     if isinstance(value, list):
-        return "array"
+        return "ARRAY"
     if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, (int, float)):
-        return "number"
-    return "string"
+        return "BOOL"
+    if isinstance(value, int):
+        return "INT"
+    if isinstance(value, float):
+        return "FLOAT"
+    if isinstance(value, str):
+        return "STR"
+    return type(value).__name__.upper()
 
 
 def _preview(value, max_chars: int) -> str:
     if isinstance(value, dict):
-        return f"{len(value)} pairs"
+        keys = list(value.keys())
+        preview = ", ".join(str(key) for key in keys[:8])
+        suffix = ", ..." if len(keys) > 8 else ""
+        return f"{len(value)} keys" + (f": {preview}{suffix}" if keys else "")
     if isinstance(value, list):
         return f"{len(value)} items"
     if value is None:
@@ -97,24 +98,37 @@ def _schema_summary(items: list) -> str:
         if len(keys) >= 20:
             break
     suffix = "..." if len(seen) > len(keys) else ""
-    return f"schema keys: {', '.join(keys)}{suffix}"
+    return f"array item keys: {', '.join(keys)}{suffix}"
+
+
+def _current_path(file_path: str, parent: list[str]) -> str:
+    if not parent:
+        return file_path
+    encoded = "/".join(quote(str(p), safe="") for p in parent)
+    return f"{file_path}#/{encoded}"
+
+
+def _child_path_hint(current: str) -> str:
+    if "#" in current:
+        return f'{current}/<key-or-index>'
+    return f'{current}#/<key-or-index>'
 
 
 def _format_children(file_path: str, parent: list[str], value, limit: int, offset: int, max_value_chars: int) -> str:
     lines = []
-    current = f"{file_path}#/{'/'.join(quote(str(p), safe='') for p in parent)}" if parent else file_path
-    lines.append(f"{current} ({_type_name(value)})")
+    current = _current_path(file_path, parent)
+    lines.append(f"{current}")
+    lines.append(f"value type: {_type_name(value)}")
 
     if isinstance(value, dict):
         items = list(value.items())
         total = len(items)
         page = items[offset:offset + limit]
-        lines.append("key | type | preview | path")
-        lines.append("--- | --- | --- | ---")
+        lines.append("key/index | value type | value info")
+        lines.append("--- | --- | ---")
         for key, child in page:
             lines.append(
-                f"{key} | {_type_name(child)} | {_preview(child, max_value_chars)} | "
-                f"{_join_child_path(file_path, parent, str(key))}"
+                f"{key} | {_type_name(child)} | {_preview(child, max_value_chars)}"
             )
     elif isinstance(value, list):
         total = len(value)
@@ -122,39 +136,42 @@ def _format_children(file_path: str, parent: list[str], value, limit: int, offse
         summary = _schema_summary(value)
         if summary:
             lines.append(summary)
-        lines.append("index | type | preview | path")
-        lines.append("--- | --- | --- | ---")
+        lines.append("key/index | value type | value info")
+        lines.append("--- | --- | ---")
         for idx, child in page:
             lines.append(
-                f"{idx} | {_type_name(child)} | {_preview(child, max_value_chars)} | "
-                f"{_join_child_path(file_path, parent, str(idx))}"
+                f"{idx} | {_type_name(child)} | {_preview(child, max_value_chars)}"
             )
     else:
-        return f"{current} ({_type_name(value)})\n{_preview(value, max_value_chars)}"
+        lines.append(f"value info: {_preview(value, max_value_chars)}")
+        return "\n".join(lines)
 
     if total == 0:
         lines.append("(empty)")
     shown_to = min(offset + limit, total)
     lines.append(f"\nShowing {offset}-{shown_to} of {total}.")
+    if total:
+        lines.append(f"Open child: jd(ref=\"{_child_path_hint(current)}\")")
     if shown_to < total:
-        lines.append(f"Next page: jd(path=\"{current}\", offset={shown_to}, limit={limit})")
+        lines.append(f"Next page: jd(ref=\"{current}\", offset={shown_to}, limit={limit})")
     return "\n".join(lines)
 
 
 def jd_command(
     workspace,
-    path: str,
+    ref: str = "",
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
     max_value_chars: int = MAX_VALUE_CHARS,
 ) -> str:
     """Browse a JSON file or a JSON inner path."""
-    if not path:
-        return "Error: missing required field 'path'"
+    selector = (ref or "").strip()
+    if not selector:
+        return "Error: missing required field 'ref'"
 
-    file_path, segments = _split_vfs_path(path)
+    file_path, segments = _split_vfs_path(selector)
     if not file_path:
-        return "Error: missing JSON file path before '#'"
+        return "Error: missing JSON file ref before '#'"
 
     sources = resolve_file_sources(workspace, file_path, labels=("json",), allow_directory=False)
     if not sources and file_path.lower().endswith(".json"):

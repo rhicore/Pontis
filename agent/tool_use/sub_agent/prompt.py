@@ -15,9 +15,9 @@ DETAIL = """\
 - max_rounds: 子智能体最大 tool call 轮次，默认 40
 - description: 简短的任务摘要，用于日志显示
 
-使用建议：
-- task 中要包含完整的上下文：目标、已知信息、具体要求
-- 不要写 "根据你的发现来修复问题" 这类模糊指令——把你的理解写进 task
+任务书写：
+- task 中包含完整的上下文：目标、已知信息、具体要求
+- 把当前理解、目标实体、输出格式写进 task
 - 需要简短回复时明确说明（如 "200字以内回复"）
 - 子智能体返回结构化 JSON 报告：status（completed / max_rounds_reached）、rounds_used、tools_called、result
 - 如果 status 为 max_rounds_reached，result 中会包含子智能体的任务报告（已完成/未完成列表），据此补做剩余部分

@@ -17,7 +17,7 @@ def update_meta_command(workspace, ref: str, fields: dict) -> str:
 
     ref 支持两种模式：
       - 精确名称 → 直接匹配
-      - glob 模式 → 必须匹配唯一实体
+      - ref 模式 → 必须匹配唯一实体
     """
     invalid = set(fields.keys()) - _ALLOWED_FIELDS
     if invalid:

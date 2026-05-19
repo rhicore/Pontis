@@ -4,14 +4,14 @@ from agent.guardrail_api import CallVerdict, Guardrail, GuardrailContext
 
 
 class ExplorationCheck(Guardrail):
-    """阻止把 glob('*') 当作起手式探索。"""
+    """阻止把 find('*') 当作起手式探索。"""
 
     def check(self, ctx: GuardrailContext) -> dict:
         result = {}
         history_names = [name for name, _, _ in ctx.tool_history]
 
         for i, (name, args) in enumerate(ctx.pending_calls):
-            if name != "glob":
+            if name != "find":
                 continue
 
             ref = str(args.get("ref", "")).strip()

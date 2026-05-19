@@ -19,14 +19,15 @@ def _clamp_range(start_line: int, end_line: int) -> tuple[int, int]:
 
 def read_command(
     workspace,
-    path: str,
+    ref: str = "",
     start_line: int = 1,
     end_line: int | None = None,
     current_cwd: str = "",
 ) -> str:
     """Read text file lines using the file node's open_file handle."""
-    if not path:
-        return "Error: missing required field 'path'"
+    selector = (ref or "").strip()
+    if not selector:
+        return "Error: missing required field 'ref'"
 
     if end_line is None:
         end_line = int(start_line or 1) + 119
@@ -34,16 +35,16 @@ def read_command(
 
     sources = resolve_file_sources(
         workspace,
-        path,
+        selector,
         labels=("text",),
         current_cwd=current_cwd,
         allow_directory=False,
     )
     if not sources:
-        return f"Error: text file not found or not readable via storage: {path}"
+        return f"Error: text file not found or not readable via storage: {selector}"
     if len(sources) > 1:
         options = "\n".join(f"- {src.path}" for src in sources[:20])
-        return f"Error: ambiguous text file path: {path}\n{options}"
+        return f"Error: ambiguous text file ref: {selector}\n{options}"
 
     src = sources[0]
     lines = []

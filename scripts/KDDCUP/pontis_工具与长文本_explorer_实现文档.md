@@ -12,11 +12,10 @@ KDD 第一阶段需要的三类能力已经基本具备：
 
 还没完全收口的关键点：
 
-1. `read(chunk_ref)` 还没实现，现在只能 `read(source_path, start_line, end_line)`。
-2. `update_meta` 只允许写 `brief/detail`，但 `agent_text_chunk` prompt 还要求写 `chunk_status/chunk_count/chunk_detail`，这会被工具拒绝。
-3. 大 JSON 现在仍主要是 `json.load`，`jd` 多次调用会重复解析，hidden 大文件可能需要缓存或采样优化。
-4. CSV 的 AI summary 已有逐文件 agent，但还没做批量 runner 的并发/限流策略。
-5. KDD runner 还没有把 `json_pattern -> agent_json_pattern_summary -> agent_text_chunk -> csv_column_stats -> agent_csv_summary -> DB extractor` 串成稳定预处理流程。
+1. `read(chunk_ref)` 还没实现，现在只能通过源文件路径和 chunk 行号回读。
+2. 大 JSON 现在仍主要是 `json.load`，`jd` 多次调用会重复解析，hidden 大文件可能需要缓存或采样优化。
+3. CSV 的 AI summary 已有逐文件 agent，但还没做批量 runner 的并发/限流策略。
+4. KDD runner 已能串起静态、AI 和 agent 阶段，但还需要更多 public task 端到端验收。
 
 ## 已实现
 
@@ -77,7 +76,7 @@ agent/tool_use/grep/prompt.py
 - 默认只搜索 `:file:text`。
 - 优先使用 storage 返回的 `open_file` 句柄逐行读取。
 - 只在安全的本地 fs workspace、且解析到单个本地文件时，用 ripgrep 优化。
-- 支持 `content/count/files_with_matches`、`ignore_case`、`glob`、`offset/head_limit`。
+- 支持 `content/count/files_with_matches`、`ignore_case`、`file_pattern`、`offset/head_limit`。
 
 ### read
 
@@ -96,8 +95,8 @@ agent/tool_use/read/prompt.py
 
 当前缺口：
 
-- 还不能直接 `read(path="<chunk ref>")`。
-- 推荐下一步让 read 支持 `:chunk` sugar：解析 chunk 的 `source_path/start_line/end_line`，再回读源文本文件。
+- 还不能直接 `read(ref="<chunk ref>")`。
+- 推荐下一步让 read 支持 `:chunk` sugar：解析 chunk 的相邻源文件边和 `start_line/end_line`，再回读源文本文件。
 
 ### CSV profile
 
@@ -143,8 +142,10 @@ agent/tool_use/jd/prompt.py
 - 路径格式：`file.json#/records/0/name`。
 - 通过 JSON 文件节点的 `open_file` 读取。
 - 只展示当前 JSON 路径的直接子项。
+- 输出列固定为 `key/index | value type | value info`，不在每行重复显示子路径。
+- value type 使用 `DICT/ARRAY/STR/INT/FLOAT/BOOL/NULL`。
 - 支持 `limit/offset/max_value_chars`。
-- list[dict] 会展示 schema keys 摘要。
+- list[dict] 会展示 array item keys 摘要。
 
 当前缺口：
 
@@ -164,23 +165,20 @@ extractor/modules/json_pattern.py
 - 离线读取 JSON 文件。
 - 提取重复结构 pattern：`ARRAY`、`DICT`、map-like dict。
 - 创建 `:pattern` 节点。
-- pattern 节点现在带来源文件前缀和 hash，避免不同 JSON 的 `$.pattern` 撞名。
+- pattern 节点名只使用 JSON path；来源 JSON 文件通过 `(file)-[:RELATED_TO]->(pattern)` 边表达。
 
 pattern 名示例：
 
 ```text
-posts.json.3e5b456b.$.records.[n].pattern:pattern
+context/json/posts.json/$.records.[n]:pattern
 ```
 
 pattern meta：
 
 ```text
-source_path
 json_path
 type
 pattern
-brief
-detail
 ```
 
 当前缺口：
@@ -202,7 +200,8 @@ extractor/engine.py -> agent_json_pattern_summary
 - 每个 JSON 文件启动一个 writer agent。
 - agent 必须用 `jd` 查看 JSON 顶层和关键子路径。
 - agent 读取该 JSON 文件下的 pattern 节点。
-- agent 给 JSON 文件本身和每个 pattern 写 `brief/detail`。
+- agent 给 JSON 文件本身写 AI 总结。
+- agent 给每个 pattern 节点写 `brief/detail`，解释该 JSON path 的结构片段、字段含义和解题用途。
 
 推荐运行：
 
@@ -237,16 +236,16 @@ extractor/engine.py -> agent_text_chunk
 - coordinator 自己用 `read` 判断语义 chunk。
 - 长文本可用子智能体读取行号范围并返回 chunk 建议。
 - chunk label 只有 `chunk`，没有 `text_chunk`。
-- chunk 名不拼完整文件路径，使用短文件名 + source hash：
+- chunk 名只使用四位局部编号，不带 `chunk-` 前缀，不拼文件名、目录名、hash 或完整路径：
 
 ```text
-report.md.02770f62.chunk-0001:chunk
+0001:chunk
+0002:chunk
 ```
 
 chunk meta：
 
 ```text
-source_path
 chunk_index
 start_line
 end_line
@@ -260,7 +259,7 @@ detail
 (source text file)-[:RELATED_TO]->(chunk)
 ```
 
-chunk 之间不连边。顺序通过 `source_path + chunk_index` 表达。
+chunk 之间不连边。来源通过 `(source text file)-[:RELATED_TO]->(chunk)` 表达；顺序通过同一源文件边下的 `chunk_index` 表达。
 
 语义约束：
 
@@ -270,7 +269,6 @@ chunk 之间不连边。顺序通过 `source_path + chunk_index` 表达。
 
 当前缺口：
 
-- `update_meta` 目前不允许写 `chunk_status/chunk_count/chunk_detail`，text chunk prompt 中这部分需要修正。
 - 还没实现 `read(chunk_ref)`。
 - 还没在真实 KDD 文档上验证 chunk 质量和成本。
 
@@ -295,61 +293,23 @@ chunk 之间不连边。顺序通过 `source_path + chunk_index` 表达。
 
 ### P0：必须先修
 
-#### 1. 修正 `agent_text_chunk` 的源文件状态写入
-
-现状：
-
-```text
-tool/update_meta/tool.py
-```
-
-只允许：
-
-```text
-brief
-detail
-```
-
-但 `explorer/text_chunk.py` prompt 要求：
-
-```text
-chunk_status
-chunk_count
-chunk_detail
-```
-
-这会被 `update_meta` 拒绝。
-
-建议二选一：
-
-1. 扩展 `update_meta` 的允许字段，至少允许 `chunk_status/chunk_count/chunk_detail`。
-2. 保持 `update_meta` 只写 `brief/detail`，把 chunk 状态写入源文件 `detail`，不要再要求写专用字段。
-
-我倾向于方案 1，但要避免把 `update_meta` 变成任意属性写入工具。可以做 label-aware allowlist：
-
-```text
-file/text: brief, detail, chunk_status, chunk_count, chunk_detail
-chunk: brief, detail
-pattern: brief, detail
-```
-
-#### 2. 实现 `read(chunk_ref)`
+#### 1. 实现 `read(chunk_ref)`
 
 目标：
 
 ```text
-read(path="report.md.02770f62.chunk-0003")
+read(ref="0003:chunk")
 ```
 
 内部流程：
 
-1. 如果 `path` 解析到 `:chunk`，读取其 `source_path/start_line/end_line`。
-2. 再走现有 `read(source_path, start_line, end_line)`。
-3. chunk 缺字段时返回明确错误。
+1. 如果 `path` 解析到唯一的 `:chunk`，沿相邻边找到唯一源文本文件，并读取 chunk 的 `start_line/end_line`。
+2. 再走现有 `read(source_file_path, start_line, end_line)`。
+3. chunk 缺字段或 `0003:chunk` 命中多个来源文件时返回明确错误。
 
 这样 chunk 不需要 storage handle；chunk 只是派生实体。
 
-#### 3. 跑一个 public task 端到端验收
+#### 2. 跑更多 public task 端到端验收
 
 至少选一个有 JSON + doc 的 public 任务，跑：
 
@@ -365,11 +325,11 @@ agent_csv_summary
 检查：
 
 - `jd` 能正常浏览 JSON。
-- pattern 节点能被 search/meta 找到。
-- JSON 文件和 pattern 有 `brief/detail`。
+- pattern 节点能被 `find/meta` 找到。
+- JSON 文件和 pattern 节点都有 AI 生成的 `brief/detail`。
 - chunk 节点语义正常，不是机械垃圾切片。
 - `read` 能回查 chunk 原文行号。
-- CSV profile 字段能被 `meta/search/agent_analyze` 正常消费。
+- CSV profile 字段能被 `meta/find/agent_analyze` 正常消费。
 
 ### P1：性能和稳定性
 
@@ -379,7 +339,7 @@ agent_csv_summary
 
 建议：
 
-- 进程内 LRU cache，key 为 `(source_path, file_size, modified_at)`。
+- 进程内 LRU cache，key 为 `(file_path, file_size, modified_at)`。
 - 超大 JSON 只缓存 schema/sample，不缓存完整对象。
 - 或为 `records` 类大数组增加轻量索引/采样读取。
 
@@ -470,8 +430,8 @@ KDD 每题数据不同，建议加开关：
 
 优先做这三个：
 
-1. 修 `update_meta` allowlist 或改 `text_chunk` prompt，解决 chunk 状态写入冲突。
-2. 实现 `read(chunk_ref)`，让 chunk summary 和原文回查闭环。
-3. 选一个 public task 跑端到端，验证 JSON summary、pattern summary、chunk summary 是否真的帮助解题。
+1. 实现 `read(chunk_ref)`，让 chunk summary 和原文回查闭环。
+2. 选一个 public task 跑端到端，验证 JSON 文件 summary、pattern 结构索引、chunk summary 是否真的帮助解题。
+3. 持续检查 extractor/explorer 不把关系信息重复写成 `source_path` 等冗余属性。
 
 完成这三项后，再决定优先做 `jd/json_pattern` 的大 JSON 性能优化，还是先写 KDD runner 编排和 agent 成本开关。

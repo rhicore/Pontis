@@ -23,7 +23,7 @@ DETAIL = """\
    WHERE n.name CONTAINS "amount"
    WHERE n.name != "trans"
    WHERE n.row_count > 100
-8. glob 匹配（扩展）：WHERE n.name =~ "*id"
+8. 通配匹配（扩展）：WHERE n.name =~ "*id"
 
 写入语法：
 9. 创建节点：CREATE (n:table {name: "loan"}) SET n.brief = "desc"
@@ -31,7 +31,7 @@ DETAIL = """\
 11. 删除节点：MATCH (n {name: "loan"}) DELETE n
 12. 创建边：MATCH (a {name: "x"}), (b {name: "y"}) CREATE EDGE (a)--(b)
 
-每个实体都有以下标准属性：name, labels, 以及具体类型的业务属性。project 是 Cypher 执行路由，不是节点属性，不要写 `n.project` 条件。
+每个实体都有以下标准属性：name, labels, 以及具体类型的业务属性。project 是 Cypher 执行路由；节点属性条件使用实体自身字段。
 标签类型：file, db, csv, json, table, view, col, fk, rel, overlap, dir, knowledge, chunk, disambig
 """
 

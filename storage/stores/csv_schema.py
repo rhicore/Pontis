@@ -22,6 +22,11 @@ def _safe_col_name(name: str) -> str:
     return (name or "").replace("/", "_").replace("\\", "_").replace(".", "_")
 
 
+def _safe_table_name(path: str) -> str:
+    stem = os.path.splitext(os.path.basename(path or "data"))[0] or "data"
+    return _safe_col_name(stem)
+
+
 def _infer_type(sample_rows: list[list[str]], col_idx: int) -> str:
     values = []
     for row in sample_rows:
@@ -56,7 +61,7 @@ def _infer_type(sample_rows: list[list[str]], col_idx: int) -> str:
 
 class CSVSchemaModule(StoreModule):
     name = "csv_schema"
-    query_labels = {"col"}
+    query_labels = {"table", "col"}
 
     def __init__(self, ctx: ModuleContext):
         super().__init__(ctx)
@@ -145,7 +150,7 @@ class CSVSchemaModule(StoreModule):
                 query=(
                     "UNWIND $edges AS edge "
                     "MATCH (b) WHERE b._ref = edge.b OR b.ref = edge.b "
-                    "OPTIONAL MATCH (a {path: edge.a}) "
+                    "OPTIONAL MATCH (a) WHERE a.path = edge.a OR a._ref = edge.a OR a.ref = edge.a "
                     "FOREACH (_ IN CASE WHEN a IS NULL THEN [] ELSE [1] END | "
                     "MERGE (a)-[:RELATED_TO]->(b))"
                 ),
@@ -184,6 +189,8 @@ class CSVSchemaModule(StoreModule):
 
     def _build_bundle(self, csv_rel: str) -> dict:
         delimiter = "\t" if csv_rel.lower().endswith(".tsv") else ","
+        table_name = _safe_table_name(csv_rel)
+        table_ref = f"{csv_rel}--{table_name}"
         nodes: list[dict] = []
         edges: list[tuple[str, str]] = []
 
@@ -205,6 +212,15 @@ class CSVSchemaModule(StoreModule):
         except Exception:
             return {"nodes": [], "edges": []}
 
+        register({
+            "name": table_name,
+            "_ref": table_ref,
+            "column_count": len(headers),
+            "delimiter": delimiter,
+            "labels": ["table", "csv_table"],
+        })
+        link(csv_rel, table_ref)
+
         for idx, raw_col in enumerate(headers):
             col_name = _safe_col_name(raw_col)
             if not col_name:
@@ -221,6 +237,7 @@ class CSVSchemaModule(StoreModule):
             }
             register(node)
             link(csv_rel, col_ref)
+            link(table_ref, col_ref)
 
         return {"nodes": nodes, "edges": edges}
 __all__ = ["CSVSchemaModule"]

@@ -129,7 +129,7 @@ def generate(workspace: Workspace) -> None:
 
     spec = AgentSpec(mode="writer")
     spec.tools = [
-        "glob", "meta", "search", "query",
+        "find", "meta", "query",
         "create_entity", "update_meta", "add_edge", "delete",
     ]
     project_name = os.path.basename(os.path.abspath(workspace.project_path))

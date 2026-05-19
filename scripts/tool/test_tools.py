@@ -2,7 +2,7 @@
 
 Coverage:
 - path/file ref resolution for file / table / column entities
-- read tools: glob / meta / search / query / cypher / grep / bash
+- read tools: find / meta / query / cypher / grep / bash
 - write tools: update_meta / create_entity / add_edge / delete
 - negative cases for common agent mistakes
 
@@ -31,10 +31,9 @@ from tool.add_edge.tool import add_edge_command
 from tool.create_entity.tool import create_entity_command
 from tool.cypher.tool import cypher_command
 from tool.delete.tool import delete_command
-from tool.glob.tool import glob_command
+from tool.find.tool import find_command
 from tool.utils.knowledge_meta import normalize_knowledge_meta
 from tool.meta.tool import meta_command
-from tool.search.tool import search_command
 from tool.update_meta.tool import update_meta_command
 
 passed = 0
@@ -71,11 +70,21 @@ def make_books_project():
             {
                 "table": "status_records",
                 "records": [
-                    {"id": 1, "name": "Active", "kind": "address"},
-                    {"id": 2, "name": "Pending Delivery", "kind": "order"},
+                    {"id": 1, "name": "Active", "kind": "address", "score": 10},
+                    {"id": 2, "name": "Pending Delivery", "kind": "order", "score": 20},
+                    {"id": 3, "name": "No Score", "kind": "order", "score": None},
                 ],
             },
             fh,
+        )
+
+    with open(os.path.join(tmp, "orders.csv"), "w", encoding="utf-8") as fh:
+        fh.write(
+            "order_id,status,amount\n"
+            "100,received,12.5\n"
+            "101,delivered,30\n"
+            "102,delivered,7.5\n"
+            "103,delivered,\n"
         )
 
     db_path = os.path.join(tmp, "books.sqlite")
@@ -130,6 +139,7 @@ def cleanup_test_graph(ws):
         "WHERE n.path = 'books.sqlite' "
         "OR n._ref STARTS WITH 'books.sqlite--' "
         "OR n.ref STARTS WITH 'books.sqlite--' "
+        "OR (n:chunk AND n.name IN ['0001', '0002']) "
         "OR n.name IN $names "
         "DETACH DELETE n",
         params={
@@ -167,23 +177,57 @@ def main():
     ok("meta resolves file/table.col ref", "status_id" in file_dotted_col_meta and "Error:" not in file_dotted_col_meta, file_dotted_col_meta)
 
     print("\n[2] Read tools")
-    glob_tables = glob_command(ws, "books.sqlite/*:table")
-    ok("glob lists db tables", "books.sqlite/address_status" in glob_tables and "books.sqlite/order_status" in glob_tables, glob_tables)
+    ref_tables = find_command(ws, ref="books.sqlite/*:table")
+    ok("find lists db tables", "books.sqlite/address_status" in ref_tables and "books.sqlite/order_status" in ref_tables, ref_tables)
 
-    glob_cols = glob_command(ws, "books.sqlite/*:table/*:col")
-    ok("glob lists path-style columns", "books.sqlite/address_status/status_id" in glob_cols, glob_cols)
+    find_tables = find_command(ws, ref="books.sqlite/*:table")
+    ok("find lists db tables by ref", "books.sqlite/address_status" in find_tables and "books.sqlite/order_status" in find_tables, find_tables)
+
+    find_all_tables = find_command(ws, ref="*:table")
+    ok("find lists csv files as queryable tables", "orders.csv/orders" in find_all_tables, find_all_tables)
+
+    ref_cols = find_command(ws, ref="books.sqlite/*:table/*:col")
+    ok("find lists path-style columns", "books.sqlite/address_status/status_id" in ref_cols, ref_cols)
 
     display_table_meta = meta_command(ws, "books.sqlite/address_status:table", all=True)
-    ok("meta accepts glob-style table display ref", "address_status" in display_table_meta and "Error:" not in display_table_meta, display_table_meta)
+    ok("meta accepts typed table display ref", "address_status" in display_table_meta and "Error:" not in display_table_meta, display_table_meta)
 
     display_col_meta = meta_command(ws, "books.sqlite/address_status/status_id:INTEGER:col", all=True)
-    ok("meta accepts glob-style column display ref", "status_id" in display_col_meta and "Error:" not in display_col_meta, display_col_meta)
+    ok("meta accepts typed column display ref", "status_id" in display_col_meta and "Error:" not in display_col_meta, display_col_meta)
 
     typed_short_col_meta = meta_command(ws, "address_status/status_id:INTEGER:col", all=True)
     ok("meta accepts typed table/col display ref", "status_id" in typed_short_col_meta and "Error:" not in typed_short_col_meta, typed_short_col_meta)
 
     query_out = query_command(ws, 'SELECT status_id, address_status FROM address_status ORDER BY status_id', "books.sqlite")
     ok("query reads sqlite through db_connect", "Active" in query_out and "Inactive" in query_out, query_out)
+
+    query_ref_out = query_command(ws, 'SELECT COUNT(*) AS n FROM order_status', ref="books.sqlite:file:db")
+    ok("query accepts db file refs", "3" in query_ref_out and "n" in query_ref_out, query_ref_out)
+
+    csv_query_out = query_command(ws, 'SELECT status, SUM(CAST(amount AS REAL)) AS total FROM this GROUP BY status ORDER BY status', ref="orders.csv:file:csv:text")
+    ok("query reads csv refs through temporary SQL table", "delivered" in csv_query_out and "37.5" in csv_query_out, csv_query_out)
+
+    csv_avg_out = query_command(ws, 'SELECT AVG(amount) AS avg_amount FROM this WHERE status = "delivered"', ref="orders.csv:file:csv:text")
+    ok("query treats blank csv numeric cells as NULL", "18.75" in csv_avg_out, csv_avg_out)
+
+    csv_alias_out = query_command(ws, 'SELECT COUNT(*) AS n FROM orders WHERE status = "delivered"', ref="orders.csv:file:csv:text")
+    ok("query exposes csv filename alias", "3" in csv_alias_out and "n" in csv_alias_out, csv_alias_out)
+
+    json_query_out = query_command(ws, 'SELECT name FROM this WHERE kind = "order"', ref="records.json:file:json")
+    ok("query reads json records refs", "Pending Delivery" in json_query_out, json_query_out)
+
+    json_avg_out = query_command(ws, 'SELECT AVG(score) AS avg_score FROM this', ref="records.json:file:json")
+    ok("query keeps json numeric fields numeric", "15.0" in json_avg_out, json_avg_out)
+
+    workspace_query_out = query_command(
+        ws,
+        'SELECT o.order_id, s.status_value FROM orders o JOIN order_status s ON o.status = "delivered" AND s.status_id = 3 ORDER BY o.order_id',
+        ref=".",
+    )
+    ok("query workspace exposes csv and db aliases together", "101" in workspace_query_out and "Delivered" in workspace_query_out, workspace_query_out)
+
+    workspace_query_error = query_command(ws, 'SELECT * FROM missing_table', ref=".")
+    ok("query workspace error lists available tables", "Available tables in ref=\".\"" in workspace_query_error and "orders" in workspace_query_error, workspace_query_error)
 
     query_reject = query_command(ws, 'DELETE FROM address_status', "books.sqlite")
     ok("query rejects write sql", "只允许只读" in query_reject or "只允许 SELECT" in query_reject, query_reject)
@@ -254,27 +298,45 @@ def main():
         "labels:",
     ]), fk_meta)
 
-    grep_out = grep_command(ws, pattern="address status", path="README.md", output_mode="content")
+    grep_out = grep_command(ws, pattern="address status", ref="README.md", output_mode="content")
     ok("grep finds README content", "address status" in grep_out.lower(), grep_out)
 
-    grep_missing = grep_command(ws, pattern="address", path="missing.txt")
-    ok("grep reports missing path", "Path does not exist" in grep_missing, grep_missing)
+    grep_ref_out = grep_command(ws, pattern="order status", ref="*:file:text", output_mode="content")
+    ok("grep accepts text file ref patterns", "order status" in grep_ref_out.lower(), grep_ref_out)
 
-    read_out = read_command(ws, path="README.md", start_line=1, end_line=3)
+    grep_missing = grep_command(ws, pattern="address", ref="missing.txt")
+    ok("grep reports missing ref", "Ref does not exist" in grep_missing, grep_missing)
+
+    read_out = read_command(ws, ref="README.md", start_line=1, end_line=3)
     ok("read returns line-numbered text through open_file", "README.md:L1-L3" in read_out and "1 | # Books" in read_out, read_out)
 
-    jd_root = jd_command(ws, path="records.json", limit=10)
-    ok("jd browses JSON root through open_file", "records" in jd_root and "records.json#/records" in jd_root, jd_root)
+    read_ref_out = read_command(ws, ref="README.md:file:text", start_line=1, end_line=2)
+    ok("read accepts file display refs", "README.md:L1-L2" in read_ref_out and "1 | # Books" in read_ref_out, read_ref_out)
 
-    jd_records = jd_command(ws, path="records.json#/records", limit=1)
-    ok("jd paginates JSON arrays", "schema keys:" in jd_records and "records.json#/records/0" in jd_records, jd_records)
+    jd_root = jd_command(ws, ref="records.json", limit=10)
+    ok(
+        "jd browses JSON root through open_file",
+        "key/index | value type | value info" in jd_root
+        and "records | ARRAY | 3 items" in jd_root
+        and "Open child: jd(ref=\"records.json#/<key-or-index>\")" in jd_root,
+        jd_root,
+    )
+
+    jd_records = jd_command(ws, ref="records.json:file:json#/records", limit=1)
+    ok(
+        "jd accepts JSON VFS refs and paginates arrays",
+        "array item keys:" in jd_records
+        and "0 | DICT | 4 keys: id, name, kind, score" in jd_records
+        and "Open child: jd(ref=\"records.json#/records/<key-or-index>\")" in jd_records,
+        jd_records,
+    )
 
     bash_out = bash_command("printf 'tool-bash-ok'", cwd=project, workspace=ws)
     ok("bash executes command", "tool-bash-ok" in bash_out, bash_out)
 
     mixed_history = [
-        ("glob", {"ref": "books.sqlite/*:table"}, glob_tables),
-        ("search", {"ref": "*", "query": "status"}, "books.sqlite/address_status:table"),
+        ("find", {"ref": "books.sqlite/*:table"}, ref_tables),
+        ("find", {"ref": "*", "query": "status"}, "books.sqlite/address_status:table"),
         ("meta", {"ref": "books.sqlite/address_status"}, table_meta),
     ]
     read_refs = get_meta_read(mixed_history)
@@ -322,7 +384,7 @@ def main():
     ok("internal ref update writes target metadata", customer_meta.get("brief") == "Customer address status foreign key", str(customer_meta.get("brief")))
     ok("customer_address.status_id remains untouched", customer_meta.get("detail") in (None, ""), str(customer_meta.get("detail")))
 
-    print("\n[4] create_entity + search")
+    print("\n[4] create_entity + find query")
     create_out = create_entity_command(
         ws,
         "status_id_domain:disambig",
@@ -338,6 +400,48 @@ def main():
     ok("create_entity creates disambig entity", "Created: status_id_domain" in create_out, create_out)
     ok("create_entity attaches path-ref edges", "books.sqlite/address_status/status_id" in create_out and "books.sqlite/order_status/status_id" in create_out, create_out)
 
+    chunk_a = create_entity_command(
+        ws,
+        "0001:chunk",
+        meta={
+            "chunk_index": 1,
+            "start_line": 1,
+            "end_line": 2,
+            "brief": "README chunk",
+            "detail": "First README chunk.",
+        },
+        edges=[{"a": "README.md", "b": "0001:chunk"}],
+    )
+    chunk_b = create_entity_command(
+        ws,
+        "0001:chunk",
+        meta={
+            "chunk_index": 1,
+            "start_line": 1,
+            "end_line": 2,
+            "brief": "Glossary chunk",
+            "detail": "First glossary chunk.",
+        },
+        edges=[{"a": "notes/glossary.txt", "b": "0001:chunk"}],
+    )
+    ok("create_entity allows same chunk display name for different sources", "Created: 0001" in chunk_a and "Created: 0001" in chunk_b, chunk_a + "\n" + chunk_b)
+    chunk_edges = ws.cypher(
+        """
+        MATCH (f:file)--(c:chunk {name: '0001'})
+        RETURN f.path AS file_path, c.brief AS brief
+        ORDER BY file_path, brief
+        """
+    )
+    edge_pairs = {(row.get("file_path"), row.get("brief")) for row in chunk_edges}
+    ok(
+        "same-name chunks connect only to their own source files",
+        ("README.md", "README chunk") in edge_pairs
+        and ("notes/glossary.txt", "Glossary chunk") in edge_pairs
+        and ("README.md", "Glossary chunk") not in edge_pairs
+        and ("notes/glossary.txt", "README chunk") not in edge_pairs,
+        str(edge_pairs),
+    )
+
     create_entity_command(
         ws,
         "status_id:disambig",
@@ -346,10 +450,12 @@ def main():
     bare_disambig = meta_command(ws, "status_id", property=["detail"])
     ok("bare ambiguous name resolves to unique disambig entity", "use this node when the bare name is ambiguous" in bare_disambig and "Error:" not in bare_disambig, bare_disambig)
 
-    search_out = search_command(ws, "*:disambig", "address status ambiguity")
-    ok("search finds created disambig entity", "status_id_domain" in search_out, search_out)
-    path_search = search_command(ws, "*:col", "address status domain")
-    ok("search shows copyable path-style refs", "books.sqlite/" in path_search, path_search)
+    search_out = find_command(ws, ref="*:disambig", query="address status ambiguity")
+    ok("find query finds created disambig entity", "status_id_domain" in search_out, search_out)
+    find_search_out = find_command(ws, ref="*:disambig", query="address status ambiguity")
+    ok("find searches within ref scope", "status_id_domain" in find_search_out, find_search_out)
+    path_search = find_command(ws, ref="*:col", query="address status domain")
+    ok("find query shows copyable path-style refs", "books.sqlite/" in path_search, path_search)
 
     create_entity_command(
         ws,
@@ -361,14 +467,14 @@ def main():
         "knowledge_case:knowledge:example",
         meta={"brief": "status id ambiguity", "detail": "shared status id ambiguity"},
     )
-    knowledge_glob = glob_command(ws, "*:knowledge")
-    rule_idx = knowledge_glob.find("knowledge_rule:knowledge:convention")
-    example_idx = knowledge_glob.find("knowledge_case:knowledge:example")
-    ok("glob orders abstract knowledge before examples", rule_idx != -1 and example_idx != -1 and rule_idx < example_idx, knowledge_glob)
+    knowledge_find = find_command(ws, ref="*:knowledge")
+    rule_idx = knowledge_find.find("knowledge_rule:knowledge:convention")
+    example_idx = knowledge_find.find("knowledge_case:knowledge:example")
+    ok("find orders abstract knowledge before examples", rule_idx != -1 and example_idx != -1 and rule_idx < example_idx, knowledge_find)
 
-    knowledge_search = search_command(ws, "knowledge_rule:knowledge:convention", "status id ambiguity")
+    knowledge_search = find_command(ws, ref="knowledge_rule:knowledge:convention", query="status id ambiguity")
     rule_search_idx = knowledge_search.find("knowledge_rule:knowledge:convention")
-    ok("search can target abstract knowledge by exact ref", rule_search_idx != -1, knowledge_search)
+    ok("find query can target abstract knowledge by exact ref", rule_search_idx != -1, knowledge_search)
 
     create_entity_command(
         ws,
@@ -411,10 +517,10 @@ def main():
             "mistake_summary": "wrapped a direct condition into NOT EXISTS",
         },
     )
-    placeholder_search = search_command(bird_ws, "bird::placeholder_rule:knowledge:convention", "row-level filtering explicit evidence condition")
-    ok("search indexes normalized bird knowledge instead of placeholder brief/detail", "placeholder_rule:knowledge:convention" in placeholder_search, placeholder_search)
-    placeholder_glob = glob_command(bird_ws, "bird::placeholder_rule:knowledge:convention")
-    ok("glob shows normalized bird knowledge info instead of placeholder text", "use row-level filtering" in placeholder_glob or "wrapped a direct condition" in placeholder_glob, placeholder_glob)
+    placeholder_search = find_command(bird_ws, ref="bird::placeholder_rule:knowledge:convention", query="row-level filtering explicit evidence condition")
+    ok("find query indexes normalized bird knowledge instead of placeholder brief/detail", "placeholder_rule:knowledge:convention" in placeholder_search, placeholder_search)
+    placeholder_find = find_command(bird_ws, ref="bird::placeholder_rule:knowledge:convention")
+    ok("find shows normalized bird knowledge info instead of placeholder text", "use row-level filtering" in placeholder_find or "wrapped a direct condition" in placeholder_find, placeholder_find)
 
     create_entity_command(
         bird_ws,
@@ -458,8 +564,8 @@ def main():
     bare_rel_meta = meta_command(ws, "order_history.status_id->order_status.status_id", all=True)
     ok("meta prefers labeled relation entity for bare relation ref", "order_history.status_id->order_status.status_id" in bare_rel_meta and "Error:" not in bare_rel_meta, bare_rel_meta)
 
-    fk_search = search_command(ws, "*:fk", "order_history status_id order_status foreign key")
-    ok("search can find fk entities by name tokens", "order_history.status_id->order_status.status_id" in fk_search, fk_search)
+    fk_search = find_command(ws, ref="*:fk", query="order_history status_id order_status foreign key")
+    ok("find query can find fk entities by name tokens", "order_history.status_id->order_status.status_id" in fk_search, fk_search)
 
     print("\n[6] delete")
     delete_out = delete_command(ws, "books.sqlite/address_status/status_id")
@@ -486,6 +592,24 @@ def main():
     ok(
         "agent parser repairs literal newlines in JSON strings",
         PontusAgent._parse_args('{"ref":"x","fields":{"detail":"a\nb"}}').get("fields", {}).get("detail") == "a\nb",
+    )
+    ok(
+        "agent parser repairs missing closing object braces",
+        PontusAgent._parse_args('{"ref":"x","fields":{"detail":"ok"}').get("ref") == "x",
+    )
+    ok(
+        "agent parser repairs unescaped quotes in JSON string values",
+        PontusAgent._parse_args('{"ref":"x","fields":{"detail":"table（表名\"Examination\"）"}}')
+        .get("fields", {})
+        .get("detail")
+        == 'table（表名"Examination"）',
+    )
+    ok(
+        "agent parser keeps colon after quoted field names inside values",
+        PontusAgent._parse_args('{"ref":"x","fields":{"detail":"字段\"task_id\": STR"}}')
+        .get("fields", {})
+        .get("detail")
+        == '字段"task_id": STR',
     )
 
     cleanup_test_graph(ws)

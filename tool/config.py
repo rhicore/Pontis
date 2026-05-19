@@ -20,15 +20,14 @@ class PaginationConfig:
 
 
 TOOL_PAGINATION = {
-    "glob":   PaginationConfig(default_limit=20, max_limit=500),
-    "search": PaginationConfig(default_limit=100, max_limit=500),
+    "find":   PaginationConfig(default_limit=50, max_limit=500),
     "grep":   PaginationConfig(default_limit=250, max_limit=1000),
 }
 
 
 @dataclass
 class InfoTypeConfig:
-    """glob/search 的类型显示配置。info_fn 返回 dict。"""
+    """find/meta 的类型显示配置。info_fn 返回 dict。"""
     info_fn: Callable[[Dict], Dict]
     max_str_len: int = 30
 
@@ -91,7 +90,7 @@ def _c(d, suffix):
     return None
 
 
-# ========== Info 类型配置 (glob/search) — 按标签段索引 ==========
+# ========== Info 类型配置 (find/meta) — 按标签段索引 ==========
 
 INFO_TYPE_CONFIG = {
     # 文件段
@@ -241,7 +240,7 @@ META_TYPE_CONFIG = {
         max_detail_lines=None,
     ),
     "pattern": MetaTypeConfig(
-        default_keys=["source_path", "json_path", "type", "pattern", "brief", "detail"],
+        default_keys=["json_path", "type", "pattern", "brief", "detail"],
     ),
     "convention": MetaTypeConfig(
         default_keys=["brief", "detail"],
@@ -257,7 +256,7 @@ META_TYPE_CONFIG = {
     ),
     # 其他
     "chunk": MetaTypeConfig(
-        default_keys=["source_path", "start_line", "end_line", "brief", "detail"],
+        default_keys=["start_line", "end_line", "brief", "detail"],
     ),
     "directory": MetaTypeConfig(
         default_keys=["path", "child_count", "file_count", "subdir_count"],

@@ -59,9 +59,30 @@ def normalize_rel_path(path: str = "", current_cwd: str = "") -> str:
     return os.path.normpath(os.path.join(cwd, text))
 
 
+def _split_project_ref(ref: str) -> tuple[str | None, str]:
+    if "::" not in ref:
+        return None, ref
+    project, local_ref = ref.split("::", 1)
+    return project or None, local_ref
+
+
+def _strip_display_labels(ref: str) -> str:
+    """Convert a displayed file ref like `notes/a.md:file:text` to its path part."""
+    if ":" not in ref:
+        return ref
+    parts = [p for p in ref.split("/") if p]
+    if not parts:
+        return ref
+    last = parts[-1]
+    if ":" not in last:
+        return ref
+    parts[-1] = last.split(":", 1)[0]
+    return "/".join(parts)
+
+
 def _row_to_source(row: dict) -> Optional[OpenFileSource]:
     open_file = row.get("open_file")
-    if open_file is None:
+    if open_file is None or not callable(open_file):
         return None
     path = row.get("path") or getattr(open_file, "path", "")
     if not path:
@@ -92,6 +113,40 @@ def _sources_from_rows(rows: Iterable[dict]) -> list[OpenFileSource]:
     return sources
 
 
+def _sources_from_ref_pattern(workspace, ref: str, project: str | None) -> list[OpenFileSource]:
+    """Resolve a graph ref pattern to file open handles."""
+    from tool.utils.ref_match import _apply_post_filters, _build_cypher, parse_urn
+
+    _, segments = parse_urn(ref)
+    cypher, post_filters = _build_cypher(segments)
+    rows = workspace.cypher(cypher, project=project) if project else workspace.cypher(cypher)
+    if post_filters:
+        rows = _apply_post_filters(rows, post_filters)
+
+    projected = []
+    for row in rows:
+        node = None
+        for value in reversed(list(row.values())):
+            if isinstance(value, dict):
+                node = value
+                break
+        if not node:
+            continue
+        labels = node.get("labels") or []
+        if "file" not in labels:
+            continue
+        projected.append({
+            "path": node.get("path"),
+            "name": node.get("name"),
+            "labels": labels,
+            "line_count": node.get("line_count"),
+            "char_count": node.get("char_count"),
+            "file_size": node.get("file_size"),
+            "open_file": node.get("_file_open") or node.get("file_open"),
+        })
+    return _sources_from_rows(projected)
+
+
 def resolve_file_sources(
     workspace,
     path: str = "",
@@ -99,20 +154,29 @@ def resolve_file_sources(
     labels: tuple[str, ...] = (),
     current_cwd: str = "",
     allow_directory: bool = False,
-    glob: str | None = None,
+    file_pattern: str | None = None,
 ) -> list[OpenFileSource]:
     """Resolve file nodes to storage-owned FileOpen handles."""
-    rel_path = normalize_rel_path(path, current_cwd)
+    selector = (path or "").strip()
+    project, local_selector = _split_project_ref(selector)
+    local_selector = _strip_display_labels(local_selector)
+    rel_path = normalize_rel_path(local_selector, current_cwd)
     label_clause = "".join(f":{label}" for label in labels)
-    glob_patterns = [p.strip() for p in (glob or "").split(",") if p.strip()]
+    file_patterns = [p.strip() for p in (file_pattern or "").split(",") if p.strip()]
 
-    def filter_glob(items: list[OpenFileSource]) -> list[OpenFileSource]:
-        if not glob_patterns:
+    def filter_file_patterns(items: list[OpenFileSource]) -> list[OpenFileSource]:
+        if not file_patterns:
             return items
         return [
             item for item in items
-            if any(fnmatch(item.path, pat) or fnmatch(item.name, pat) for pat in glob_patterns)
+            if any(fnmatch(item.path, pat) or fnmatch(item.name, pat) for pat in file_patterns)
         ]
+
+    has_wildcards = any(c in local_selector for c in "*?[]")
+    if selector and has_wildcards:
+        sources = filter_file_patterns(_sources_from_ref_pattern(workspace, local_selector, project))
+        if sources:
+            return sorted(sources, key=lambda s: s.path)
 
     queries: list[tuple[str, dict]] = []
     if rel_path in ("", "."):
@@ -124,6 +188,14 @@ def resolve_file_sources(
             {},
         ))
     else:
+        queries.append((
+            f"MATCH (n:file{label_clause}) "
+            "WHERE n._ref = $ref OR n.ref = $ref "
+            "RETURN n.path AS path, n.name AS name, n.labels AS labels, "
+            "n.line_count AS line_count, n.char_count AS char_count, n.file_size AS file_size, "
+            "coalesce(n._file_open, n.file_open) AS open_file",
+            {"ref": selector},
+        ))
         queries.append((
             f"MATCH (n:file{label_clause} {{path: $path}}) "
             "RETURN n.path AS path, n.name AS name, n.labels AS labels, "
@@ -149,8 +221,8 @@ def resolve_file_sources(
             ))
 
     for query, params in queries:
-        rows = workspace.cypher(query, params=params)
-        sources = filter_glob(_sources_from_rows(rows))
+        rows = workspace.cypher(query, params=params, project=project) if project else workspace.cypher(query, params=params)
+        sources = filter_file_patterns(_sources_from_rows(rows))
         if sources:
             return sorted(sources, key=lambda s: s.path)
     return []

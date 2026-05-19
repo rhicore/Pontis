@@ -14,6 +14,8 @@ from tool.utils.resolve import resolve_entity_selector
 
 def _selector_pattern(selector: dict, var: str, prefix: str) -> tuple[str, dict]:
     labels = cypher_label_clause(selector.get("labels", []))
+    if selector.get("id"):
+        return f"({var}{labels} {{id: ${prefix}_id}})", {f"{prefix}_id": selector["id"]}
     if selector.get("path"):
         return f"({var}{labels} {{path: ${prefix}_path}})", {f"{prefix}_path": selector["path"]}
     if selector.get("ref"):
@@ -45,6 +47,20 @@ def _parse_ref(ref: str) -> tuple:
     return (name, labels, project)
 
 
+def _edge_source_for_created_node(edges: list | None, name: str, ref: str) -> str | None:
+    if not edges:
+        return None
+    created_refs = {name, ref}
+    for edge in edges:
+        a_name = edge.get("a", "")
+        b_name = edge.get("b", "")
+        if a_name in created_refs and b_name:
+            return b_name
+        if b_name in created_refs and a_name:
+            return a_name
+    return None
+
+
 def _has_wildcards(ref: str) -> bool:
     return any(c in ref for c in '*?[]')
 
@@ -71,6 +87,8 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
     if invalid_labels:
         return f"错误: 非法标签: {', '.join(invalid_labels)}"
 
+    meta = dict(meta or {})
+
     existing_rows = workspace.cypher(
         'MATCH (n {name: $name}) RETURN n',
         params={"name": name},
@@ -78,6 +96,31 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
     )
     requested_labels = set(labels or [])
     if existing_rows:
+        same_label_exists = any(
+            set(row.get("n", {}).get("labels", [])) == requested_labels
+            for row in existing_rows
+        )
+        if "chunk" in requested_labels and same_label_exists:
+            source_ref = _edge_source_for_created_node(edges, name, ref)
+            if not source_ref:
+                return f"实体已存在: {name}"
+            source_selector, source_err = resolve_entity_selector(workspace, source_ref)
+            if source_err:
+                return f"Error: {source_err}"
+            source_pat, source_params = _selector_pattern(source_selector, "s", "s")
+            label_str = cypher_label_clause(labels or [])
+            rows = workspace.cypher(
+                f"MATCH {source_pat}--(c{label_str} {{name: $name}}) RETURN c",
+                params={**source_params, "name": name},
+                project=project,
+            )
+            if rows:
+                return f"实体已存在: {name}"
+            existing_rows = [
+                row for row in existing_rows
+                if set(row.get("n", {}).get("labels", [])) != requested_labels
+            ]
+
         if not requested_labels:
             return f"实体已存在: {name}"
         for row in existing_rows:
@@ -85,7 +128,7 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
             if existing_labels == requested_labels:
                 return f"实体已存在: {name}"
 
-    meta = normalize_knowledge_meta(project, labels, meta or {})
+    meta = normalize_knowledge_meta(project, labels, meta)
     if is_bird_knowledge(project, labels):
         if not str(meta.get("brief", "")).strip():
             return "错误: bird 知识实体必须提供非空 brief（可由结构化字段自动推导）"
@@ -108,6 +151,8 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
     )
     if not created:
         return f"Error: failed to create entity: {name}"
+    created_node = created[0].get("n", {}) if isinstance(created[0], dict) else {}
+    created_id = created_node.get("id")
 
     # 创建显式 edges
     edge_results = []
@@ -118,7 +163,7 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
             if not a_name or not b_name:
                 continue
             if a_name == name or a_name == ref:
-                a_selector = {"project": project, "name": name, "labels": labels}
+                a_selector = {"project": project, "name": name, "labels": labels, "id": created_id}
                 a_err = None
             else:
                 a_selector, a_err = resolve_entity_selector(workspace, a_name)
@@ -126,7 +171,7 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
                 edge_results.append(f"  跳过: {a_err}")
                 continue
             if b_name == name or b_name == ref:
-                b_selector = {"project": project, "name": name, "labels": labels}
+                b_selector = {"project": project, "name": name, "labels": labels, "id": created_id}
                 b_err = None
             else:
                 b_selector, b_err = resolve_entity_selector(workspace, b_name)

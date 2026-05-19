@@ -74,7 +74,7 @@ flowchart LR
     SM --> EXT
 
     EX[Extractor<br/>automated scripts analysis <br/>and graph update] --> W
-    T[Tools<br/>glob, meta, search, query, cypher] --> W
+    T[Tools<br/>find, meta, query, grep, jd] --> W
     A[Pontis Agent<br/>LLM + guardrails] --> T
     U <--> A
     EP <--> A
@@ -102,7 +102,7 @@ Source modules expose virtual entities and native source ports. The persistent s
 | `storage/stores/` | Source modules such as file system discovery and SQLite schema projection |
 | `extractor/` | Automated script-based analysis that profiles data projects and writes derived knowledge back to the graph |
 | `explorer/` | Agent-driven analysis that explores a data project, discovers higher-level structure and updates the graph |
-| `tool/` | Agent-facing operations: `glob`, `meta`, `search`, `query`, `cypher`, write tools |
+| `tool/` | Agent-facing operations: `find`, `meta`, `query`, `grep`, `read`, `jd`, write tools |
 | `agent/` | Tool-calling loop, prompt assembly, mode presets and guardrails |
 | `docs/` | Design notes, refactor plans, benchmark analysis and deeper architecture records |
 
@@ -142,7 +142,7 @@ pontis ./my_project
 Run direct graph/tool commands:
 
 ```bash
-pontis ./my_project:glob "*.db"
+pontis ./my_project:find "*:file:db"
 pontis ./my_project:meta "example.sqlite"
 pontis ./my_project:cypher "MATCH (n) RETURN n"
 ```

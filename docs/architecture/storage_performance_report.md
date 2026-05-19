@@ -6,7 +6,7 @@ This report records the current performance shape of Pontis storage after the la
 
 ## Summary
 
-The worst latency seen by the agent was mostly tool-layer overhead, not raw SQLite or source database speed. The immediate fixes reduced repeated `meta`, `glob`, and `search` calls from seconds to milliseconds in the same `Workspace` lifetime.
+The worst latency seen by the agent was mostly tool-layer overhead, not raw SQLite or source database speed. The immediate fixes reduced repeated `meta` and `find` calls from seconds to milliseconds in the same `Workspace` lifetime.
 
 The remaining storage bottleneck is cold read setup: `Workspace.cypher(...)` builds a merged graph view from persisted graph data plus source-module virtual graph data. That cost is now cached, so warm reads are fast, but cold reads and invalidation after writes still pay the full merge cost.
 
@@ -36,9 +36,9 @@ These were fixed before writing this report:
 
 - `Workspace.cypher(...)` caches read-only `MergedStoreView` instances by project, store version, and module identity.
 - `display_ref_for_node(...)` now uses local `path` / `ref` metadata before falling back to graph queries.
-- `resolve_entity(...)` no longer calls `glob_command(...)` and reparses formatted text output for wildcard refs.
+- `resolve_entity(...)` resolves wildcard refs through structured ref matching instead of reparsing formatted text output.
 - `meta(property=[...])` returns ordinary properties without querying all neighbors.
-- `search` delays display-ref formatting until after ranking and pagination.
+- semantic entity lookup delays display-ref formatting until after ranking and pagination.
 - `query` fetches only `limit + 1` rows instead of `fetchall()`.
 - `grep` streams search output for content mode and stops after enough lines for the requested page.
 
@@ -47,8 +47,8 @@ Observed tool timings on `codebase_community` after fixes:
 | Operation | Before | After |
 | --- | ---: | ---: |
 | `meta(codebase_community.sqlite/posts)` | ~6.5s | ~0.37s cold, ~0.001s warm |
-| `glob(codebase_community::*)` | ~26.5s | ~0.016s warm |
-| `search(codebase_community::*, ...)` | ~26.4s | ~0.016-0.03s warm |
+| `find(ref="codebase_community::*")` | ~26.5s | ~0.016s warm |
+| `find(ref="codebase_community::*", query=...)` | ~26.4s | ~0.016-0.03s warm |
 | `meta(..., property=["detail"])` | queried neighbors | ~0.001s warm |
 
 ## Storage Bottlenecks
@@ -158,7 +158,7 @@ The recommendations above line up with common graph database performance practic
 Near-term targets for BIRD-sized projects:
 
 - Cold `MATCH (n) RETURN n`: under 100ms for projects under 500 graph-visible nodes.
-- Warm `glob(project::*)`: under 20ms.
+- Warm `find(ref="project::*")`: under 20ms.
 - Warm `meta(table)` full view: under 5ms.
 - `meta(col, property=["detail"])`: under 2ms.
 - Merged view rebuild after a write: under 100ms for projects under 500 graph-visible nodes.
@@ -174,6 +174,6 @@ Current tests cover correctness but not storage performance regression. Add a sm
 - merged build time
 - cold and warm read times for common query shapes
 - write materialization time
-- repeated tool loop time for `meta`, `glob`, and `search`
+- repeated tool loop time for `meta` and `find`
 
 The benchmark should print plain numbers and fail only on extreme regressions, so it can be used locally without making CI flaky.

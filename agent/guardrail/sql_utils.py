@@ -11,11 +11,11 @@ import sqlglot
 
 
 # ═══════════════════════════════════════════════════════════
-#  实体列表格式化（与 glob/search 共用逻辑）
+#  实体列表格式化（与实体发现工具共用逻辑）
 # ═══════════════════════════════════════════════════════════
 
 def format_entity_list(workspace, refs: list[str]) -> str:
-    """格式化实体列表，显示 brief（与 glob/search 一致的展示风格）。
+    """格式化实体列表，显示 brief（与实体发现工具一致的展示风格）。
 
     Args:
         workspace: Workspace 实例
@@ -83,7 +83,7 @@ def get_db_prefix(ctx) -> str:
     """数据库文件前缀，如 "formula_1.sqlite::"。"""
     for name, args in ctx.pending_calls:
         if name == "query":
-            f = args.get("file", "")
+            f = args.get("ref", "") or args.get("file", "")
             if f:
                 return f + "::"
     for msg in ctx.messages:
@@ -91,7 +91,7 @@ def get_db_prefix(ctx) -> str:
             if tc.get("function", {}).get("name") == "query":
                 try:
                     args = json.loads(tc["function"]["arguments"])
-                    f = args.get("file", "")
+                    f = args.get("ref", "") or args.get("file", "")
                     if f:
                         return f + "::"
                 except (json.JSONDecodeError, KeyError):
@@ -116,10 +116,10 @@ def get_meta_read(tool_history: list) -> frozenset:
 
 
 def get_seen_entities(tool_history: list) -> frozenset:
-    """从 glob/search 结果中提取已经显式展示过的实体引用。"""
+    """从 find 结果中提取已经显式展示过的实体引用。"""
     seen = set()
     for name, _args, output in tool_history:
-        if name not in {"glob", "search"}:
+        if name != "find":
             continue
         text = str(output or "")
         if not text or text.startswith("No objects found") or text.startswith("Error:"):

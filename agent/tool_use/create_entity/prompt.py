@@ -7,32 +7,36 @@ DETAIL = """\
 - ref (必填): 实体引用，格式 [project::]name[:tag1[:tag2]]
   - name 是实体名称（精确名称，不允许通配符）
   - :tag 为实体打标签（可多个），类型通过标签区分
-- meta: 初始元数据（可选），建议包含 brief 和 detail
+- meta: 初始元数据（可选），常用字段为 brief 和 detail
 - edges: 关系边列表（可选），每条边为 {"a": "...", "b": "..."}
 
 ## 示例
 
 ### 关系实体
-ref: 'account.account_id->district.district_id:fk'
+ref: 'context/db/app.db/account/account_id->context/db/app.db/district/district_id:fk'
 meta: {brief: "外键关系", detail: "account.account_id 引用 district.district_id"}
-edges: [{a: "account", b: "district.district_id:fk"}]
+edges: [{a: "context/db/app.db/account/account_id:col:INTEGER", b: "context/db/app.db/district/district_id:col:INTEGER"}]
 
 ### 语义消歧实体
 ref: 'points:disambig'
 meta: {brief: "points 列歧义", detail: "results.points 是单场得分，driverStandings.points 是赛季总分"}
-edges: [{a: "results.points", b: "points:disambig"}]
+edges: [{a: "context/db/f1.db/results/points:col:INTEGER", b: "points:disambig"}]
 
-### 知识实体
-ref: 'bird::no_concat:knowledge:convention'
-meta: {brief: "避免字符串拼接", detail: "不要用 || 拼接..."}
-ref: 'bird::count_with_group_by:knowledge:pattern'
-meta: {brief: "分组计数模式", detail: "..."}
+### 文本 chunk
+ref: '0001:chunk'
+meta: {brief: "章节主题", detail: "该段文本定义了字段语义、约束或例外情况"}
+edges: [{a: "context/knowledge.md", b: "0001:chunk"}]
 
-## 注意
-- 如果实体已存在会报错，如需更新请使用 update_meta
-- name 必须是精确名称，不允许通配符
-- 对知识实体，优先使用 `<project>::<name>:knowledge:<type>` 的完整形式
-- edges 里的两端引用应尽量直接复用 glob/meta 已返回的精确 ref
+### JSON pattern
+ref: 'records:pattern'
+meta: {brief: "records 数组结构", detail: "每条记录包含 id、name、status 等字段"}
+edges: [{a: "context/json/data.json", b: "records:pattern"}]
+
+## 硬约束
+- ref 使用精确名称；通配匹配属于 find
+- 来源关系通过 edges 表达
+- 派生实体的 meta 写实体自身语义；来源文件、路径、父节点由边表达
+- edges 两端 ref 直接复制 find/meta 返回的完整 ref
 """
 
 

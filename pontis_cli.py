@@ -4,11 +4,10 @@ Pontis CLI.
 
 Usage:
     pontis <project>                         # Open interactive agent chat
-    pontis <project>:glob <ref>             # Execute one tool command directly
+    pontis <project>:find <ref> [query]     # Execute one tool command directly
     pontis <project>:meta <ref> [options]
-    pontis <project>:search <ref> <query>
     pontis <project>:cypher <query>
-    pontis <project>:query <file> <sql>
+    pontis <project>:query <ref> <sql>
 
 `<project>` can be:
 - a project name from `pontis.yml`
@@ -80,8 +79,9 @@ def _make_workspace(project_path: str, active_projects: list[str]):
 def _parse_direct_args(command: str, argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog=f"pontis :{command}", add_help=True)
 
-    if command == "glob":
+    if command == "find":
         parser.add_argument("ref")
+        parser.add_argument("query", nargs="?")
         parser.add_argument("--offset", type=int, default=0)
         parser.add_argument("--limit", type=int, default=None)
     elif command == "meta":
@@ -89,23 +89,18 @@ def _parse_direct_args(command: str, argv: list[str]) -> argparse.Namespace:
         parser.add_argument("--all", action="store_true")
         parser.add_argument("--property", nargs="+")
         parser.add_argument("--neighbor-label")
-    elif command == "search":
-        parser.add_argument("ref")
-        parser.add_argument("query")
-        parser.add_argument("--offset", type=int, default=0)
-        parser.add_argument("--limit", type=int, default=None)
     elif command == "cypher":
         parser.add_argument("query")
         parser.add_argument("--offset", type=int, default=0)
         parser.add_argument("--limit", type=int, default=100)
     elif command == "query":
-        parser.add_argument("file")
+        parser.add_argument("ref")
         parser.add_argument("sql")
         parser.add_argument("--limit", type=int, default=100)
     else:
         raise SystemExit(
             f"Error: unsupported direct command '{command}'. "
-            f"Supported: glob, meta, search, cypher, query"
+            f"Supported: find, meta, cypher, query"
         )
 
     return parser.parse_args(argv)
@@ -114,9 +109,15 @@ def _parse_direct_args(command: str, argv: list[str]) -> argparse.Namespace:
 def _run_direct_command(workspace, command: str, argv: list[str]) -> str:
     args = _parse_direct_args(command, argv)
 
-    if command == "glob":
-        from tool.glob.tool import glob_command
-        return glob_command(workspace, ref=args.ref, offset=args.offset, limit=args.limit)
+    if command == "find":
+        from tool.find.tool import find_command
+        return find_command(
+            workspace,
+            ref=args.ref,
+            query=args.query or "",
+            offset=args.offset,
+            limit=args.limit,
+        )
     if command == "meta":
         from tool.meta.tool import meta_command
         prop = None
@@ -128,15 +129,6 @@ def _run_direct_command(workspace, command: str, argv: list[str]) -> str:
             all=args.all,
             property=prop,
             neighbor_label=args.neighbor_label,
-        )
-    if command == "search":
-        from tool.search.tool import search_command
-        return search_command(
-            workspace,
-            ref=args.ref,
-            query=args.query,
-            offset=args.offset,
-            limit=args.limit,
         )
     if command == "cypher":
         from tool.cypher.tool import cypher_command
@@ -151,7 +143,7 @@ def _run_direct_command(workspace, command: str, argv: list[str]) -> str:
         return query_command(
             workspace,
             sql=args.sql,
-            file=args.file,
+            ref=args.ref,
             limit=args.limit,
         )
     raise SystemExit(f"Error: unsupported direct command '{command}'")
@@ -180,7 +172,7 @@ def _run_interactive(project_path: str, active_projects: list[str]) -> None:
     print(f"Model: {agent.config['model']}")
     print(f"Guardrails: {[g.__class__.__name__ for g in agent.guardrails]}")
     print("Type 'exit' or Ctrl+C to quit")
-    print("Prefix input with ':' to run a direct workspace command locally, e.g. ':glob *'\n")
+    print("Prefix input with ':' to run a direct workspace command locally, e.g. ':find *:file'\n")
 
     while True:
         try:
@@ -197,13 +189,12 @@ def _run_interactive(project_path: str, active_projects: list[str]) -> None:
                         result = "Error: empty direct command"
                     elif name in ("help", "?"):
                         result = (
-                            "Direct commands: :glob, :meta, :search, :cypher, :query\n"
+                            "Direct commands: :find, :meta, :cypher, :query\n"
                             "Examples:\n"
-                            ":glob '*:knowledge' --limit 5\n"
+                            ":find '*:knowledge' 'majority limit 1'\n"
                             ":meta README --property detail\n"
-                            ":search 'bird::*:knowledge' 'majority limit 1'\n"
                             ":cypher \"MATCH (n) RETURN n\"\n"
-                            ":query restaurant.sqlite \"SELECT COUNT(*) FROM generalinfo\""
+                            ":query restaurant.sqlite:file:db \"SELECT COUNT(*) FROM generalinfo\""
                         )
                     else:
                         result = _run_direct_command(workspace, name, argv or [])

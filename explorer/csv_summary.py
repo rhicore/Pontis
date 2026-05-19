@@ -42,6 +42,7 @@ PROMPT = """\
 ```text
 meta({"ref": "__CSV_PATH__", "property": ["row_count", "column_count", "delimiter", "line_count", "brief", "detail"]})
 meta({"ref": "__CSV_PATH__", "neighbor_label": "col"})
+find({"ref": "__CSV_PATH__/*:col", "limit": 500})
 ```
 
 然后对每个列节点执行：
@@ -60,9 +61,11 @@ meta({
 })
 ```
 
+列节点必须使用带 CSV 文件路径的 ref，例如 `__CSV_PATH__/column_name`，不要使用裸列名、`column_name:col` 或 `column_name:col:TYPE`。
+
 ## 原文读取限制
 
-- 允许用 `read({"path": "__CSV_PATH__", "start_line": 1, "end_line": 20})` 查看 header 和少量样例行。
+- 允许用 `read({"ref": "__CSV_PATH__", "start_line": 1, "end_line": 20})` 查看 header 和少量样例行。
 - 允许用 `grep` 查特定列名或少量关键词。
 - 禁止要求读取全文件；不要用 `read` 分页扫完整 CSV。
 
@@ -83,6 +86,7 @@ update_meta({"ref": "<col ref>", "fields": {"brief": "...", "detail": "..."}})
 ```
 
 如果 `force=false` 且已有高质量 brief/detail，可以保留；否则更新。
+工具参数必须是合法 JSON。`brief/detail` 文本里不要裸写英文双引号 `"`；字段值示例优先用中文引号、单引号或反引号，避免 `update_meta` 参数解析失败。
 
 ## summary 质量要求
 
@@ -138,7 +142,7 @@ def _run_agent_for_csv(workspace: Workspace, source: OpenFileSource, *, force: b
 
     spec = AgentSpec(mode="writer", effort="high", max_rounds=120)
     spec.tools = [
-        "glob", "grep", "read", "meta", "search", "agent",
+        "find", "grep", "read", "meta", "agent",
         "update_meta",
     ]
     project_name = os.path.basename(os.path.abspath(workspace.project_path))

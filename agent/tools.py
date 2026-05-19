@@ -60,17 +60,21 @@ class ToolRegistry:
 def _build_readonly_schemas() -> Dict[str, dict]:
     """构建只读工具的 OpenAI function schema。"""
     return {
-        "glob": {
+        "find": {
             "type": "function",
             "function": {
-                "name": "glob",
-                "description": _load_prompt("glob"),
+                "name": "find",
+                "description": _load_prompt("find"),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "URN glob pattern, e.g. '*.db' for files, '*.*.*:col' for columns, supports / hop, ** varlen, and project:: routing",
+                            "description": "Graph ref pattern, e.g. '*:file', '*:col', 'context/db/results.db/*:table'",
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "Natural language search query, e.g. 'track number'",
                         },
                         "offset": {
                             "type": "integer",
@@ -78,7 +82,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Max results per page, default 100",
+                            "description": "Max results per page, default 50",
                         },
                     },
                     "required": ["ref"],
@@ -97,16 +101,16 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                             "type": "string",
                             "description": "Regex pattern (ripgrep syntax)",
                         },
-                        "path": {
+                        "ref": {
                             "type": "string",
-                            "description": "File or directory to search, defaults to project root",
+                            "description": "Text file or directory graph ref to search, e.g. '*:file:text' or 'context/notes.md:file:text'",
                         },
                         "output_mode": {
                             "type": "string",
                             "enum": ["content", "files_with_matches", "count"],
                             "description": "Output mode, default 'files_with_matches'",
                         },
-                        "glob": {
+                        "file_pattern": {
                             "type": "string",
                             "description": "File name filter, e.g. '*.py', '*.{ts,tsx}'",
                         },
@@ -123,7 +127,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                             "description": "Starting index (0-based), default 0",
                         },
                     },
-                    "required": ["pattern"],
+                    "required": ["pattern", "ref"],
                 },
             },
         },
@@ -135,9 +139,9 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {
+                        "ref": {
                             "type": "string",
-                            "description": "Text file path or unique file name",
+                            "description": "Text file graph ref, e.g. 'README.md:file:text'",
                         },
                         "start_line": {
                             "type": "integer",
@@ -148,7 +152,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                             "description": "End line number, capped by tool limit",
                         },
                     },
-                    "required": ["path"],
+                    "required": ["ref"],
                 },
             },
         },
@@ -160,9 +164,9 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {
+                        "ref": {
                             "type": "string",
-                            "description": "JSON VFS path, e.g. data.json#/records/0",
+                            "description": "JSON file graph ref or JSON VFS ref, e.g. 'data.json:file:json#/records/0'",
                         },
                         "limit": {
                             "type": "integer",
@@ -177,7 +181,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                             "description": "Max preview length for scalar values",
                         },
                     },
-                    "required": ["path"],
+                    "required": ["ref"],
                 },
             },
         },
@@ -206,35 +210,6 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                         },
                     },
                     "required": ["ref"],
-                },
-            },
-        },
-        "search": {
-            "type": "function",
-            "function": {
-                "name": "search",
-                "description": _load_prompt("search"),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "ref": {
-                            "type": "string",
-                            "description": "Glob pattern to scope the search",
-                        },
-                        "query": {
-                            "type": "string",
-                            "description": "Natural language search query",
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Starting index (0-based), default 0",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max results per page, default 100",
-                        },
-                    },
-                    "required": ["ref", "query"],
                 },
             },
         },
@@ -271,16 +246,16 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                             "type": "string",
                             "description": "SQL query statement (SELECT only)",
                         },
-                        "file": {
+                        "ref": {
                             "type": "string",
-                            "description": "Database file path relative to project root, e.g. 'data.sqlite'",
+                            "description": "DB/CSV/TSV file graph ref, e.g. 'data.db:file:db' or 'data.csv:file:csv:text'",
                         },
                         "limit": {
                             "type": "integer",
                             "description": "Max rows to return, default 100",
                         },
                     },
-                    "required": ["sql", "file"],
+                    "required": ["sql", "ref"],
                 },
             },
         },
@@ -362,7 +337,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "实体引用：名称或 glob 模式（必须唯一匹配）",
+                            "description": "实体引用：名称或 ref 模式（必须唯一匹配）",
                         },
                         "fields": {
                             "type": "object",
@@ -386,8 +361,8 @@ def _build_write_schemas() -> Dict[str, dict]:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "a": {"type": "string", "description": "节点 ref（名称或 glob 模式）"},
-                                    "b": {"type": "string", "description": "节点 ref（名称或 glob 模式）"},
+                                    "a": {"type": "string", "description": "节点 ref（名称或 ref 模式）"},
+                                    "b": {"type": "string", "description": "节点 ref（名称或 ref 模式）"},
                                 },
                                 "required": ["a", "b"],
                             },
@@ -408,7 +383,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "实体引用：名称或 glob 模式（必须唯一匹配）",
+                            "description": "实体引用：名称或 ref 模式（必须唯一匹配）",
                         },
                     },
                     "required": ["ref"],
@@ -449,10 +424,12 @@ def _build_agent_schema() -> dict:
 
 # ==================== Tool Executors ====================
 
-def _exec_glob(workspace, arguments: dict) -> str:
-    from tool.glob.tool import glob_command
-    return glob_command(
-        workspace, arguments["ref"],
+def _exec_find(workspace, arguments: dict) -> str:
+    from tool.find.tool import find_command
+    return find_command(
+        workspace,
+        ref=arguments.get("ref", ""),
+        query=arguments.get("query", ""),
         offset=arguments.get("offset", 0),
         limit=arguments.get("limit"),
     )
@@ -463,9 +440,9 @@ def _exec_grep(workspace, arguments: dict) -> str:
     return grep_command(
         workspace,
         pattern=arguments["pattern"],
-        path=arguments.get("path", ""),
+        ref=arguments.get("ref", ""),
         output_mode=arguments.get("output_mode", "files_with_matches"),
-        glob=arguments.get("glob"),
+        file_pattern=arguments.get("file_pattern"),
         ignore_case=arguments.get("ignore_case", False),
         head_limit=arguments.get("head_limit", 250),
         offset=arguments.get("offset", 0),
@@ -476,7 +453,7 @@ def _exec_read(workspace, arguments: dict) -> str:
     from tool.read.tool import read_command
     return read_command(
         workspace,
-        path=arguments["path"],
+        ref=arguments.get("ref", ""),
         start_line=arguments.get("start_line", 1),
         end_line=arguments.get("end_line"),
     )
@@ -486,7 +463,7 @@ def _exec_jd(workspace, arguments: dict) -> str:
     from tool.jd.tool import jd_command
     return jd_command(
         workspace,
-        path=arguments["path"],
+        ref=arguments.get("ref", ""),
         limit=arguments.get("limit", 50),
         offset=arguments.get("offset", 0),
         max_value_chars=arguments.get("max_value_chars", 120),
@@ -500,17 +477,6 @@ def _exec_meta(workspace, arguments: dict) -> str:
         ref=arguments["ref"],
         all=arguments.get("all", False),
         property=arguments.get("property"),
-    )
-
-
-def _exec_search(workspace, arguments: dict) -> str:
-    from tool.search.tool import search_command
-    return search_command(
-        workspace,
-        ref=arguments["ref"],
-        query=arguments["query"],
-        offset=arguments.get("offset", 0),
-        limit=arguments.get("limit"),
     )
 
 
@@ -529,7 +495,7 @@ def _exec_query(workspace, arguments: dict) -> str:
     return query_command(
         workspace,
         sql=arguments["sql"],
-        file=arguments["file"],
+        ref=arguments.get("ref", ""),
         limit=arguments.get("limit", 100),
     )
 
@@ -607,12 +573,11 @@ def _get_agent_schema() -> dict:
 
 # (schema_dict, executor_fn) — 工具注册的原子单元
 _READONLY_EXECUTORS = {
-    "glob": _exec_glob,
+    "find": _exec_find,
     "grep": _exec_grep,
     "read": _exec_read,
     "jd": _exec_jd,
     "meta": _exec_meta,
-    "search": _exec_search,
     "bash": _exec_bash,
     "query": _exec_query,
     "cypher": _exec_cypher,

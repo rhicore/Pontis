@@ -7,19 +7,17 @@ import argparse
 import logging
 import os
 
-from extractor.modules.json_pattern import pattern_name_prefix
 from storage.workspace import Workspace
 from tool.utils.workspace_access import OpenFileSource, resolve_file_sources
 
 logger = logging.getLogger(__name__)
 
 PROMPT = """\
-你的任务是为指定 JSON 文件和它的 pattern 节点写中文 brief/detail。
+你的任务是利用 jd 和指定 JSON 文件下的 pattern 节点，为 JSON 文件本身以及每个 pattern 实体写中文 brief/detail。
 
 ## 目标 JSON
 
 - JSON 文件：`__JSON_PATH__`
-- pattern 名前缀：`__PATTERN_PREFIX__`
 - 是否强制重写已有高质量摘要：`__FORCE__`
 
 ## 工作目标
@@ -28,23 +26,23 @@ PROMPT = """\
    - brief：最多 50 字，概括这个 JSON 文件是什么数据。
    - detail：说明顶层结构、重要字段/数组/map、数据语义、和下游分析时需要注意的结构线索。
 
-2. 给这个 JSON 文件下的每个 `pattern` 节点写 summary：
-   - brief：最多 50 字，概括该 pattern 对应的 JSON 片段。
-   - detail：说明该 pattern 的 JSON 路径、结构、字段含义、数组/map 形态、重要约束和与父/子结构的关系。
+2. 给这个 JSON 文件下的每个 `pattern` 实体写 summary：
+   - brief：最多 50 字，概括该 JSON path 对应的结构片段。
+   - detail：说明该 JSON path 的结构、字段含义、数组/map 形态、关键约束、与父子结构的关系，以及后续解题时怎样使用它。
 
 ## 必须使用 jd
 
-- 必须先调用 `jd({"path": "__JSON_PATH__"})` 查看顶层结构。
+- 必须先调用 `jd({"ref": "__JSON_PATH__"})` 查看顶层结构。
 - 对重要子路径继续调用 `jd`，例如 `__JSON_PATH__#/records`、`__JSON_PATH__#/data`、`__JSON_PATH__#/0`。
 - `jd` 只展示一层；不要试图一次展开整个 JSON。
 - 大数组只抽看前几项、schema keys 和必要分页，不要全量遍历。
 
 ## pattern 读取方式
 
-1. 用：
+1. 用源 JSON 文件的图边找 pattern：
 
 ```text
-glob({"ref": "__PATTERN_PREFIX__*:pattern", "limit": 500})
+find({"ref": "__JSON_PATH__/*:pattern", "limit": 500})
 ```
 
 找到该 JSON 文件下的 pattern 节点。
@@ -52,14 +50,13 @@ glob({"ref": "__PATTERN_PREFIX__*:pattern", "limit": 500})
 2. 对每个 pattern 用 `meta` 读取：
 
 ```text
-meta({"ref": "<pattern ref>", "property": ["source_path", "json_path", "type", "pattern", "brief", "detail"]})
+meta({"ref": "<pattern ref>", "property": ["json_path", "type", "pattern", "brief", "detail"]})
 ```
 
-3. 如果 `force=false` 且 pattern 已经有高质量 brief/detail，可以保留；否则更新。
+3. 如果 `force=false` 且 JSON 文件或 pattern 已经有高质量 brief/detail，可以保留；否则更新。
 
 ## 写入规则
 
-- 只能用 `update_meta` 写 `brief/detail`。
 - 写 JSON 文件总 summary：
 
 ```text
@@ -72,14 +69,17 @@ update_meta({"ref": "__JSON_PATH__", "fields": {"brief": "...", "detail": "..."}
 update_meta({"ref": "<pattern ref>", "fields": {"brief": "...", "detail": "..."}})
 ```
 
+工具参数必须是合法 JSON。`brief/detail` 文本里不要裸写英文双引号 `"`；字段值示例优先用中文引号、单引号或反引号，避免 `update_meta` 参数解析失败。
+
 ## summary 质量要求
 
 - 用中文。
 - 基于 `jd` 和 pattern 原始结构，不要虚构业务含义。
+- 不要做全图搜索来查询 JSON 行级条件；需要看 JSON 内容时使用 `jd` 做结构和样例探查。
 - 字段名能直接说明语义时可以解释；字段名模糊时要明确“不确定”。
 - 不要写精确数组长度、精确 key 数、精确行数；这些会变。
-- pattern detail 必须包含 JSON 路径，例如 `$.records.[n]`。
-- 如果 pattern 只是包装层或格式层，也要简洁说明它是包装结构，不要强行编业务含义。
+- pattern detail 必须包含 JSON path，例如 `$`、`$.records` 或 `$.items.[n]`。
+- 包装层 pattern 要说明它是包装结构；数据主体 pattern 要说明字段和数组/map 语义。
 
 ## 子智能体策略
 
@@ -90,7 +90,7 @@ update_meta({"ref": "<pattern ref>", "fields": {"brief": "...", "detail": "..."}
 ## 完成条件
 
 - JSON 文件本身已有 brief/detail。
-- `__PATTERN_PREFIX__*:pattern` 下的每个 pattern 都已有 brief/detail；包装层也要写简洁 summary。
+- `__JSON_PATH__/*:pattern` 下的每个 pattern 都已有 brief/detail。
 - 完成后直接停止，不要输出额外解释。
 """
 
@@ -116,7 +116,7 @@ def _run_agent_for_json(workspace: Workspace, source: OpenFileSource, *, force: 
 
     spec = AgentSpec(mode="writer", effort="high", max_rounds=120)
     spec.tools = [
-        "glob", "jd", "meta", "search", "agent",
+        "find", "jd", "meta", "agent",
         "update_meta",
     ]
     project_name = os.path.basename(os.path.abspath(workspace.project_path))
@@ -127,7 +127,6 @@ def _run_agent_for_json(workspace: Workspace, source: OpenFileSource, *, force: 
     prompt = (
         PROMPT
         .replace("__JSON_PATH__", source.path)
-        .replace("__PATTERN_PREFIX__", pattern_name_prefix(source.path))
         .replace("__FORCE__", str(force).lower())
     )
     agent.chat(prompt)

@@ -75,8 +75,8 @@ COORDINATOR_PROMPT = """\
 
 ## 明确禁止
 
-- 禁止使用 `glob({"ref": "<project>::*" ...})` 这类项目级全量 inventory
-- 禁止把 `glob` 当成“先把所有实体列出来再慢慢看”的工具
+- 禁止使用 `find({"ref": "<project>::*" ...})` 这类项目级全量 inventory
+- 禁止把 `find` 当成“先把所有实体列出来再慢慢看”的工具
 - 禁止为了写某一张表的总结，顺手展开其他不相关表的所有列
 - 禁止在 coordinator 自己这一层处理全项目所有列；应该按表分块，必要时交给子智能体
 
@@ -84,11 +84,11 @@ COORDINATOR_PROMPT = """\
 
 优先使用这些定向入口，而不是全局通配：
 
-- `glob({"ref": "<project>::*:table"})`
-- `glob({"ref": "<db>/<table>/*:col"})`
-- `glob({"ref": "<project>::*:fk"})`
-- `glob({"ref": "<project>::*:overlap"})`
-- `glob({"ref": "<project>::*:disambig"})`
+- `find({"ref": "<project>::*:table"})`
+- `find({"ref": "<db>/<table>/*:col"})`
+- `find({"ref": "<project>::*:fk"})`
+- `find({"ref": "<project>::*:overlap"})`
+- `find({"ref": "<project>::*:disambig"})`
 
 ## 用子智能体提高效率
 
@@ -127,7 +127,7 @@ def generate(workspace: Workspace) -> None:
 
     spec = AgentSpec(mode="writer")
     spec.tools = [
-        "glob", "meta", "search", "query", "agent",
+        "find", "meta", "query", "agent",
         "create_entity", "update_meta", "add_edge", "delete",
     ]
     project_name = os.path.basename(os.path.abspath(workspace.project_path))

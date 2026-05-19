@@ -2,13 +2,14 @@
 
 
 _TOOL_DESCRIPTIONS = {
-    "glob": "发现实体和关系，适合回答“有哪些”“连着什么”",
-    "meta": "读取单个实体的 detail / brief 等属性",
-    "query": "只在需要真实数据验证时使用",
-    "search": "名称不确定时做模糊检索",
-    "cypher": "处理 glob 不方便表达的复杂图查询",
-    "grep": "最后手段，用于搜索普通文件内容",
-    "bash": "最后手段，用于执行 shell 命令",
+    "find": "发现图谱实体；按 ref 列实体，或在实体摘要中匹配 query",
+    "meta": "读取单个实体的 brief/detail、统计、样例等元数据",
+    "query": "对 DB/CSV/TSV/JSON records 执行只读 SQL，支持 workspace 跨源查询",
+    "cypher": "执行复杂图查询，适合 find 难以表达的关系遍历",
+    "grep": "在 text file ref 的原文中定位字符串或正则模式",
+    "read": "按行号回读 text file ref 的原文",
+    "jd": "浏览 JSON file ref 的内部层级结构",
+    "bash": "执行只读 shell 命令，适合工具无法覆盖的一次性计算",
 }
 
 
@@ -27,13 +28,20 @@ def get_tool_prompt(spec=None) -> str:
 
 {tool_list}
 
-### 使用纪律
+### 路由主线
 
-- 先发现，再理解，再验证；不要跳过 `glob/meta` 直接猜测写 SQL 或写图谱
-- 已有结果直接复用，不要只为“再确认一次”重复调用
-- 重要!: 不要把 `glob("*")` 当作起手式,而是要从数据源最底层的核心实体开始逐步展开访问,
-    - 例如文件系统你应该优先访问根目录下的目录文件,再逐步访问与其关联的其他实体
-    - 例如数据库你应该优先访问数据库本体实体,再逐步访问与其关联的表、列等实体
-- 结果截断时优先翻页，不要随意换查询语义
-- 用中文回答，基于事实，不补会
+1. 结构入口：用 `find` 找 file/table/col/pattern/chunk/knowledge，再用 `meta` 读目标实体。
+2. JSON 层级：用 `jd` 展开 key/index；行级过滤和聚合交给 `query`。
+3. 文本证据：用 `grep` 定位行号，用 `read` 回读上下文。
+4. 结构化计算：DB/CSV/TSV/JSON records 默认用 `query`；跨源 join 用 `query(ref=".")`。
+5. 图关系：复杂邻接、路径、多跳关系用 `cypher`。
+6. shell 计算：`bash` 用于工具无法直接表达的一次性只读计算或抽样验证。
+
+### 工作协议
+
+- ref 是图谱访问语法；后续工具调用直接复制 `find/meta` 返回的完整 ref。
+- 从具体入口开始探索：先 file，再 table/col/pattern/chunk，再数据验证。
+- 已有工具结果可作为证据复用；同一事实用新查询验证时要改变验证角度。
+- 结果截断时先按 offset 翻页，保持同一查询语义。
+- 回答基于工具返回的事实，用中文表达。
 """

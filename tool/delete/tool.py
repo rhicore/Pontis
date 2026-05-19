@@ -21,7 +21,7 @@ def delete_command(workspace, ref: str) -> str:
 
     ref 支持两种模式：
       - 精确名称 → 直接匹配
-      - glob 模式 → 必须匹配唯一实体
+      - ref 模式 → 必须匹配唯一实体
     """
     node, err = resolve_entity(workspace, ref)
     if err:

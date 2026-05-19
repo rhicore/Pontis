@@ -101,3 +101,407 @@ projects:
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7699
+
+  # KDDCup 2026 public tasks.
+  # Community/local mode: one Neo4j process per task, one Bolt port per task,
+  # database remains neo4j for each process.
+  task_11:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_11
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7700
+      database: neo4j
+  task_19:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_19
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7701
+      database: neo4j
+  task_22:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_22
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7702
+      database: neo4j
+  task_24:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_24
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7703
+      database: neo4j
+  task_25:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_25
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7704
+      database: neo4j
+  task_26:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_26
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7705
+      database: neo4j
+  task_27:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_27
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7706
+      database: neo4j
+  task_38:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_38
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7707
+      database: neo4j
+  task_64:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_64
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7708
+      database: neo4j
+  task_67:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_67
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7709
+      database: neo4j
+  task_74:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_74
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7710
+      database: neo4j
+  task_75:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_75
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7711
+      database: neo4j
+  task_80:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_80
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7712
+      database: neo4j
+  task_86:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_86
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7713
+      database: neo4j
+  task_89:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_89
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7714
+      database: neo4j
+  task_145:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_145
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7715
+      database: neo4j
+  task_163:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_163
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7716
+      database: neo4j
+  task_169:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_169
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7717
+      database: neo4j
+  task_173:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_173
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7718
+      database: neo4j
+  task_180:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_180
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7719
+      database: neo4j
+  task_194:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_194
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7720
+      database: neo4j
+  task_196:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_196
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7721
+      database: neo4j
+  task_199:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_199
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7722
+      database: neo4j
+  task_200:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_200
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7723
+      database: neo4j
+  task_214:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_214
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7724
+      database: neo4j
+  task_218:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_218
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7725
+      database: neo4j
+  task_243:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_243
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7726
+      database: neo4j
+  task_249:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_249
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7727
+      database: neo4j
+  task_250:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_250
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7728
+      database: neo4j
+  task_257:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_257
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7729
+      database: neo4j
+  task_259:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_259
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7730
+      database: neo4j
+  task_261:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_261
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7731
+      database: neo4j
+  task_269:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_269
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7732
+      database: neo4j
+  task_283:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_283
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7733
+      database: neo4j
+  task_287:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_287
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7734
+      database: neo4j
+  task_292:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_292
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7735
+      database: neo4j
+  task_303:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_303
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7736
+      database: neo4j
+  task_305:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_305
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7737
+      database: neo4j
+  task_330:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_330
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7738
+      database: neo4j
+  task_344:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_344
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7739
+      database: neo4j
+  task_349:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_349
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7740
+      database: neo4j
+  task_350:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_350
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7741
+      database: neo4j
+  task_352:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_352
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7742
+      database: neo4j
+  task_355:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_355
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7743
+      database: neo4j
+  task_379:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_379
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7744
+      database: neo4j
+  task_396:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_396
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7745
+      database: neo4j
+  task_408:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_408
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7746
+      database: neo4j
+  task_415:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_415
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7747
+      database: neo4j
+  task_418:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_418
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7748
+      database: neo4j
+  task_420:
+    source:
+      type: fs
+      path: example_data/KDDCUP/public/input/task_420
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://localhost:7749
+      database: neo4j
