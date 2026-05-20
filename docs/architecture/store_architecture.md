@@ -1,8 +1,6 @@
 # Storage Architecture
 
 This document describes the current storage shape of Pontis at a high level.
-Detailed migration notes live in
-[neo4j_persistence_refactor_plan.md](neo4j_persistence_refactor_plan.md).
 
 ## Purpose
 

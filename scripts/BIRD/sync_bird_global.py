@@ -2,7 +2,6 @@
 """同步 BIRD 全局知识库。
 
 默认行为：
-- 同步 scripts/BIRD/BIRD_README.md 到 bird::README
 - 将 example_data/bird_train/train.json 的每个 query 导入为
   bird::q<N>:knowledge:example
 - 为 train query example 的 detail 生成语义向量
@@ -38,7 +37,6 @@ from extractor.modules.semantic_embedding import (
 from utils.embedding import load_embedding_config
 
 
-BIRD_README_PATH = PROJECT_ROOT / "scripts" / "BIRD" / "BIRD_README.md"
 TRAIN_JSON_CANDIDATES = [
     TEXT2SQL_ROOT / "workspace" / "baselines" / "pontis" / "data" / "bird_train" / "train.json",
     TEXT2SQL_ROOT / "workspace" / "original_data" / "bird_train" / "train.json",
@@ -75,31 +73,6 @@ def count_bird_train_examples(ws: Workspace | None = None) -> int:
             close = getattr(ws, "close", None)
             if callable(close):
                 close()
-
-
-def sync_bird_readme(ws: Workspace) -> None:
-    """同步 scripts/BIRD/BIRD_README.md 到 bird 项目的 README 节点。"""
-    detail = BIRD_README_PATH.read_text(encoding="utf-8").strip()
-    brief = "BIRD 数据集跨库经验库使用说明"
-    rows = ws.cypher(
-        "MATCH (n {name: 'README'}) RETURN n",
-        project="bird",
-    )
-    if rows:
-        node = rows[0].get("n", {})
-        ws.cypher(
-            "MATCH (n {id: $id}) SET n.brief = $brief, n.detail = $detail",
-            params={"id": node.get("id"), "brief": brief, "detail": detail},
-            project="bird",
-        )
-        return
-    ws.cypher(
-        "CREATE (n:knowledge {name: 'README', brief: $brief, detail: $detail}) "
-        "SET n.id = 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8), "
-        "n.labels = ['knowledge']",
-        params={"brief": brief, "detail": detail},
-        project="bird",
-    )
 
 
 def import_train_examples(ws: Workspace, train_json: Path | None = None) -> int:
@@ -383,7 +356,6 @@ def _format_train_detail(
 
 
 def sync_bird_global(
-    sync_readme: bool = True,
     import_train: bool = True,
     embed_train: bool = True,
     train_json: Path | None = None,
@@ -394,8 +366,6 @@ def sync_bird_global(
 ) -> None:
     train_json = resolve_train_json_path(train_json)
     ws = Workspace(active_projects=["bird"])
-    if sync_readme:
-        sync_bird_readme(ws)
     if import_train:
         count = import_train_examples(ws, train_json=train_json)
         print(f"Imported {count} BIRD train examples into bird graph", flush=True)
@@ -412,7 +382,6 @@ def sync_bird_global(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--no-readme", action="store_true", help="不更新 bird::README")
     parser.add_argument("--no-train", action="store_true", help="不导入 train examples")
     parser.add_argument("--no-embedding", action="store_true", help="导入 train examples 后不生成语义向量")
     parser.add_argument("--train-json", type=Path, help="BIRD train.json 路径")
@@ -438,7 +407,6 @@ def main() -> None:
     args = parser.parse_args()
 
     sync_bird_global(
-        sync_readme=not args.no_readme,
         import_train=not args.no_train,
         embed_train=not args.no_embedding,
         train_json=args.train_json,

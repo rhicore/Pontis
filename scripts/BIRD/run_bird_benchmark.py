@@ -54,7 +54,7 @@ BIRD_BENCHMARK_PROMPTS = [
 ]
 BIRD_BENCHMARK_GUARDRAILS = [
     "round_limit", "exploration_check",
-    "sql_check", "bridge_check", "disambig_check",
+    "sql_check", "bridge_check", "disambig_check", "value_grounding_check",
 ]
 
 # ═══════════════════════════════════════════════════════════
@@ -865,6 +865,7 @@ def ensure_bird_global_ready(args) -> None:
         return
 
     from storage.workspace import Workspace
+    from scripts.BIRD.bird_readme import sync_bird_readme
     from scripts.BIRD.sync_bird_global import (
         count_bird_train_examples,
         resolve_train_json_path,
@@ -872,9 +873,10 @@ def ensure_bird_global_ready(args) -> None:
     )
 
     ws = Workspace(active_projects=["bird"])
+    sync_bird_readme(ws)
     count = count_bird_train_examples(ws)
     if count > 0:
-        print(f"=== bird global ===\n  Found {count} imported train examples\n")
+        print(f"=== bird global ===\n  Synced README\n  Found {count} imported train examples\n")
         return
 
     train_json = resolve_train_json_path(getattr(args, "bird_train_json", None))
@@ -896,7 +898,6 @@ def ensure_bird_global_ready(args) -> None:
     print("=== bird global ===")
     print(f"  Empty bird graph; syncing train examples from {train_json}")
     sync_bird_global(
-        sync_readme=True,
         import_train=True,
         embed_train=not getattr(args, "no_bird_global_embedding", False),
         train_json=train_json,
@@ -986,7 +987,8 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         except Exception as e:
             elapsed = time.time() - t0
             print(f"  Q{qid} [{q.get('difficulty', '?')}] ERROR: {e}")
-            collector.write_logs(bench_dir, qid, q, "", None, "ERROR", elapsed)
+            error_response = f"ERROR: {type(e).__name__}: {e}"
+            collector.write_logs(bench_dir, qid, q, error_response, None, "ERROR", elapsed)
             return {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
                     'question': q.get('question'), 'evidence': q.get('evidence', ''),
                     'golden_sql': q.get('SQL'), 'predicted_sql': None,

@@ -24,6 +24,11 @@ _SECTIONS = {
 - 如果 SQL 引用了存在同名/近名歧义的实体，guardrail 会提醒或拦截
 - 在歧义字段上，优先读取相关列或消歧实体后再继续
 """,
+    "value_grounding_check": """## SQL Value Grounding 检查
+
+- 最终 SQL 的过滤值会在对应数据库列中验证
+- 0 命中值、低基数列上的模糊 LIKE、可精确匹配却使用 LIKE 的条件会被拦截
+""",
     "exploration_check": """## 探索纪律
 
 - exploration_check 会提醒或拦截过宽的全图枚举式探索

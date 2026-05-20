@@ -13,6 +13,7 @@ def build_guardrails(spec, builder_names: list = None) -> list:
     from agent.guardrail.sql_check import SQLEntityCheck
     from agent.guardrail.sql_join_check import BridgeTableCheck
     from agent.guardrail.sql_disambig_check import SQLDisambigCheck
+    from agent.guardrail.sql_value_grounding_check import SQLValueGroundingCheck
     from agent.prompt._effort import get_effort_max_rounds
 
     _builders = {
@@ -24,6 +25,7 @@ def build_guardrails(spec, builder_names: list = None) -> list:
         "sql_check": lambda: SQLEntityCheck(),
         "bridge_check": lambda: BridgeTableCheck(),
         "disambig_check": lambda: SQLDisambigCheck(),
+        "value_grounding_check": lambda: SQLValueGroundingCheck(),
     }
 
     guardrails = []
