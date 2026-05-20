@@ -8,5 +8,6 @@ example_data
 rubbish
 KDDCUP
 scripts/KDDCUP/kddcup2026-data-agents-starter-kit
+scripts/kddcup2026-data-agents-starter-kit
 *.tar.gz
 *.zip

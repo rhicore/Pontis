@@ -115,7 +115,8 @@ def load_config(config_path: str = None, project_path: str = None) -> StoreConfi
         with open(src, "r") as f:
             data = yaml.safe_load(f) or {}
         for name, pdata in data.get("projects", {}).items():
-            merged_projects[name] = _parse_project(name, pdata)
+            if name not in merged_projects:
+                merged_projects[name] = _parse_project(name, pdata)
 
     if project_path:
         pname = os.path.basename(os.path.abspath(project_path))

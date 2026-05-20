@@ -107,12 +107,28 @@ def load_config(path: Optional[str] = None) -> Config:
             apply_yaml(cfg, os.path.join(project_dir, filename), EXTRACTOR_YAML_MAPPING)
 
     # 3. 环境变量覆盖
+    model_url = os.environ.get("MODEL_API_URL", "")
+    model_key = os.environ.get("MODEL_API_KEY", "")
+    model_name = os.environ.get("MODEL_NAME", "")
     env_key = os.environ.get("OPENAI_API_KEY", "")
     env_url = os.environ.get("OPENAI_BASE_URL", "")
-    if not cfg["api_key"]:
-        cfg["api_key"] = env_key
-    if env_url and cfg["provider"] == "https://api.deepseek.com":
+    env_model = os.environ.get("PONTIS_EXTRACTOR_MODEL", "")
+
+    if model_url:
+        cfg["provider"] = model_url
+        cfg["thinking"] = False
+    elif env_url and cfg["provider"] == "https://api.deepseek.com":
         cfg["provider"] = env_url
+
+    if model_key:
+        cfg["api_key"] = model_key
+    elif not cfg["api_key"]:
+        cfg["api_key"] = env_key
+
+    if model_name:
+        cfg["model"] = model_name
+    elif env_model:
+        cfg["model"] = env_model
     if not cfg["embedding_api_key"]:
         cfg["embedding_api_key"] = (
             os.environ.get("PONTIS_EMBEDDING_API_KEY")

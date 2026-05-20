@@ -51,6 +51,7 @@ def load_agent_config(project_path: str = None) -> dict:
 
     if model_url:
         cfg["provider"] = model_url
+        cfg["thinking"] = False
     elif env_url and cfg["provider"] == "https://api.deepseek.com":
         cfg["provider"] = env_url
 

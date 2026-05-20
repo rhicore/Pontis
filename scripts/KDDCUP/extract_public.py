@@ -401,7 +401,10 @@ def _run_text_chunk_agents(workspace, task_dir: Path, profile: DataProfile) -> d
     start = time.time()
     for path in sorted(docs):
         rel_path = str(path.relative_to(task_dir))
-        text_chunk_generate(workspace, file=rel_path, min_chars=0)
+        try:
+            text_chunk_generate(workspace, file=rel_path, min_chars=0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("agent_text_chunk failed for %s: %s: %s", rel_path, type(exc).__name__, exc)
     return {"agent_text_chunk": time.time() - start}
 
 
