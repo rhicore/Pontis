@@ -57,6 +57,18 @@ def _normalize_type(sql_type: str) -> str:
     return "TEXT"
 
 
+def _quote_identifier(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _safe_row_count(cur, name: str) -> int | None:
+    try:
+        cur.execute(f"SELECT COUNT(*) FROM {_quote_identifier(name)}")
+        return int(cur.fetchone()[0])
+    except Exception:
+        return None
+
+
 def _node_copy(node: dict) -> dict:
     return {k: (list(v) if isinstance(v, list) else v) for k, v in node.items()}
 
@@ -294,6 +306,7 @@ class SQLiteSchemaModule(StoreModule):
                 columns = cur.fetchall()
                 pk_col = next((col[1] for col in columns if col[5] == 1), None)
                 table_pks[table_name] = pk_col or "rowid"
+                row_count = _safe_row_count(cur, table_name)
 
                 table_ref = f"{db_name}--{table_name}"
                 tnode = {
@@ -306,6 +319,8 @@ class SQLiteSchemaModule(StoreModule):
                     "primary_key": pk_col or "",
                     "labels": ["table"],
                 }
+                if row_count is not None:
+                    tnode["row_count"] = row_count
                 register(tnode)
                 link(db_rel, table_ref)
 
@@ -401,6 +416,7 @@ class SQLiteSchemaModule(StoreModule):
             for view_name in views:
                 cur.execute(f'PRAGMA table_info("{view_name}")')
                 columns = cur.fetchall()
+                row_count = _safe_row_count(cur, view_name)
                 view_ref = f"{db_name}--{view_name}"
                 vnode = {
                     "name": view_name,
@@ -411,6 +427,8 @@ class SQLiteSchemaModule(StoreModule):
                     "column_count": len(columns),
                     "labels": ["view"],
                 }
+                if row_count is not None:
+                    vnode["row_count"] = row_count
                 register(vnode)
                 link(db_rel, view_ref)
 

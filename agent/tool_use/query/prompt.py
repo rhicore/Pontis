@@ -28,22 +28,8 @@ DETAIL = """\
 ## 返回
 
 - 执行成功时返回结果行（表格格式），最多返回 limit 行
-- 执行失败时返回错误信息，你可以根据错误修正 SQL 后重试
+- 执行失败时返回错误信息
 - 大结果集会被截断，末尾提示总行数
-
-## 示例
-
-```json
-{"ref":"context/csv/orders.csv:file:csv:text","sql":"SELECT status, COUNT(*) AS n FROM this GROUP BY status"}
-```
-
-```json
-{"ref":".","sql":"SELECT c.name, COUNT(*) AS n FROM customers c JOIN orders o ON c.id = o.customer_id GROUP BY c.name"}
-```
-
-```json
-{"ref":"context/json/posts.json:file:json","sql":"SELECT OwnerUserId, COUNT(*) AS n FROM this GROUP BY OwnerUserId HAVING n > 10"}
-```
 
 SQL 细节：
 - 列名有空格或特殊字符时用双引号包裹，如 SELECT "Player Name" FROM ...

@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from scripts.BIRD.common import get_db_base
+from scripts.BIRD.common import get_db_base, get_preprocess_dir
 from extractor.engine import (
     RunOptions,
     file_log_handler,
@@ -47,6 +47,7 @@ def _sum_timings(timings: dict, names: list[str]) -> float:
 
 def extract_one(
     db_dir: str,
+    preprocess_dir: str | Path | None = None,
     force: bool = False,
     no_ai: bool = False,
     ai_only: bool = False,
@@ -56,20 +57,20 @@ def extract_one(
     """提取单个 BIRD 数据库目录。"""
     db_dir = Path(db_dir).resolve()
     name = db_dir.name
-    pontis_dir = db_dir / ".pontis"
+    pontis_dir = Path(preprocess_dir).resolve() if preprocess_dir else get_preprocess_dir(name, train=False)
 
     if force and pontis_dir.exists():
         try:
             shutil.rmtree(pontis_dir)
         except OSError as e:
             raise RuntimeError(
-                f"failed to remove existing .pontis for '{name}'. "
+                f"failed to remove existing preprocess output for '{name}'. "
                 f"This usually means another extract process is still using the directory: {e}"
             ) from e
-        logger.info(f"  已删除旧 .pontis: {name}")
+        logger.info(f"  已删除旧 preprocess 输出: {name}")
 
     workspace, config = init_workspace(str(db_dir), verbose=debug)
-    pontis_dir.mkdir(exist_ok=True)
+    pontis_dir.mkdir(parents=True, exist_ok=True)
 
     result = {
         "name": name,
@@ -206,6 +207,7 @@ def main() -> None:
         try:
             result = extract_one(
                 str(db_dir),
+                preprocess_dir=get_preprocess_dir(name, train),
                 force=force,
                 no_ai=no_ai,
                 ai_only=ai_only,

@@ -15,10 +15,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import random
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TEXT2SQL_ROOT = PROJECT_ROOT.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -34,8 +39,42 @@ from utils.embedding import load_embedding_config
 
 
 BIRD_README_PATH = PROJECT_ROOT / "scripts" / "BIRD" / "BIRD_README.md"
-TRAIN_JSON_PATH = PROJECT_ROOT / "example_data" / "bird_train" / "train.json"
+TRAIN_JSON_CANDIDATES = [
+    TEXT2SQL_ROOT / "workspace" / "baselines" / "pontis" / "data" / "bird_train" / "train.json",
+    TEXT2SQL_ROOT / "workspace" / "original_data" / "bird_train" / "train.json",
+    PROJECT_ROOT / "example_data" / "bird_train" / "train.json",
+    TEXT2SQL_ROOT / "example_data" / "bird_train" / "train.json",
+]
+TRAIN_JSON_PATH = TRAIN_JSON_CANDIDATES[0]
 TRAIN_IMPORT_BATCH_SIZE = 500
+
+
+def resolve_train_json_path(train_json: Path | None = None) -> Path:
+    """Resolve BIRD train.json from the current Text2SQL workspace layout."""
+    if train_json:
+        return Path(train_json)
+    for candidate in TRAIN_JSON_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return TRAIN_JSON_PATH
+
+
+def count_bird_train_examples(ws: Workspace | None = None) -> int:
+    """Return imported bird_train example count in the global bird graph."""
+    own_ws = ws is None
+    if ws is None:
+        ws = Workspace(active_projects=["bird"])
+    try:
+        rows = ws.cypher(
+            "MATCH (n:knowledge:example {source: 'bird_train'}) RETURN count(n) AS count",
+            project="bird",
+        )
+        return int(rows[0].get("count") or 0) if rows else 0
+    finally:
+        if own_ws:
+            close = getattr(ws, "close", None)
+            if callable(close):
+                close()
 
 
 def sync_bird_readme(ws: Workspace) -> None:
@@ -63,8 +102,9 @@ def sync_bird_readme(ws: Workspace) -> None:
     )
 
 
-def import_train_examples(ws: Workspace, train_json: Path = TRAIN_JSON_PATH) -> int:
+def import_train_examples(ws: Workspace, train_json: Path | None = None) -> int:
     """将 BIRD train query/golden SQL 导入 bird 全局知识图谱。"""
+    train_json = resolve_train_json_path(train_json)
     if not train_json.exists():
         raise FileNotFoundError(f"train json not found: {train_json}")
 
@@ -127,7 +167,13 @@ def import_train_examples(ws: Workspace, train_json: Path = TRAIN_JSON_PATH) -> 
     return len(rows)
 
 
-def embed_train_examples(ws: Workspace) -> int:
+def embed_train_examples(
+    ws: Workspace,
+    workers: int | None = None,
+    batch_size: int | None = None,
+    retries: int = 8,
+    retry_base_seconds: float = 2.0,
+) -> int:
     """为 bird_train query example 节点生成 detail 语义向量。"""
     embed_config = load_embedding_config()
     client = embed_config.get_client()
@@ -141,19 +187,39 @@ def embed_train_examples(ws: Workspace) -> int:
         print("BIRD train example embeddings are already up to date", flush=True)
         return 0
 
-    total = 0
     actual_dimensions = embed_config.dimensions
-    batch_size = max(1, embed_config.batch_size)
-    for offset in range(0, len(pending), batch_size):
-        batch = pending[offset:offset + batch_size]
-        vectors = client.embed([item["detail"] for item in batch])
-        if len(vectors) != len(batch):
-            print(
-                f"Embedding API returned {len(vectors)} vectors for "
-                f"{len(batch)} inputs; skipped batch",
-                flush=True,
-            )
-            continue
+    batch_size = max(1, int(batch_size or embed_config.batch_size))
+    workers = max(1, int(workers or 1))
+    batches = [
+        pending[offset:offset + batch_size]
+        for offset in range(0, len(pending), batch_size)
+    ]
+
+    def embed_batch(batch: list[dict]) -> list[dict]:
+        last_exc: Exception | None = None
+        for attempt in range(max(0, retries) + 1):
+            try:
+                vectors = client.embed([item["detail"] for item in batch])
+                if len(vectors) != len(batch):
+                    raise RuntimeError(
+                        f"Embedding API returned {len(vectors)} vectors for {len(batch)} inputs"
+                    )
+                break
+            except Exception as exc:
+                last_exc = exc
+                message = str(exc)
+                retryable = (
+                    "429" in message
+                    or "limit_requests" in message
+                    or "rate" in message.lower()
+                    or "timeout" in message.lower()
+                )
+                if not retryable or attempt >= retries:
+                    raise
+                sleep_s = retry_base_seconds * (2 ** min(attempt, 4)) + random.uniform(0, 1.5)
+                time.sleep(sleep_s)
+        else:
+            raise last_exc or RuntimeError("Embedding failed")
 
         rows = []
         for item, vector in zip(batch, vectors):
@@ -166,13 +232,47 @@ def embed_train_examples(ws: Workspace) -> int:
                 "hash": item["hash"],
                 "dimensions": len(vector),
             })
+        return rows
 
-        if not rows:
-            continue
-        _write_train_vectors(ws, rows)
-        actual_dimensions = rows[-1]["dimensions"]
-        total += len(rows)
-        print(f"Embedded BIRD train examples: {total}/{len(pending)}", flush=True)
+    total = 0
+    failed = 0
+    if workers == 1:
+        for batch in batches:
+            rows = embed_batch(batch)
+            if not rows:
+                continue
+            _write_train_vectors(ws, rows)
+            actual_dimensions = rows[-1]["dimensions"]
+            total += len(rows)
+            print(f"Embedded BIRD train examples: {total}/{len(pending)}", flush=True)
+    else:
+        print(
+            f"Embedding BIRD train examples with {workers} workers, "
+            f"batch_size={batch_size}, batches={len(batches)}",
+            flush=True,
+        )
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(embed_batch, batch): idx
+                for idx, batch in enumerate(batches, start=1)
+            }
+            for future in as_completed(futures):
+                batch_no = futures[future]
+                try:
+                    rows = future.result()
+                except Exception as exc:
+                    failed += 1
+                    print(f"Embedding batch {batch_no}/{len(batches)} failed: {exc}", flush=True)
+                    continue
+                if not rows:
+                    continue
+                _write_train_vectors(ws, rows)
+                actual_dimensions = rows[-1]["dimensions"]
+                total += len(rows)
+                print(f"Embedded BIRD train examples: {total}/{len(pending)}", flush=True)
+
+    if failed:
+        print(f"Embedding finished with {failed} failed batches; rerun to fill pending vectors", flush=True)
 
     if total:
         _ensure_vector_index(ws, actual_dimensions)
@@ -286,17 +386,28 @@ def sync_bird_global(
     sync_readme: bool = True,
     import_train: bool = True,
     embed_train: bool = True,
-    train_json: Path = TRAIN_JSON_PATH,
+    train_json: Path | None = None,
+    embedding_workers: int | None = None,
+    embedding_batch_size: int | None = None,
+    embedding_retries: int = 8,
+    embedding_retry_base_seconds: float = 2.0,
 ) -> None:
+    train_json = resolve_train_json_path(train_json)
     ws = Workspace(active_projects=["bird"])
     if sync_readme:
         sync_bird_readme(ws)
     if import_train:
         count = import_train_examples(ws, train_json=train_json)
         print(f"Imported {count} BIRD train examples into bird graph", flush=True)
-        if embed_train:
-            embedded = embed_train_examples(ws)
-            print(f"Embedded {embedded} BIRD train examples", flush=True)
+    if embed_train:
+        embedded = embed_train_examples(
+            ws,
+            workers=embedding_workers,
+            batch_size=embedding_batch_size,
+            retries=embedding_retries,
+            retry_base_seconds=embedding_retry_base_seconds,
+        )
+        print(f"Embedded {embedded} BIRD train examples", flush=True)
 
 
 def main() -> None:
@@ -304,7 +415,26 @@ def main() -> None:
     parser.add_argument("--no-readme", action="store_true", help="不更新 bird::README")
     parser.add_argument("--no-train", action="store_true", help="不导入 train examples")
     parser.add_argument("--no-embedding", action="store_true", help="导入 train examples 后不生成语义向量")
-    parser.add_argument("--train-json", type=Path, default=TRAIN_JSON_PATH, help="BIRD train.json 路径")
+    parser.add_argument("--train-json", type=Path, help="BIRD train.json 路径")
+    parser.add_argument(
+        "--embedding-workers",
+        type=int,
+        default=int(os.environ.get("PONTIS_BIRD_EMBEDDING_WORKERS", "1")),
+        help="并发 embedding batch 数",
+    )
+    parser.add_argument(
+        "--embedding-batch-size",
+        type=int,
+        default=None,
+        help="每个 embedding 请求包含的 example 数；默认使用全局 embedding batch_size",
+    )
+    parser.add_argument("--embedding-retries", type=int, default=8, help="每个 embedding batch 的重试次数")
+    parser.add_argument(
+        "--embedding-retry-base-seconds",
+        type=float,
+        default=2.0,
+        help="429/timeout 重试的基础退避秒数",
+    )
     args = parser.parse_args()
 
     sync_bird_global(
@@ -312,6 +442,10 @@ def main() -> None:
         import_train=not args.no_train,
         embed_train=not args.no_embedding,
         train_json=args.train_json,
+        embedding_workers=args.embedding_workers,
+        embedding_batch_size=args.embedding_batch_size,
+        embedding_retries=args.embedding_retries,
+        embedding_retry_base_seconds=args.embedding_retry_base_seconds,
     )
     print("Synced bird global graph", flush=True)
 

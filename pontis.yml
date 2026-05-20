@@ -20,77 +20,77 @@ projects:
   california_schools:
     source:
       type: fs
-      path: example_data/bird_dev/dev_databases/california_schools
+      path: ../workspace/baselines/pontis/data/bird_dev/dev_databases/california_schools
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7688
   card_games:
     source:
       type: fs
-      path: example_data/bird_dev/dev_databases/card_games
+      path: ../workspace/baselines/pontis/data/bird_dev/dev_databases/card_games
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7689
   codebase_community:
     source:
       type: fs
-      path: example_data/bird_dev/dev_databases/codebase_community
+      path: ../workspace/baselines/pontis/data/bird_dev/dev_databases/codebase_community
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7690
   debit_card_specializing:
     source:
       type: fs
-      path: example_data/bird_dev/dev_databases/debit_card_specializing
+      path: ../workspace/baselines/pontis/data/bird_dev/dev_databases/debit_card_specializing
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7691
   european_football_2:
     source:
       type: fs
-      path: example_data/bird_dev/dev_databases/european_football_2
+      path: ../workspace/baselines/pontis/data/bird_dev/dev_databases/european_football_2
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7692
   financial:
     source:
       type: fs
-      path: example_data/bird_dev/dev_databases/financial
+      path: ../workspace/baselines/pontis/data/bird_dev/dev_databases/financial
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7693
   formula_1:
     source:
       type: fs
-      path: example_data/bird_dev/dev_databases/formula_1
+      path: ../workspace/baselines/pontis/data/bird_dev/dev_databases/formula_1
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7694
   student_club:
     source:
       type: fs
-      path: example_data/bird_dev/dev_databases/student_club
+      path: ../workspace/baselines/pontis/data/bird_dev/dev_databases/student_club
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7695
   superhero:
     source:
       type: fs
-      path: example_data/bird_dev/dev_databases/superhero
+      path: ../workspace/baselines/pontis/data/bird_dev/dev_databases/superhero
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7696
   thrombosis_prediction:
     source:
       type: fs
-      path: example_data/bird_dev/dev_databases/thrombosis_prediction
+      path: ../workspace/baselines/pontis/data/bird_dev/dev_databases/thrombosis_prediction
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7697
   toxicology:
     source:
       type: fs
-      path: example_data/bird_dev/dev_databases/toxicology
+      path: ../workspace/baselines/pontis/data/bird_dev/dev_databases/toxicology
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7698

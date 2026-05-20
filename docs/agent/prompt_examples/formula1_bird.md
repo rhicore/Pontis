@@ -146,7 +146,7 @@ Project中的数据被解析为知识图谱：
 |---|---|---|---|---|
 | `table` | 数据库表 | `drivers` | 通常连接上游的 `db`，连接自己的 `col`，也常连接 `fk`、`rel`、`overlap`、`disambig` | 通常直接用数据库里的表名命名，例如 `drivers`、`schools` |
 | `view` | 数据库视图 | `active_users` | 通常连接上游的 `db`，连接自己的 `col`，也可能连接 `rel`、`disambig` | 通常直接用数据库里的视图名命名，例如 `active_users` |
-| `col` | 表列或视图列，CSV 列也使用这个标签 | `driverId`, `school_name` | 通常连接所属的 `table`、`view` 或 `csv` 文件，也常连接 `fk`、`rel`、`overlap`、`disambig` | 通常直接用列名命名；完整引用里常表现为 `db/table/col`，内部也常见 `db--table--col` |
+| `col` | 表列或视图列，CSV 列也使用这个标签 | `driverId`, `school_name` | 通常连接所属的 `table`、`view` 或 `csv` 文件，也常连接 `fk`、`rel`、`overlap`、`disambig` | 通常直接用列名命名；完整引用通过图路径表达，例如 `db:db/table:table/col:col` |
 | `fk` | 结构性连接关系，优先代表外键，也可能包含高置信推断关系 | `orders.user_id->users.id` | 通常同时连接源 `table`、源 `col`、目标 `table`、目标 `col` | 如果没有人工命名，通常按 `源表.源列->目标表.目标列` 的形式命名 |
 | `INT` / `TEXT` / `REAL` / `BLOB` / `BOOL` / `DATETIME` / `JSON` / `FLOAT` | 列类型标签 | `driverId:INT:col` | 这些标签通常附着在 `col` 上，用来说明列的类型；带这些标签的实体最常连接所属的 `table/view/csv`，以及 `fk`、`rel`、`overlap` 等列级关系实体 | 这些通常不是独立命名的实体，而是作为附着在 `col` 上的类型标签出现，例如 `driverId:INT:col` |
 

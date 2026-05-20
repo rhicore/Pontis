@@ -366,7 +366,270 @@ flowchart LR
 
 这类题不适合直接沉淀成强规则，否则会污染 `bird global`。
 
-## 7. 当前最关键的判断：不是“没读知识”，而是“读了但没真正服从”
+## 7. Schema linking 成功之后，Text-to-SQL 仍会错在哪里
+
+如果把 Pontis 的目标重新表述为“提升 agent 对数据库的理解”，那么 schema linking 是一个非常关键的中间指标。但它不能完全替代最终 EX，因为 schema linking 只回答：
+
+> 模型是否找到了 gold SQL 需要的表和列？
+
+它不直接回答：
+
+> 模型是否用正确的 SQL 逻辑、聚合粒度、过滤口径和输出契约组合了这些表列？
+
+因此，即使 gold tables 和 gold columns 都被成功选中，Text-to-SQL 仍然可能因为下面几类原因失败。
+
+### 7.0 “等结构性”的定义
+
+为了把“数据库理解”和“SQL 组织逻辑”分开，本文引入一个工作术语：**SQL 等结构性**。
+
+直观定义：
+
+> 如果两个 SQL 绑定到同一批数据库信息，那么它们在数据库理解层面是等结构的；它们可以在聚合、排序、子查询、输出格式等 SQL 组织方式上不同。
+
+这个第一版直觉是对的，但如果只比较表集合和列集合，会漏掉一些“表列都找到了，但数据库理解仍然不深”的错误。因此本文把等结构性拆成三个层级，而不是只给一个二值定义。
+
+形式化地说，将一个 SQL 拆成两部分：
+
+```text
+SQL = Database Grounding + SQL Logical Form
+```
+
+其中：
+
+- `Database Grounding`：表、列、join 关系、过滤 literal、数据库局部值和局部术语。
+- `SQL Logical Form`：SELECT 投影方式、WHERE 组合方式、聚合、GROUP BY、HAVING、ORDER BY、LIMIT、子查询、集合操作、输出契约。
+
+对一条 SQL `q`，定义它的数据库绑定抽取函数：
+
+```text
+G(q) = (T(q), C(q), J(q), P(q), R(q))
+```
+
+其中：
+
+- `T(q)`：SQL 中使用的物理表集合。
+- `C(q)`：SQL 中使用的表限定列集合，例如 `cards.id`。
+- `J(q)`：SQL 中显式出现的 join 列对集合，例如 `cards.setCode = sets.code`。
+- `P(q)`：列、比较符和值绑定后的过滤谓词集合，例如 `cards.rarity = 'rare'`、`schools.year >= 2020`。
+- `R(q)`：列在 SQL 中承担的角色，例如 projection、filter、join、group、order、aggregate。
+
+本文使用三个层次的等结构性：
+
+| 名称 | 判定 | 含义 |
+|---|---|---|
+| Schema 等结构性 | `T(pred)=T(gold)` 且 `C(pred)=C(gold)` | 表和列完全一致，接近传统 schema linking |
+| Grounding 等结构性 | `T/C/J/P` 均一致 | 表、列、join pair、列绑定过滤谓词都一致 |
+| Role-aware 等结构性 | `T/C/J/P/R` 均一致 | 进一步要求列在 SELECT、WHERE、JOIN、GROUP、ORDER、聚合中的角色一致 |
+
+Schema 等结构性更接近传统 schema linking：它回答“是否找到了同一批表列”。Grounding 等结构性进一步要求 join 路径和具体过滤谓词也一致。Role-aware 等结构性再要求同一列在 SQL 中承担同样的结构角色。
+
+需要强调的是：等结构性不是 SQL 等价性。下面两条 SQL 在宽松甚至严格等结构意义下可能相同，但 EX 可以不同：
+
+```sql
+SELECT COUNT(*) FROM badges WHERE name = 'Nice Answer';
+SELECT COUNT(DISTINCT UserId) FROM badges WHERE name = 'Nice Answer';
+```
+
+它们绑定到同一张表、同一列和同一个过滤值，但 SQL logical form 中的聚合粒度不同。因此，等结构性适合衡量 Pontis 是否理解了数据库，不适合替代最终 EX。
+
+第一版只用 `T/C/J/V` 的定义会漏掉以下情况：
+
+1. **literal 没有绑定到列和操作符。**  
+   `status = 'A'` 和 `type = 'A'` 可能拥有相同 literal，但数据库含义完全不同。因此需要 `P(q)` 记录 `column operator value`。
+
+2. **同一批列承担了不同角色。**  
+   `SELECT name WHERE id = 1` 和 `SELECT id WHERE name = 'A'` 可能使用相同表列集合，但 projection 和 filter 角色互换。因此需要 `R(q)`。
+
+3. **操作符口径不同。**  
+   `age > 30` 与 `age >= 30`，`name = 'A'` 与 `name LIKE '%A%'`，表列和值都可能相同，但条件语义不同。因此谓词必须包含操作符。
+
+4. **join 路径表面相同但连接角色不充分。**  
+   仅比较表列集合无法发现遗漏桥接表、连接列配错、或 shortcut join。至少需要 `J(q)`；更严格时还应记录 join type，例如 `LEFT JOIN` 与 `INNER JOIN`。
+
+5. **未限定列名无法可靠归属。**  
+   多表查询中未加表前缀的同名列，如果解析器无法唯一归属，应计入 `unresolved_columns`，不能直接判定等结构。
+
+6. **函数包裹的局部值语义。**  
+   `strftime('%Y', date)` 和直接使用 `date` 列都绑定同一列，但前者取年份，后者取完整日期。这更接近 SQL logical form，但在日期/时间字段上也反映数据库值格式理解不足，需要人工错因或后续扩展记录函数角色。
+
+当前工具实现位于：
+
+```text
+tools/compare_sql_grounding.py
+```
+
+工具输出中的字段对应如下：
+
+| 工具字段 | 文档概念 |
+|---|---|
+| `structural_equivalence` | Schema 等结构性 |
+| `strict_structural_equivalence` / `exact_grounding_match` | Grounding 等结构性 |
+| `role_aware_structural_equivalence` | Role-aware 等结构性 |
+| `strict_schema_recall` | gold 表列是否被 predicted 全覆盖 |
+
+最终建议：
+
+- 如果论文要证明 Pontis 提升数据库理解能力，优先报告 `strict_schema_recall` 和 Schema 等结构性。
+- 如果要判断“数据库 grounding 是否完全找对”，报告 Grounding 等结构性。
+- 如果要进一步排除 projection/filter/order 角色错位，报告 Role-aware 等结构性。
+- 不要用任何一种等结构性替代 EX；等结构性用于定位失败发生在 database grounding 还是 SQL logical form。
+
+### 7.1 聚合粒度错误
+
+这是 schema linking 成功后最常见的错误之一。模型选中了正确表和正确列，但不知道应该数“行”、数“实体”，还是数“去重实体”。
+
+典型形式：
+
+- `COUNT(*)` vs `COUNT(id)`
+- `COUNT(id)` vs `COUNT(DISTINCT id)`
+- `AVG` / `SUM` 的分组对象不对
+- 先过滤再聚合，还是先聚合再过滤
+
+例如 `codebase_community/q605` 中，agent 已经查出了 `COUNT(*) = 207` 和 `COUNT(DISTINCT UserId) = 98`，但最后仍然选择了自己认为更合理的 `COUNT(DISTINCT UserId)`。这说明 schema 已经找对，失败点在 benchmark 对统计粒度的偏好。
+
+### 7.2 WHERE 条件口径错误
+
+模型可能选中了正确列，但过滤条件仍然错。
+
+常见情况：
+
+- 自然语言值没有映射到数据库真实枚举值
+- 大小写、缩写、别名、空格格式不一致
+- 范围边界错，例如 `>` vs `>=`
+- 日期范围是否包含端点不一致
+- evidence 中的过滤条件没有完全落实
+
+这类错误处在 schema linking 和 value grounding 的交界处。表列选择成功只能说明“去哪里找”，不能保证“找哪个具体值”和“怎么比较”是对的。
+
+### 7.3 JOIN 路径或连接条件错误
+
+如果 schema linking 的定义只是 gold 表集合和列集合都覆盖，那么 join 仍然可能错。
+
+常见情况：
+
+- 表和列都选中，但连接列配错
+- 遗漏桥接表
+- 使用了可执行但语义错误的 shortcut join
+- 多条可行路径中选择了错误路径
+- 脏数据导致字面外键和真实 join 口径不一致
+
+这类错误说明 schema linking 指标最好拆成两层：
+
+- table/column linking：是否找到相关表列
+- relation/path linking：是否找到正确连接路径
+
+Pontis 的 `overlap`、`fk`、`disambig`、bridge check 更适合解释第二层。
+
+### 7.4 公式和计算表达式错误
+
+BIRD 中很多题的 evidence 会给出公式或口径，尤其是 percentage、ratio、difference、year difference 等。
+
+即使相关列全选对，SQL 仍可能错在：
+
+- 分子分母范围不一致
+- 忘记乘 `100`
+- 整数除法或类型转换问题
+- 差值方向反了
+- 年龄或年份差按真实日期算法算，而不是按 evidence 字面算
+- `CASE WHEN` 条件和外层过滤条件不一致
+
+这类错误本质上是 logical form construction，不是 schema linking。
+
+### 7.5 输出契约错误
+
+模型可能算出了正确中间结果，但最终返回的列不符合 gold。
+
+常见情况：
+
+- 题目要 `id`，模型返回 `name`
+- 题目要单列，模型返回多列
+- 题目要实体属性，模型返回聚合值
+- 多返回解释性列
+- 排序后应返回对应行的某个字段，但模型返回排序字段本身
+
+这类错误尤其适合用 `bird global` 抽象经验约束，因为它反映的是 benchmark 输出习惯，而不是某个数据库的局部结构。
+
+### 7.6 排序、Top-k 和 tie-breaking 错误
+
+最高、最低、最新、最早、最多等 superlative 问题，通常 schema linking 很容易成功，但 SQL 仍可能因为排序和 tie-breaking 失败。
+
+常见情况：
+
+- `ORDER BY` 方向反了
+- 忘记 `LIMIT 1`
+- 排序字段选对但输出字段不对
+- 同分时是否需要额外排序不明确
+- 用文本时间排序，而不是数值时间或日期解析
+
+这类错误在 `formula_1` 和 `california_schools` 中比较典型。
+
+### 7.7 SQL 结构组合错误
+
+复杂查询需要嵌套、集合操作或多阶段聚合。表列找对后，模型仍可能不会正确组合 SQL 结构。
+
+典型情况：
+
+- 需要子查询但写成单层查询
+- 需要 `HAVING` 但写成 `WHERE`
+- 需要 `EXISTS` / `NOT EXISTS` 但写成普通 join
+- 需要 `UNION` / `INTERSECT` / `EXCEPT` 但写成 OR 条件
+- 多阶段聚合顺序错误
+
+这类错误主要反映 SQL planning 能力。
+
+### 7.8 NULL、重复行和数据库脏数据处理错误
+
+真实数据库中经常有 NULL、重复记录、编码字段和脏 join。
+
+即使 schema linking 成功，仍可能因为：
+
+- 没有处理 `NULL`
+- 错把空字符串当 NULL
+- duplicate rows 导致计数偏差
+- 脏外键需要 cast、trim 或补零
+- 需要 `LEFT JOIN`，但模型用了 `INNER JOIN`
+
+这类错误是 BIRD 比 Spider 更接近真实场景的地方。
+
+### 7.9 Benchmark / gold 歧义
+
+还有一类失败并不完全是模型错，而是题意、evidence 和 gold SQL 的口径存在模糊性。
+
+表现为：
+
+- 自然语言允许多个合理解释
+- evidence 给出的公式和自然语言直觉冲突
+- gold SQL 偏好某种非常字面的写法
+- 业务上更合理的 SQL 被 EX 判错
+
+这类 case 不适合用来证明 schema linking 不行，也不适合沉淀成强通用规则；更适合作为 benchmark 局限讨论。
+
+### 7.10 对 Pontis 实验的启发
+
+因此，后续如果引入 schema linking 成功率，建议不要只看单一指标，而是分层分析：
+
+| 层级 | 问题 | 指标 |
+|---|---|---|
+| Schema understanding | 是否找到 gold 表和列 | Table/Column Recall、Strict Schema Recall |
+| Relation understanding | 是否找到正确 join 路径 | Join Pair Recall、Bridge Table Recall |
+| Value grounding | 是否找到正确过滤值和比较方式 | Value Recall、Condition Accuracy |
+| Logical form | 是否正确组合聚合、排序、子查询和集合操作 | Component F1、人工错因分类 |
+| Final execution | 最终结果是否一致 | EX |
+
+最有价值的分析不是“schema linking 成功率是多少”本身，而是下面这个条件分解：
+
+```text
+EX | schema linking success
+EX | schema linking failure
+```
+
+如果 `schema linking success` 后 EX 很高，说明 Pontis 的主要瓶颈确实是数据库理解；如果 schema linking 成功后 EX 仍然不高，说明主要瓶颈已经转移到 SQL 口径、公式翻译、聚合粒度和 benchmark 风格。
+
+所以更准确的论文表述应该是：
+
+> Schema linking 是衡量 Pontis 数据库理解能力的核心中间指标，但最终 Text-to-SQL 仍受 SQL logical form、value grounding、join path、aggregation grain 和 benchmark output contract 影响。本文同时报告 schema linking 与 EX，并通过条件 EX 分析区分“理解失败”和“生成失败”。
+
+## 8. 当前最关键的判断：不是“没读知识”，而是“读了但没真正服从”
 
 从日志里可以看到三种典型情况。
 
@@ -420,7 +683,7 @@ flowchart LR
 
 **增强知识对最终 SQL 的约束力。**
 
-## 8. 为什么 train → dev 的迁移天然很难
+## 9. 为什么 train → dev 的迁移天然很难
 
 对于不熟悉 BIRD 的老师，这里需要强调一个事实：
 
@@ -459,7 +722,7 @@ train 和 dev 的数据库完全不同，这带来三个直接后果。
 - 哪些知识应该更早地被触发
 - 哪些知识应该在最终 SQL 输出前变成 hard check
 
-## 9. 现阶段的结论
+## 10. 现阶段的结论
 
 如果把当前结果压缩成几句汇报结论，可以总结为：
 
@@ -472,7 +735,7 @@ train 和 dev 的数据库完全不同，这带来三个直接后果。
 4. **train 的价值主要在于提炼抽象经验，而不是直接检索 SQL 模板。**
 5. **下一阶段优化重点，应从“继续堆知识”转向“增强知识服从性与本库理解能力”。**
 
-## 10. 下一步工作建议
+## 11. 下一步工作建议
 
 如果目标是把这套系统继续往“成熟的 data agent”推进，当前最值得做的事情有三项。
 

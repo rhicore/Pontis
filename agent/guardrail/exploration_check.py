@@ -22,13 +22,13 @@ class ExplorationCheck(Guardrail):
             if history_names:
                 result[i] = CallVerdict(
                     "warn",
-                    "避免使用项目级全图枚举。请优先改用更定向的查询，例如数据库文件、表、列、关系或已知邻居。"
+                    "请使用更定向的查询，例如数据库文件、表、列、关系或已知邻居。"
                 )
                 continue
 
             result[i] = CallVerdict(
                 "block",
-                "不要把项目级全图枚举作为第一步。请先从更定向的入口开始，例如 "
+                "请从更定向的入口开始，例如 "
                 "`*.sqlite`、`*:file:db/*:table`、`financial.sqlite/*:table` 或某个已知实体的邻居。"
             )
 

@@ -70,7 +70,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "Graph ref pattern, e.g. '*:file', '*:col', 'context/db/results.db/*:table'",
+                            "description": "Graph ref pattern, e.g. '*:file', '*:col', 'results.db:db/*:table', 'bird::*:example'",
                         },
                         "query": {
                             "type": "string",
@@ -195,7 +195,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "实体名称，如 'users' (表) 或 'event.db'",
+                            "description": "Graph ref, often from find output or parent_ref/neighbor_name from meta Related",
                         },
                         "all": {
                             "type": "boolean",
@@ -304,7 +304,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "实体引用，格式 [project::]name[:tag1[:tag2]]，如 'account.id->district.id:fk' 或 'no_concat:convention'",
+                            "description": "实体引用，如 'account.id->district.id:fk' 或 'no_concat:convention'",
                         },
                         "meta": {
                             "type": "object",
@@ -337,7 +337,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "实体引用：名称或 ref 模式（必须唯一匹配）",
+                            "description": "Entity name, ref pattern, or full ref returned by find/meta; must match one entity",
                         },
                         "fields": {
                             "type": "object",
@@ -361,8 +361,8 @@ def _build_write_schemas() -> Dict[str, dict]:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "a": {"type": "string", "description": "节点 ref（名称或 ref 模式）"},
-                                    "b": {"type": "string", "description": "节点 ref（名称或 ref 模式）"},
+                                    "a": {"type": "string", "description": "Node ref returned by find/meta, or a unique entity name"},
+                                    "b": {"type": "string", "description": "Node ref returned by find/meta, or a unique entity name"},
                                 },
                                 "required": ["a", "b"],
                             },
@@ -383,7 +383,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "实体引用：名称或 ref 模式（必须唯一匹配）",
+                            "description": "Entity name, ref pattern, or full ref returned by find/meta; must match one entity",
                         },
                     },
                     "required": ["ref"],

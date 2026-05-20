@@ -25,8 +25,7 @@ class ToolAbuse(Guardrail):
                 result[i] = CallVerdict(
                     "block",
                     f"query 调用已达上限（{self.total_limit} 次）。"
-                    "不要用 shell、脚本或其他外部执行方式绕过 query 限制；"
-                    "请基于已有信息、find/meta/grep 的结构化结果继续推理。"
+                    "请基于已有信息和 find/meta/grep 的结构化结果继续推理。"
                 )
                 continue
 
@@ -40,7 +39,7 @@ class ToolAbuse(Guardrail):
             ):
                 msg_parts.append(
                     f"你已连续 {self.consecutive_limit} 次调用 query，"
-                    "请先回顾已有 schema/元数据，必要时改用 find/meta/grep 定向补充信息"
+                    "请回顾已有 schema/元数据，并用 find/meta/grep 定向补充结构信息"
                 )
 
             result[i] = CallVerdict("warn", " ".join(msg_parts))

@@ -39,9 +39,40 @@ def get_tool_prompt(spec=None) -> str:
 
 ### 工作协议
 
-- ref 是图谱访问语法；后续工具调用直接复制 `find/meta` 返回的完整 ref。
+- ref 是图谱访问语法；不带 project 路由时匹配当前打开的全部 Project，`project::ref` 限定单个 Project。
+- ref 的 `/` 表示图边路径，`:` 表示当前路径段的标签。
+- `find` 第一列与输入 ref 使用同一套路径逻辑；`meta` 的 Related 只显示邻接名称，访问邻接节点时用 `主节点ref/邻接名称`。
 - 从具体入口开始探索：先 file，再 table/col/pattern/chunk，再数据验证。
 - 已有工具结果可作为证据复用；同一事实用新查询验证时要改变验证角度。
 - 结果截断时先按 offset 翻页，保持同一查询语义。
 - 回答基于工具返回的事实，用中文表达。
+
+### 常用入口
+
+| 调用 | 用途 |
+|---|---|
+| `find({{"ref":"*:file"}})` | 列出全部已打开 Project 的文件实体 |
+| `find({{"ref":"*:file:db"}})` | 列出全部已打开 Project 的 DB 文件实体 |
+| `find({{"ref":"*:file:csv"}})` | 列出全部已打开 Project 的 CSV/TSV 文件实体 |
+| `find({{"ref":"results.db:db/*:table"}})` | 列出某个 DB 文件的表实体 |
+| `find({{"ref":"data.csv:csv/*:col"}})` | 列出某个 CSV 的列实体 |
+| `find({{"ref":"data.json/*:pattern"}})` | 列出某个 JSON 的 pattern 实体 |
+| `find({{"ref":"knowledge.md/*:chunk"}})` | 列出某个文本文件的 chunk 实体 |
+| `find({{"ref":"*:col", "query":"track number"}})` | 在列实体中匹配 track number 相关摘要 |
+
+### 查询示例
+
+```json
+{{"ref":"data.csv:file:csv:text","sql":"SELECT status, COUNT(*) AS n FROM this GROUP BY status"}}
+```
+
+```json
+{{"ref":".","sql":"SELECT c.name, COUNT(*) AS n FROM customers c JOIN orders o ON c.id = o.customer_id GROUP BY c.name"}}
+```
+
+### 写入任务建议
+
+- 创建实体时，把实体自身语义写进 meta，把来源关系写进 edges。
+- 批量写 brief/detail 时，连续使用 update_meta。
+- 子智能体任务写清目标、已知信息、具体要求和输出格式。
 """

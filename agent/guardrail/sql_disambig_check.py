@@ -89,10 +89,10 @@ class SQLDisambigCheck(Guardrail):
             indented = "\n".join("    " + line for line in items.split("\n"))
             lines.append(indented)
 
-        return ("⚠️ SQL 中提及的以下实体涉及到语义歧义，"
-                "请读取对应的语义歧义实体，了解详情：\n"
+        return ("⚠️ SQL 中提及的以下实体涉及语义歧义，"
+                "请读取对应的消歧实体：\n"
                 + "\n".join(lines)
-                + "\n\n meta读取对应的消歧实体之后，请仔细辨析有歧义的实体之间的关系，仔细考虑当前SQL究竟应该使用哪个实体，很多时候另一条逻辑也能走通，所以需要你仔细辨析，选择最可能的选项。")
+                + "\n\n读取消歧实体后，比较候选实体含义并选择与当前问题最匹配的实体。")
 
     # ──────────────── 消歧缓存（workspace 缓存）────────────────
 

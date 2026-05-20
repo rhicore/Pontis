@@ -31,8 +31,7 @@ class SQLEntityCheck(Guardrail):
             if missing:
                 items = format_entity_list(ctx.workspace, missing[:12])
                 msg = ("⚠️ SQL 引用了以下尚未通过 meta 读取的实体，"
-                       "如果你对这些实体的语义有信心可以继续执行，"
-                       "但建议先 meta 读取确认：\n"
+                       "建议用 meta 读取确认语义：\n"
                        + items)
                 result[i] = CallVerdict("warn", msg)
 
@@ -44,10 +43,9 @@ class SQLEntityCheck(Guardrail):
                 )
                 if missing:
                     items = format_entity_list(ctx.workspace, missing[:12])
-                    msg = ("🚫 最终 SQL 输出被拦截：以下实体尚未通过 meta 读取，"
-                           "必须先读取确认语义后才能输出最终 SQL：\n"
+                    msg = ("以下实体需要先通过 meta 读取确认语义：\n"
                            + items
-                           + "\n\n请使用 meta 工具读取以上实体后重新思考确保理解数据库结构和SQL的正确性再输出。")
+                           + "\n\n请读取以上实体后重新思考数据库结构和 SQL。")
                     result["text"] = CallVerdict("block", msg)
 
         return result

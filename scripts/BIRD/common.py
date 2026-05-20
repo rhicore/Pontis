@@ -6,10 +6,19 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+TEXT2SQL_ROOT = PROJECT_ROOT.parent
+PONTIS_WORKSPACE_ROOT = TEXT2SQL_ROOT / "workspace" / "baselines" / "pontis"
 
 
 def get_data_dir(train: bool) -> Path:
-    return PROJECT_ROOT / "example_data" / ("bird_train" if train else "bird_dev")
+    split = "bird_train" if train else "bird_dev"
+    workspace_data = TEXT2SQL_ROOT / "workspace" / "baselines" / "pontis" / "data" / split
+    if workspace_data.exists():
+        return workspace_data
+    local_data = PROJECT_ROOT / "example_data" / split
+    if local_data.exists():
+        return local_data
+    return TEXT2SQL_ROOT / "example_data" / split
 
 
 def get_db_base(train: bool) -> Path:
@@ -21,8 +30,28 @@ def get_db_dir(db_id: str, train: bool) -> Path:
     return get_db_base(train) / db_id
 
 
+def get_preprocess_dir(db_id: str, train: bool) -> Path:
+    split = "bird_train" if train else "bird_dev"
+    return PONTIS_WORKSPACE_ROOT / "preprocess_logs" / split / db_id
+
+
+def get_runtime_dir(db_id: str, train: bool) -> Path:
+    split = "bird_train" if train else "bird_dev"
+    return PONTIS_WORKSPACE_ROOT / "runtime_logs" / split / db_id
+
+
 def get_benchmark_dir(db_id: str, train: bool) -> Path:
-    return get_db_dir(db_id, train) / ".pontis" / "benchmark"
+    return get_runtime_dir(db_id, train) / "benchmark"
+
+
+def get_progress_path(train: bool) -> Path:
+    split = "bird_train" if train else "bird_dev"
+    return PONTIS_WORKSPACE_ROOT / "runtime_logs" / split / "progress.log"
+
+
+def get_results_dir(train: bool) -> Path:
+    split = "bird_train" if train else "bird_dev"
+    return PONTIS_WORKSPACE_ROOT / "results" / split
 
 
 def iter_db_dirs(train: bool):
@@ -37,7 +66,7 @@ def list_db_ids_with_benchmark_logs(train: bool, selected_db: str | None = None)
     for db_dir in iter_db_dirs(train):
         if selected_db and db_dir.name != selected_db:
             continue
-        bench_dir = db_dir / ".pontis" / "benchmark"
-        if bench_dir.exists() and any(bench_dir.glob("*.brief.log")):
+        bench_dir = get_benchmark_dir(db_dir.name, train)
+        if bench_dir.exists() and any(bench_dir.glob("q*.log")):
             db_ids.append(db_dir.name)
     return db_ids

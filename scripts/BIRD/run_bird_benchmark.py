@@ -29,7 +29,18 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from scripts.BIRD.common import PROJECT_ROOT, get_data_dir, get_db_base
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from scripts.BIRD.common import (
+    PROJECT_ROOT,
+    get_benchmark_dir,
+    get_data_dir,
+    get_db_base,
+    get_preprocess_dir,
+    get_progress_path,
+    get_results_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,47 +66,13 @@ BIRD_BENCHMARK_GUARDRAILS = [
 # - 每道题创建 agent 后
 # - 在第一次 `agent.chat(prompt)` 时输入
 # - 这是生成最终 SQL 之前的主用户提示词
-QUERY_PROMPT_TEMPLATE = """\
-你正在bird数据集的benchmark测试中, 
-你会打开两个project,
-其中一个是你即将探索访问, 最终回答用户query生成sql的数据库项目, 
-另一个是bird项目,这个知识图谱存储的是bird数据集的全局知识库, 代表的是bird数据集下sql生成任务的一些抽象知识和经验总结, 
-该项目不涉及你即将访问生成的sql的具体数据库schema, 但它存储的抽象知识和经验总结是你生成sql时的重要参考
+QUERY_PROMPT_BASE_TEMPLATE = """\
+你正在 BIRD 数据集的 benchmark 测试中。
+{project_scope}
 
+输出格式：一个 ```sql``` 代码块，代码块内是一条 SQLite SELECT 语句。多值答案用单列多行表示。
 
-
-输出要求：
-- 只输出一条 SELECT 语句，用 ```sql ``` 代码块包裹
-- 不要解释，只输出 SQL
-- 注意 SQLite 语法：字符串用单引号，列名有特殊字符时用反引号或双引号；如果复合查询的每个分支都需要各自 `ORDER BY / LIMIT`，先放进 CTE / 子查询，再在外层 `UNION / UNION ALL`
-
-
-输出协议：
-- 回复中只包含一个 ```sql``` 代码块和一条 SELECT 语句，代码块前后不要有任何文字
-- 多个值用单列多行输出，不要横向展开为多列，不要用 GROUP_CONCAT 合并
-
-
-关于 `bird` 经验的使用：
-- `bird::README` 已经在系统提示词中给出，不要再用 `meta` 重复读取 README。
-- 不要用 `find({"ref":"bird::*:knowledge"})` 或类似方式全量浏览 bird 知识库；这会返回大量 train example，浪费上下文。
-- 你在给当前在写SQL最需要参考的是BIRD数据集的SQL写作风格,这并不是SQL对错的问题,而仅仅是BIRD数据集本身会有一定的SQL写作偏好,
-- 在bird project库中, 会有一些example类型的知识实体, 这些是BIRD train数据集在其他数据库上的query/evidence/golden_sql,尽管他们的数据库schema和当前的数据库不一样, 但他们的SQL写作风格和表达习惯是非常值得参考的, 
-- 只有当题目确实需要跨库 SQL 风格参考时，才用语义检索 **find工具** 在 `bird::*:example` 中检索少量相关经验, 来指导你写出符合BIRD数据集风格的SQL(因为这些SQL的数据集和当前数据集并不重合, 所以你在编写查询语句时尽量要避免关注当前数据库具体的schema, 而是要关注SQL写作风格和表达习惯),
-- 你可以在检索到相关经验后, 先分析总结出这些经验的SQL写作风格和表达习惯是什么, 然后再把这些总结出的SQL写作风格和表达习惯迁移应用到你当前的SQL写作中来, 以此来提升你SQL的质量和BIRD数据集的风格一致性
-
-## 数据库探索纪律
-
-1. `query` 只用于验证，不要拿来代替 schema 探索。
-2. 用定向 `find` 找数据库、表、列、fk、disambig；不要把 `find({"ref":"*"})` 当成默认起手式。
-3. 若某个 `db/*:fk` 入口为空，再退回项目级 `*:fk`。
-4. 若某列 `meta` 已明确没有 `sample/topk` 等字段，不要重复追问；直接改用一次最小 `query` 验证。
-5. 如果 README、列元数据或知识节点已经明确给出可执行规则，不要为了重复确认同一规则继续连做多次 `query`。
-6. 优先复用工具返回的完整展示 ref；`find` 返回什么，就尽量原样拿去喂给 `meta` / `update_meta` / `add_edge`。
-7. CSV、JSON、文本文件如果 `meta(detail)` 已经给出可读内容，就不要再读取原文件。
-8. 找数据库文件时，优先用 `*:file:db`，不要只猜 `*.db`。
-
-
----
+{bird_global_section}
 
 请根据以下信息生成一条 SQLite SQL 查询。
 
@@ -105,14 +82,40 @@ QUERY_PROMPT_TEMPLATE = """\
 
 """
 
-# - 最终输出 SQL 前，至少先浏览一次 `bird` 的知识实体总表，确认是否存在相关经验
-# - 优先读取抽象知识实体，也就是：`knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term`
-# - 其中：`convention` 表示应遵循或避免的规则，`pattern` 表示可复用的通用解法，`lesson` 表示已经总结出的错误模式，`term` 表示辅助理解题意或知识节点的术语/概念说明
-# - 如果总表过长，先用 `find(ref="bird::*:knowledge", query="...")` 缩小候选，再读 `meta`；不要把翻页扫完整个 `bird` 当成默认动作
-# - `knowledge:example` 放在后面；只有当抽象知识仍不足以支持判断时，才把它当作解释型案例阅读
-# - 不要机械照抄 example 里的 SQL、表名、列名或字面值
-# - 如果先看到某个 example，也要回头优先查看它相连的抽象知识，再决定是否参考这个案例
+BIRD_PROJECT_SCOPE = """\
+本次运行会打开两个 project：
+- 当前数据库项目用于探索 schema、执行查询，并最终回答用户 query。
+- `bird` 项目：BIRD 数据集的全局知识库，存储 SQL 生成任务的抽象知识和经验总结。
+当前库 schema 以当前数据库项目为准；`bird` 提供跨库 SQL 经验参考。
+项目 ref 入口：当前库 `{current_project}::*:file:db`，全局经验 `bird::*:example`。
+"""
 
+LOCAL_ONLY_PROJECT_SCOPE = """\
+本次运行只打开当前数据库项目：`{current_project}`。
+"""
+
+BIRD_GLOBAL_PROMPT_SECTION = """\
+关于 `bird` 经验的使用：
+- 在 `bird` 项目的 example 知识中检索相近题型，迁移 SQL 写作风格和输出习惯。
+- 检索词使用问题意图、SQL 形态、输出契约和 evidence 口径，例如 percentage、conditional aggregation、return id、multiply by 100。
+- 最终 SQL 按当前数据库 schema 生成，并用检索到的 BIRD 偏好检查输出列、聚合粒度、排序、limit、distinct 和比例公式。
+
+"""
+
+QUERY_PROMPT_MINIMAL_TEMPLATE = """\
+请根据以下 BIRD 问题生成一条 SQLite SQL 查询。
+{project_scope}
+{bird_global_section}
+
+输出格式：一个 ```sql``` 代码块，代码块内是一条 SQLite SELECT 语句。
+
+问题：{question}
+
+提示：{evidence}
+
+"""
+
+PROMPT_PROFILES = ("full", "minimal")
 
 # SQL 兜底 prompt。
 # 输入时机：
@@ -122,12 +125,25 @@ QUERY_PROMPT_TEMPLATE = """\
 SQL_FALLBACK_PROMPT = """\
 上一轮没有输出可解析的最终 SQL。
 
-现在禁止继续探索，基于当前对话里已经获得的 schema、样例、知识和查询结果，直接给出你能判断的最佳 SQLite 查询。
+现在进入收敛阶段。基于当前对话里已经获得的 schema、样例、知识和查询结果，给出当前最佳 SQLite 查询。
 
-输出协议：
-- 只输出一个 ```sql``` 代码块
-- 代码块里只放一条 SELECT 语句
-- 不要解释，不要调用工具
+输出格式：一个 ```sql``` 代码块，代码块内是一条 SELECT 语句。
+"""
+
+SQL_REPAIR_PROMPT_TEMPLATE = """\
+当前最终 SQL 在 SQLite 中执行失败。
+
+执行错误：
+{error}
+
+原 SQL：
+```sql
+{sql}
+```
+
+基于当前对话里已经获得的 schema、样例、知识和查询结果，给出修正后的 SQLite SELECT 查询。
+
+输出格式：一个 ```sql``` 代码块，代码块内只放修正后的 SELECT 语句。
 """
 
 # 题后反思 prompt。
@@ -139,7 +155,7 @@ REFLECTION_CASE_PROMPT_TEMPLATE = """\
 你现在仍在同一个对话上下文里：刚刚的 benchmark 消息、工具调用和最终 SQL 都还在。
 你不是新开一个会话，而是继续复盘这条已经完成并已验证结果的 benchmark case。
 
-先按 benchmark 的解题工作流回放这道题，再判断做对/做错的真正根因，然后只在必要时更新 `bird`。解题/审题工作流统一以系统提示词中的项目 README 为准，不在这里重复展开。
+按 benchmark 的解题工作流回放这道题，判断做对/做错的根因，并在存在可迁移经验时更新 `bird`。
 
 本轮复盘对象：
 - 数据库项目：{db_id}
@@ -170,20 +186,54 @@ Guardrail / blocks：
 {trace_detail}
 
 你的任务：
-1. 先在 `bird` 里找最相关的已有知识，优先看抽象知识实体；不要一上来就新建。
-2. 若找到相关实体，优先判断它是应保持不动、补充更新，还是局部修正；默认优先 `update`，不要重复 `create`。
-3. 只有在确认不存在合适的已有实体时，且结论明显可跨库迁移，才新建 `bird::<short_name>:knowledge:<type>`。
-4. 只允许写 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:example`；不要新建 `knowledge:term`。
-5. 若写 `knowledge:example`，它必须是“解释型 benchmark case”，不是裸 few-shot，也不是只存 question + golden SQL。
-6. `knowledge:example` 至少应包含：`question`、必要 `evidence`、`golden_sql`、`db_id`、`question_id`、`difficulty`、`schema_background`、`bird_bias`、`why_this_case_matters`、`transfer_hint`。
-7. 如果该题本轮做错了，但你仍决定沉淀为 `knowledge:example`，还应补：`predicted_sql`、`error_type`、`mistake_summary`、`wrong_assumption`、`fix_hint`。
-8. `knowledge:example` 允许包含具体数据库/表/列信息，但必须服务于“解释 BIRD 偏好”；不要让它退化成无解释的样题堆积。
-9. 不要写入完整推理过程、原始 chain-of-thought 或逐轮自言自语；如果需要保留思路，只保留高密度摘要，例如 `decision_summary`、`mistake_summary`、`verification_note`、`rejected_alternatives`。
-10. `knowledge:example` 不能作为孤立案例存在。只要决定保留或新建 example，就必须把它与对应的抽象知识实体建立普通图边。
-11. 这里的“对应抽象知识实体”明确指与该 example 对应的 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:term`。如果对应抽象知识不存在，可以先补抽象知识，再连边；但新建类型仍然只允许 `convention / pattern / lesson / example`。
-12. `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` 仍应尽量去 schema 化，不要把具体字段名直接写成通用规则。
-13. 如果只是执行流程失误、没有新的跨库经验缺口，也没有值得沉淀的 BIRD 偏好案例，明确说明“不写入任何知识实体”。
-14. 写任何新实体前，先明确说明你检查过哪些最相关的已有实体、为什么它们不够、为什么必须新建；如果这个论证不成立，就不要新建。
+1. 在 `bird` 中检索最相关的已有知识，先判断已有实体是否可以补充或修正。
+2. 可迁移经验写入 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:example`。
+3. `knowledge:example` 写成解释型 benchmark case，包含 question、evidence、golden_sql、db_id、question_id、difficulty、schema_background、bird_bias、why_this_case_matters、transfer_hint；错误案例补充 predicted_sql、error_type、mistake_summary、wrong_assumption、fix_hint。
+4. 知识内容使用高密度摘要字段，例如 `decision_summary`、`mistake_summary`、`verification_note`、`rejected_alternatives`。
+5. example 与对应的抽象知识实体建立普通图边；抽象知识使用去 schema 化表达。
+6. 没有新的跨库经验时，明确说明本轮不写入知识实体。
+7. 新建实体前说明已检查的相关实体、已有实体的缺口和新实体的必要性。
+"""
+
+REFLECTION_CASE_NO_BIRD_PROMPT_TEMPLATE = """\
+你现在仍在同一个对话上下文里：刚刚的 benchmark 消息、工具调用和最终 SQL 都还在。
+你不是新开一个会话，而是继续复盘这条已经完成并已验证结果的 benchmark case。
+
+本次运行使用当前数据库项目、工具调用轨迹、预测 SQL 和 golden SQL 做复盘，输出高密度错误归因与可复用改进建议。
+
+本轮复盘对象：
+- 数据库项目：{db_id}
+- Question ID: {question_id}
+- Difficulty: {difficulty}
+- Result: {result}
+- Elapsed: {elapsed:.1f}s
+
+题目：
+{question}
+
+Evidence：
+{evidence}
+
+Predicted SQL：
+{predicted_sql}
+
+Golden SQL：
+{golden_sql}
+
+Benchmark 调用链摘要：
+{calls_summary}
+
+Guardrail / blocks：
+{blocks_summary}
+
+详细执行轨迹：
+{trace_detail}
+
+你的任务：
+1. 判断错误是否来自 schema linking、值定位、join 路径、聚合粒度、排序/limit、SQL 组织、输出契约或执行语法。
+2. 若结果正确，指出最关键的成功条件和仍可能脆弱的地方。
+3. 若结果错误，给出最小修正方向。
+4. 输出只包含复盘结论。
 """
 
 DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
@@ -209,14 +259,14 @@ _SELECT_RE = re.compile(r"(SELECT\s.+?)(?:;|$)", re.DOTALL | re.IGNORECASE)
 def extract_sql(text: str) -> str | None:
     if not text:
         return None
-    m = _SQL_BLOCK_RE.search(text)
-    if m:
-        sql = m.group(1).strip()
+    blocks = _SQL_BLOCK_RE.findall(text)
+    if blocks:
+        sql = blocks[-1].strip()
         if sql:
             return sql
-    m = _SELECT_RE.search(text)
-    if m:
-        return m.group(1).strip()
+    matches = _SELECT_RE.findall(text)
+    if matches:
+        return matches[-1].strip()
     return None
 
 
@@ -397,10 +447,73 @@ def find_db_file(db_dir: Path) -> str | None:
     return None
 
 
+def build_agent_projects(db_id: str, use_bird_global: bool) -> list[str]:
+    projects = [db_id]
+    if use_bird_global:
+        projects.append("bird")
+    return projects
+
+
+def load_query_prompt_template(args) -> str:
+    prompt_file = getattr(args, "prompt_file", None)
+    if prompt_file:
+        return Path(prompt_file).read_text(encoding="utf-8")
+
+    if getattr(args, "prompt_profile", "full") == "minimal":
+        return QUERY_PROMPT_MINIMAL_TEMPLATE
+
+    return QUERY_PROMPT_BASE_TEMPLATE
+
+
+def build_query_prompt(q: dict, args) -> str:
+    question = q["question"]
+    evidence = q.get("evidence", "") or "(无额外提示)"
+    current_project = q.get("db_id") or "current_project"
+    bird_global_note = (
+        "本次运行启用 `bird` 全局经验库。"
+        if getattr(args, "use_bird_global", True)
+        else "本次运行未启用 `bird` 全局经验库。"
+    )
+    project_scope = (
+        BIRD_PROJECT_SCOPE
+        if getattr(args, "use_bird_global", True)
+        else LOCAL_ONLY_PROJECT_SCOPE
+    ).format(current_project=current_project)
+    bird_global_section = (
+        BIRD_GLOBAL_PROMPT_SECTION
+        if getattr(args, "use_bird_global", True)
+        else ""
+    )
+    template = load_query_prompt_template(args)
+    if getattr(args, "prompt_file", None):
+        return (
+            template
+            .replace("{question}", question)
+            .replace("{evidence}", evidence)
+            .replace("{bird_global_note}", bird_global_note)
+            .replace("{project_scope}", project_scope)
+            .replace("{bird_global_section}", bird_global_section)
+            .replace("{current_project}", current_project)
+        )
+    return template.format(
+        question=question,
+        evidence=evidence,
+        current_project=current_project,
+        bird_global_note=bird_global_note,
+        project_scope=project_scope,
+        bird_global_section=bird_global_section,
+    )
+
+
 def build_reflection_case_prompt(db_id: str, q: dict, collector: TraceCollector,
                                  predicted_sql: str | None, result_str: str,
-                                 elapsed: float) -> str:
-    return REFLECTION_CASE_PROMPT_TEMPLATE.format(
+                                 elapsed: float, use_bird_global: bool) -> str:
+    template = (
+        REFLECTION_CASE_PROMPT_TEMPLATE
+        if use_bird_global
+        else REFLECTION_CASE_NO_BIRD_PROMPT_TEMPLATE
+    )
+    return template.format(
         db_id=db_id,
         question_id=q.get("question_id", 0),
         difficulty=q.get("difficulty", "?"),
@@ -419,13 +532,14 @@ def build_reflection_case_prompt(db_id: str, q: dict, collector: TraceCollector,
 def run_reflection_for_case(db_id: str, q: dict,
                             agent,
                             predicted_sql: str | None, result_str: str,
-                            elapsed: float, bench_dir: Path) -> None:
+                            elapsed: float, bench_dir: Path,
+                            use_bird_global: bool) -> None:
     from agent.config import AgentSpec, resolve_mode
     from agent.prompt import build_prompt_messages
     from agent.tools import build_registry
 
     reflection_spec = AgentSpec(mode="reflection", effort="max")
-    reflection_spec.projects = [db_id, "bird"]
+    reflection_spec.projects = build_agent_projects(db_id, use_bird_global)
     resolve_mode(reflection_spec)
 
     # 方案 1：沿用同一个 agent 会话，只在反思阶段切到 reflection 配置。
@@ -443,6 +557,7 @@ def run_reflection_for_case(db_id: str, q: dict,
         predicted_sql=predicted_sql,
         result_str=result_str,
         elapsed=elapsed,
+        use_bird_global=use_bird_global,
     )
     response = agent.chat(prompt)
     qid = q.get("question_id", 0)
@@ -477,6 +592,25 @@ def force_sql_response(agent, response: str) -> str:
     return response.rstrip() + "\n\n" + fallback
 
 
+def repair_exec_error_response(agent, response: str, sql: str, error: str) -> str:
+    """Ask for one no-tool SQL repair when the final SQL does not execute."""
+    from agent.tools import ToolRegistry
+
+    prompt = SQL_REPAIR_PROMPT_TEMPLATE.format(sql=sql, error=error)
+    saved_tools = agent.tools
+    agent.tools = ToolRegistry()
+    try:
+        repaired = agent.chat(prompt)
+    finally:
+        agent.tools = saved_tools
+
+    if not repaired:
+        return response or ""
+    if not response:
+        return repaired
+    return response.rstrip() + "\n\n" + repaired
+
+
 # ═══════════════════════════════════════════════════════════
 #  汇总日志
 # ═══════════════════════════════════════════════════════════
@@ -505,6 +639,7 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]):
 
 
 def write_total_summary(output_dir: Path, all_results: list[dict]):
+    output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / "benchmark_summary.log"
     by_db = defaultdict(list)
     for r in all_results:
@@ -537,6 +672,68 @@ def write_total_summary(output_dir: Path, all_results: list[dict]):
     text = "\n".join(lines) + "\n"
     summary_path.write_text(text, encoding="utf-8")
     print(f"\n{text}")
+
+
+def write_structured_outputs(output_dir: Path, all_results: list[dict]):
+    results_dir = output_dir / "results"
+    evaluation_dir = output_dir / "evaluation"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    evaluation_dir.mkdir(parents=True, exist_ok=True)
+
+    (results_dir / "results.jsonl").write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in all_results),
+        encoding="utf-8",
+    )
+    predictions = {
+        str(row["question_id"]): row.get("predicted_sql")
+        for row in all_results
+        if "question_id" in row
+    }
+    (results_dir / "predictions.json").write_text(
+        json.dumps(predictions, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    total = len(all_results)
+    correct = sum(1 for row in all_results if row.get("correct"))
+    by_db = defaultdict(list)
+    by_diff = defaultdict(list)
+    for row in all_results:
+        by_db[row.get("db_id", "unknown")].append(row)
+        by_diff[row.get("difficulty") or "unknown"].append(row)
+    summary = {
+        "total": total,
+        "correct": correct,
+        "accuracy": correct / total if total else 0.0,
+        "by_database": {
+            db_id: {
+                "total": len(rows),
+                "correct": sum(1 for row in rows if row.get("correct")),
+                "accuracy": sum(1 for row in rows if row.get("correct")) / len(rows) if rows else 0.0,
+            }
+            for db_id, rows in sorted(by_db.items())
+        },
+        "by_difficulty": {
+            diff: {
+                "total": len(rows),
+                "correct": sum(1 for row in rows if row.get("correct")),
+                "accuracy": sum(1 for row in rows if row.get("correct")) / len(rows) if rows else 0.0,
+            }
+            for diff, rows in sorted(by_diff.items())
+        },
+    }
+    (evaluation_dir / "evaluation.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    lines = ["# Pontis BIRD Evaluation", "", f"Total: {correct}/{total} ({summary['accuracy'] * 100:.2f}%)", ""]
+    lines.append("## By Database")
+    for db_id, item in summary["by_database"].items():
+        lines.append(f"- {db_id}: {item['correct']}/{item['total']} ({item['accuracy'] * 100:.2f}%)")
+    lines.extend(["", "## By Difficulty"])
+    for diff, item in summary["by_difficulty"].items():
+        lines.append(f"- {diff}: {item['correct']}/{item['total']} ({item['accuracy'] * 100:.2f}%)")
+    (evaluation_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -609,12 +806,12 @@ class ProgressTracker:
         self._path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def cleanup_all(db_base: Path, db_map: dict[str, list], force_extract: bool = False):
+def cleanup_all(db_base: Path, db_map: dict[str, list], *, train: bool, force_extract: bool = False):
     print("=== Cleanup ===")
     for db_id in sorted(db_map.keys()):
         db_dir = db_base / db_id
-        pontis_dir = db_dir / ".pontis"
-        bench_dir = pontis_dir / "benchmark"
+        preprocess_dir = get_preprocess_dir(db_id, train)
+        bench_dir = get_benchmark_dir(db_id, train)
 
         if bench_dir.exists():
             count = 0
@@ -624,10 +821,21 @@ def cleanup_all(db_base: Path, db_map: dict[str, list], force_extract: bool = Fa
             if count:
                 print(f"  [{db_id}] Cleared {count} logs")
 
-        if force_extract and pontis_dir.exists():
+        if force_extract and preprocess_dir.exists():
             import shutil
-            shutil.rmtree(pontis_dir, ignore_errors=True)
-            print(f"  [{db_id}] Removed .pontis for re-extract")
+            shutil.rmtree(preprocess_dir, ignore_errors=True)
+            print(f"  [{db_id}] Removed preprocess output for re-extract")
+
+        legacy_pontis_dir = db_dir / ".pontis"
+        if legacy_pontis_dir.exists():
+            import shutil
+            if not force_extract:
+                legacy_extract_log = legacy_pontis_dir / "extract.log"
+                if legacy_extract_log.exists():
+                    preprocess_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(legacy_extract_log), str(preprocess_dir / "extract.log"))
+            shutil.rmtree(legacy_pontis_dir, ignore_errors=True)
+            print(f"  [{db_id}] Removed legacy data .pontis")
     print("Cleanup done\n")
 
 
@@ -651,6 +859,55 @@ def cleanup_bird_global(clear_bird_knowledge: bool = False):
     print("Cleanup bird done\n")
 
 
+def ensure_bird_global_ready(args) -> None:
+    """Make --use-bird-global fail fast or populate bird before benchmark."""
+    if not getattr(args, "use_bird_global", True):
+        return
+
+    from storage.workspace import Workspace
+    from scripts.BIRD.sync_bird_global import (
+        count_bird_train_examples,
+        resolve_train_json_path,
+        sync_bird_global,
+    )
+
+    ws = Workspace(active_projects=["bird"])
+    count = count_bird_train_examples(ws)
+    if count > 0:
+        print(f"=== bird global ===\n  Found {count} imported train examples\n")
+        return
+
+    train_json = resolve_train_json_path(getattr(args, "bird_train_json", None))
+    if not getattr(args, "auto_sync_bird_global", True):
+        print(
+            "Error: --use-bird-global is enabled but bird has 0 imported train examples.\n"
+            f"Run: python Pontis/scripts/BIRD/sync_bird_global.py --train-json {train_json}\n"
+            "Or pass --no-bird-global."
+        )
+        sys.exit(1)
+
+    if not train_json.exists():
+        print(
+            "Error: --use-bird-global is enabled but bird has 0 imported train examples, "
+            f"and train.json was not found: {train_json}"
+        )
+        sys.exit(1)
+
+    print("=== bird global ===")
+    print(f"  Empty bird graph; syncing train examples from {train_json}")
+    sync_bird_global(
+        sync_readme=True,
+        import_train=True,
+        embed_train=not getattr(args, "no_bird_global_embedding", False),
+        train_json=train_json,
+    )
+    count = count_bird_train_examples(ws)
+    if count <= 0:
+        print("Error: bird global sync completed but no train examples were imported")
+        sys.exit(1)
+    print(f"  Ready: {count} imported train examples\n")
+
+
 # ═══════════════════════════════════════════════════════════
 #  单库完整流程
 # ═══════════════════════════════════════════════════════════
@@ -669,7 +926,11 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         tracker.start_extract(db_id)
         from scripts.BIRD.extract import extract_one
         t0 = time.time()
-        r = extract_one(str(db_dir), force=args.force_extract)
+        r = extract_one(
+            str(db_dir),
+            preprocess_dir=get_preprocess_dir(db_id, args.train),
+            force=args.force_extract,
+        )
         parts = []
         if r["static"]: parts.append(f"Static {r['static']:.0f}s")
         if r["ai_columns"]: parts.append(f"AI Cols {r['ai_columns']:.0f}s")
@@ -687,7 +948,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         return []
 
     # Phase 3: 测试
-    bench_dir = db_dir / ".pontis" / "benchmark"
+    bench_dir = get_benchmark_dir(db_id, args.train)
     bench_dir.mkdir(parents=True, exist_ok=True)
 
     tracker.start_test(db_id)
@@ -705,7 +966,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             tools=list(BIRD_BENCHMARK_TOOLS),
             prompts=list(BIRD_BENCHMARK_PROMPTS),
         )
-        spec.projects = [db_id, "bird"]
+        spec.projects = build_agent_projects(db_id, args.use_bird_global)
         spec.guardrails = build_guardrails(spec, BIRD_BENCHMARK_GUARDRAILS)
         agent = create_agent(
             str(db_dir),
@@ -714,10 +975,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         )
         agent._reflection_collector = collector
 
-        prompt = QUERY_PROMPT_TEMPLATE.format(
-            question=q['question'],
-            evidence=q.get('evidence', '') or "(无额外提示)",
-        )
+        prompt = build_query_prompt(q, args)
 
         t0 = time.time()
         try:
@@ -730,11 +988,26 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             print(f"  Q{qid} [{q.get('difficulty', '?')}] ERROR: {e}")
             collector.write_logs(bench_dir, qid, q, "", None, "ERROR", elapsed)
             return {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
-                    'correct': False, 'result': "ERROR", 'elapsed': round(elapsed, 1)}
+                    'question': q.get('question'), 'evidence': q.get('evidence', ''),
+                    'golden_sql': q.get('SQL'), 'predicted_sql': None,
+                    'correct': False, 'result': "ERROR", 'elapsed': round(elapsed, 1),
+                    'use_bird_global': args.use_bird_global,
+                    'prompt_profile': args.prompt_profile,
+                    'prompt_file': str(args.prompt_file) if args.prompt_file else None}
 
         predicted_sql = extract_sql(response)
         golden_result = execute_sql(db_path, q['SQL'])
         predicted_result = execute_sql(db_path, predicted_sql) if predicted_sql else "PARSE_ERROR"
+        if (
+            predicted_sql
+            and isinstance(predicted_result, str)
+            and getattr(args, "exec_repair", True)
+        ):
+            response = repair_exec_error_response(agent, response, predicted_sql, predicted_result)
+            repaired_sql = extract_sql(response)
+            if repaired_sql and repaired_sql != predicted_sql:
+                predicted_sql = repaired_sql
+                predicted_result = execute_sql(db_path, predicted_sql)
         correct = is_correct(predicted_result, golden_result)
 
         result_str = (
@@ -756,6 +1029,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                     result_str=result_str,
                     elapsed=elapsed,
                     bench_dir=bench_dir,
+                    use_bird_global=args.use_bird_global,
                 )
             except Exception as e:
                 print(f"  Q{qid} reflection ERROR: {e}")
@@ -764,7 +1038,12 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         print(f"  Q{qid} [{q.get('difficulty', '?')}] {status} {result_str} ({elapsed:.1f}s)")
 
         return {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
-                'correct': correct, 'result': result_str, 'elapsed': round(elapsed, 1)}
+                'question': q.get('question'), 'evidence': q.get('evidence', ''),
+                'golden_sql': q.get('SQL'), 'predicted_sql': predicted_sql,
+                'correct': correct, 'result': result_str, 'elapsed': round(elapsed, 1),
+                'use_bird_global': args.use_bird_global,
+                'prompt_profile': args.prompt_profile,
+                'prompt_file': str(args.prompt_file) if args.prompt_file else None}
 
     db_results = []
     correct_so_far = 0
@@ -777,8 +1056,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             done_so_far += 1
             if result['correct']:
                 correct_so_far += 1
-            if done_so_far % 5 == 0 or done_so_far == len(queries):
-                tracker.update(db_id, done_so_far, correct_so_far)
+            tracker.update(db_id, done_so_far, correct_so_far)
 
     db_results.sort(key=lambda r: r['question_id'])
     write_db_summary(bench_dir, db_id, db_results)
@@ -803,17 +1081,78 @@ def main():
     parser.add_argument("--skip-extract", action="store_true", help="跳过提取")
     parser.add_argument("--force-extract", action="store_true", help="强制重新提取")
     parser.add_argument("--extract-only", action="store_true", help="只提取不测试")
-    parser.add_argument("--workers", type=int, default=4, help="每库并行 worker（默认 4）")
-    parser.add_argument("--db-workers", type=int, default=3, help="并行数据库数（默认 3）")
+    parser.add_argument("--workers", type=int, default=1, help="每库并行 worker（默认 1）")
+    parser.add_argument("--db-workers", type=int, default=1, help="并行数据库数（默认 1）")
     parser.add_argument("--qids", help="只测试指定 question_id，逗号分隔")
     parser.add_argument("--limit", type=int, help="每库最多测试 N 条")
     parser.add_argument("--reflection", action="store_true", help="每题验证后立即运行 reflection，不再读日志二次分析")
+    parser.add_argument(
+        "--no-exec-repair",
+        dest="exec_repair",
+        action="store_false",
+        default=True,
+        help="最终 SQL 执行失败时不追加一次无工具修复",
+    )
+    parser.add_argument(
+        "--use-bird-global",
+        dest="use_bird_global",
+        action="store_true",
+        default=True,
+        help="启用 bird 全局经验库（默认）",
+    )
+    parser.add_argument(
+        "--no-bird-global",
+        dest="use_bird_global",
+        action="store_false",
+        help="禁用 bird 全局经验库，只使用当前数据库项目",
+    )
+    parser.add_argument(
+        "--prompt-profile",
+        choices=PROMPT_PROFILES,
+        default="full",
+        help="主求解 prompt 档位：full 保留完整规则，minimal 只保留最小输出协议",
+    )
+    parser.add_argument(
+        "--prompt-file",
+        type=Path,
+        help=(
+            "使用自定义主求解 prompt 模板；可包含 {question}、{evidence}、"
+            "{bird_global_note}、{project_scope}、{bird_global_section}"
+        ),
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory for structured results and evaluation summaries.",
+    )
     parser.add_argument(
         "--clear-bird-knowledge",
         action="store_true",
         help="运行前清空 bird 全局知识库中除 README 外的所有节点",
     )
+    parser.add_argument(
+        "--no-auto-sync-bird-global",
+        dest="auto_sync_bird_global",
+        action="store_false",
+        default=True,
+        help="启用 bird 全局库但库为空时直接失败，不自动导入 train examples",
+    )
+    parser.add_argument(
+        "--no-bird-global-embedding",
+        action="store_true",
+        help="自动同步 bird 全局库时只导入 train examples，不生成语义向量",
+    )
+    parser.add_argument(
+        "--bird-train-json",
+        type=Path,
+        help="用于同步 bird 全局经验库的 BIRD train.json 路径",
+    )
     args = parser.parse_args()
+
+    if args.prompt_file and not args.prompt_file.exists():
+        print(f"Error: prompt file not found: {args.prompt_file}")
+        sys.exit(1)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s | %(message)s", datefmt="%H:%M:%S")
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -848,11 +1187,24 @@ def main():
     print(f"=== BIRD {mode_label} Benchmark ===")
     print(f"Databases: {len(by_db)}, Queries: {total_queries}")
     print(f"DB workers: {args.db_workers}, Query workers/db: {args.workers}\n")
+    print(
+        "Config: "
+        f"bird_global={'on' if args.use_bird_global else 'off'}, "
+        f"prompt_profile={args.prompt_profile}, "
+        f"prompt_file={args.prompt_file or '(none)'}\n"
+    )
 
-    cleanup_all(db_base, by_db, force_extract=args.force_extract)
-    cleanup_bird_global(clear_bird_knowledge=args.clear_bird_knowledge)
+    if args.output_dir is None:
+        args.output_dir = get_results_dir(args.train)
 
-    progress_path = data_dir / "progress.log"
+    cleanup_all(db_base, by_db, train=args.train, force_extract=args.force_extract)
+    if args.clear_bird_knowledge and not args.use_bird_global:
+        print("Skip --clear-bird-knowledge because --no-bird-global is set\n")
+    else:
+        cleanup_bird_global(clear_bird_knowledge=args.clear_bird_knowledge)
+    ensure_bird_global_ready(args)
+
+    progress_path = get_progress_path(args.train)
     tracker = ProgressTracker(by_db, progress_path)
 
     all_results = []
@@ -871,7 +1223,8 @@ def main():
 
     if all_results and not args.extract_only:
         all_results.sort(key=lambda r: (r['db_id'], r['question_id']))
-        write_total_summary(data_dir, all_results)
+        write_total_summary(args.output_dir / "evaluation", all_results)
+        write_structured_outputs(args.output_dir, all_results)
 
 
 if __name__ == "__main__":

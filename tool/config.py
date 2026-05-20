@@ -90,21 +90,31 @@ def _c(d, suffix):
     return None
 
 
+def _count_stats(d, *items):
+    parts = []
+    for key, label in items:
+        val = d.get(key)
+        if val is None or str(val).strip() in ("", "-"):
+            continue
+        parts.append(f"{val} {label}")
+    return ", ".join(parts) or "-"
+
+
 # ========== Info 类型配置 (find/meta) — 按标签段索引 ==========
 
 INFO_TYPE_CONFIG = {
     # 文件段
     "file":     InfoTypeConfig(info_fn=lambda m: {"path": _v(m, "path"), "size": _v(m, "file_size")}),
     "db":       InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'table_count')} tables, {_v(m,'view_count')} views"}),
-    "csv":      InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'row_count')} rows, {_v(m,'column_count')} cols"}),
-    "tsv":      InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'row_count')} rows, {_v(m,'column_count')} cols"}),
+    "csv":      InfoTypeConfig(info_fn=lambda m: {"stats": _count_stats(m, ("row_count", "rows"), ("column_count", "cols"))}),
+    "tsv":      InfoTypeConfig(info_fn=lambda m: {"stats": _count_stats(m, ("row_count", "rows"), ("column_count", "cols"))}),
     "json":     InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'structure_type')}, {_v(m,'line_count')} lines"}),
     "yaml":     InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'structure_type')}, {_v(m,'line_count')} lines"}),
     "md":       InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'line_count')} lines"}),
     "text":     InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'line_count')} lines"}),
     # 结构段
     "table":    InfoTypeConfig(info_fn=lambda m: {
-                    "stats": f"{_v(m,'row_count')} rows, {_v(m,'column_count')} cols",
+                    "stats": _count_stats(m, ("row_count", "rows"), ("column_count", "cols")),
                     "links": ", ".join(filter(None, [_c(m,'fk'), _c(m,'rel')])),
                 }),
     "view":     InfoTypeConfig(info_fn=lambda m: {

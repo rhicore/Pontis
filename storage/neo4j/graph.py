@@ -36,9 +36,12 @@ def _read_env_file(path: Path) -> dict[str, str]:
 
 def _local_env() -> dict[str, str]:
     """Load ignored local Neo4j env files without requiring shell sourcing."""
+    pontis_root = Path(__file__).resolve().parents[2]
+    text2sql_root = pontis_root.parent
     candidates = [
         Path.cwd() / ".neo4j" / "neo4j.env",
-        Path(__file__).resolve().parents[2] / ".neo4j" / "neo4j.env",
+        text2sql_root / "workspace" / "baselines" / "pontis" / "neo4j" / "neo4j.env",
+        pontis_root / ".neo4j" / "neo4j.env",
     ]
     loaded: dict[str, str] = {}
     for path in candidates:

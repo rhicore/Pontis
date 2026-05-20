@@ -30,8 +30,11 @@ if str(ROOT) not in sys.path:
 from storage.config import ProjectConfig, load_config
 
 
-DEFAULT_BASE_DIR = ROOT / ".neo4j" / "projects"
-DEFAULT_ENV_FILE = ROOT / ".neo4j" / "neo4j.env"
+TEXT2SQL_ROOT = ROOT.parent
+PONTIS_WORKSPACE = TEXT2SQL_ROOT / "workspace" / "baselines" / "pontis"
+
+DEFAULT_BASE_DIR = PONTIS_WORKSPACE / "neo4j" / "projects"
+DEFAULT_ENV_FILE = PONTIS_WORKSPACE / "neo4j" / "neo4j.env"
 DEFAULT_HTTP_BASE = 7474
 DEFAULT_BOLT_BASE = 7687
 
@@ -157,6 +160,7 @@ def _write_instance_config(
             "server.http.enabled=true",
             f"server.http.listen_address={listen_host}:{http_port}",
             "server.https.enabled=false",
+            "dbms.security.auth_enabled=false",
             f"server.memory.heap.initial_size={heap_initial}",
             f"server.memory.heap.max_size={heap_max}",
             f"server.memory.pagecache.size={pagecache}",

@@ -2,14 +2,14 @@
 from agent.guardrail_api import Guardrail, GuardrailContext, CallVerdict
 
 _STOP_TEMPLATE = """\
-⚠️ 已达到工具调用上限（{max_rounds} 轮）。请不要再调用任何工具。
+⚠️ 已达到工具调用上限（{max_rounds} 轮）。现在进入最终输出阶段。
 
 基于你目前已掌握的信息，直接完成你的任务：
 - 如果你正在生成 SQL，直接输出你当前最佳理解的 SQL
 - 如果你正在分析数据，总结你已发现的内容
 - 如果你正在写总结，直接输出已有的总结内容
 
-不要解释为什么停止，直接输出结果。"""
+直接输出结果。"""
 
 
 class RoundLimit(Guardrail):

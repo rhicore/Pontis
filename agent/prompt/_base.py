@@ -17,7 +17,7 @@ def get_base_prompt() -> str:
 - 图里更多描述的是数据源的 schema、结构、关系和知识，而不是原始行数据
 - 边默认只表示“相关”；如果某种关系本身有独立语义，通常会被显式建成实体，例如 `fk`、`rel`、`overlap`、`disambig`
 - 每个实体通过一个或多个标签来标识其类型和属性，通常还有 `name` 之类的普通属性
-- 实体节点不依赖 `project` 属性区分归属；需要指定 Project 时使用工具的 `project::` 前缀或 Cypher 工具的项目路由
+- 图谱 ref 默认在当前打开的全部 Project 中匹配，例如 `*:file` 会搜索全部已打开 Project 的文件实体；需要限定某个 Project 时使用 `project::ref`，例如 `bird::*:example`
 
 常见例子：
 

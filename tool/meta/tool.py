@@ -100,10 +100,9 @@ def _format_neighbor_list(workspace, project_name: str, project: str | None, nei
     lines = []
     for meta in neighbors:
         labels = meta.get("labels", [])
-        short_name = meta.get("name") or display_ref_for_node(workspace, project, meta)
+        name = meta.get("name") or display_ref_for_node(workspace, project, meta)
         info = get_info(labels, meta)
-        entity_name = format_entity_name(short_name, labels)
-        lines.append(f"{project_name}::\t{entity_name}\t{info}")
+        lines.append(f"{name}\t{info}")
     return "\n".join(lines)
 
 
@@ -116,6 +115,7 @@ def meta_command(
     current_cwd: str = ""
 ) -> str:
     """查看节点元数据。"""
+    input_ref = (ref or "").strip()
     selector, err = resolve_entity_selector(workspace, ref)
     if err:
         return f"Error: {err}"
@@ -200,10 +200,9 @@ def meta_command(
         group_key = _adjacency_group_key(adj_labels)
         if not group_key:
             continue
-        short_name = adj_meta.get("name") or display_ref_for_node(workspace, project, adj_meta)
+        name = adj_meta.get("name") or display_ref_for_node(workspace, project, adj_meta)
         info = get_info(adj_labels, adj_meta)
-        entity_name = format_entity_name(short_name, adj_labels)
-        adjacency.setdefault(group_key, []).append(f"  {entity_name}\t{info}")
+        adjacency.setdefault(group_key, []).append(f"  {name}\t{info}")
 
     if props:
         from tool.utils.formatters import _format_meta_value
@@ -228,7 +227,8 @@ def meta_command(
             lines.append(f"未找到: {', '.join(missing)}. 可用字段: {', '.join(available)}")
         return "\n".join(lines)
 
-    header_line = f"{format_entity_name(display_ref, labels)}\nproject: {project_name}"
+    header_ref = input_ref or format_entity_name(display_ref, labels)
+    header_line = f"{header_ref}\nproject: {project_name}"
     config = resolve_meta_config(labels)
     result = format_meta_output(plain_meta, config, show_all=all, specific_key=None)
 

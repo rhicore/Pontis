@@ -107,9 +107,9 @@ class BridgeTableCheck(Guardrail):
                 types = {rtype for _, rtype in matched}
                 has_fk_rel = bool(types & {"fk", "rel"})
                 if has_fk_rel:
-                    hint = "存在 fk/rel 关系，建议读取确认"
+                    hint = "存在 fk/rel 关系，读取后可确认"
                 else:
-                    hint = "仅有 overlap（置信度较低）"
+                    hint = "存在 overlap 线索"
                 lines.append(f"  - {t1}.{c1} ↔ {t2}.{c2}（{hint}）：")
                 for full_ref, _ in matched:
                     lines.append(f"    - {full_ref}")
@@ -117,7 +117,7 @@ class BridgeTableCheck(Guardrail):
             else:
                 lines.append(
                     f"  - {t1}.{c1} ↔ {t2}.{c2}（"
-                    "未找到任何 fk/rel/overlap 关系，请确认 JOIN 条件是否正确或需要桥接表）"
+                    "请确认 JOIN 条件或桥接表）"
                 )
 
         if not lines:
@@ -126,13 +126,11 @@ class BridgeTableCheck(Guardrail):
         body = "\n".join(lines)
         hint = _format_meta_examples(suggested_refs)
         if strict:
-            return ("🚫 最终 SQL 输出被拦截：以下 JOIN 关系尚未确认，"
-                    "必须先读取相关实体确认后才能输出最终 SQL：\n"
+            return ("以下 JOIN 关系需要读取相关实体确认：\n"
                     + body
                     + hint
-                    + "\n\n请读取这些关系实体后，再重新思考并输出最终 SQL。")
-        return ("⚠️ 以下 JOIN 关系尚未确认，如果你对关联语义有信心可以继续执行，"
-                "但建议先读取确认：\n"
+                    + "\n\n请读取这些关系实体后重新思考 SQL。")
+        return ("⚠️ 以下 JOIN 关系建议读取确认：\n"
                 + body
                 + hint)
 

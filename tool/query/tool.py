@@ -44,6 +44,20 @@ def _is_readonly_sql(sql: str) -> bool:
     return False
 
 
+def _sqlite_error_hint(sql: str, error: Exception) -> str:
+    message = str(error)
+    lower = message.lower()
+    upper_sql = sql.upper()
+    hints: list[str] = []
+    if "no such function: lpad" in lower or "LPAD(" in upper_sql:
+        hints.append("SQLite 左填充可用 printf/substr 组合表达。")
+    if "ambiguous column name" in lower:
+        hints.append("同名列需要添加表名或别名前缀。")
+    if "syntax error" in lower and "UNION" in upper_sql and "LIMIT" in upper_sql:
+        hints.append("复合查询各分支的 ORDER BY/LIMIT 可先放入 WITH 或子查询。")
+    return ("；".join(hints)) if hints else ""
+
+
 def _quote_ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
@@ -324,8 +338,10 @@ def _query_csv_source(sql: str, source, limit: int) -> str:
             except OSError:
                 pass
         aliases = ", ".join(table_names)
+        hint = _sqlite_error_hint(sql, e)
+        hint_line = f"\n修正方向: {hint}" if hint else ""
         return (
-            f"SQL 执行错误: {type(e).__name__}: {e}\n"
+            f"SQL 执行错误: {type(e).__name__}: {e}{hint_line}\n"
             f"Available tables for ref=\"{source.path}\": {aliases}"
         )
 
@@ -334,8 +350,10 @@ def _query_csv_source(sql: str, source, limit: int) -> str:
         return _format_query_result(cols, rows, has_more, limit)
     except Exception as e:
         aliases = ", ".join(table_names)
+        hint = _sqlite_error_hint(sql, e)
+        hint_line = f"\n修正方向: {hint}" if hint else ""
         return (
-            f"SQL 执行错误: {type(e).__name__}: {e}\n"
+            f"SQL 执行错误: {type(e).__name__}: {e}{hint_line}\n"
             f"Available tables for ref=\"{source.path}\": {aliases}"
         )
     finally:
@@ -473,8 +491,10 @@ def _query_json_source(sql: str, source, limit: int) -> str:
         return _format_query_result(cols, rows, has_more, limit)
     except Exception as e:
         aliases = ", ".join(table_names)
+        hint = _sqlite_error_hint(sql, e)
+        hint_line = f"\n修正方向: {hint}" if hint else ""
         return (
-            f"SQL 执行错误: {type(e).__name__}: {e}\n"
+            f"SQL 执行错误: {type(e).__name__}: {e}{hint_line}\n"
             f"Available tables for ref=\"{source.path}\": {aliases}"
         )
     finally:
@@ -624,7 +644,9 @@ def _query_workspace(workspace, sql: str, limit: int, ref: str) -> str:
             cols, rows, has_more = _fetch_rows(conn, sql, limit)
             return _format_query_result(cols, rows, has_more, limit)
         except Exception as e:
-            return f"SQL 执行错误: {type(e).__name__}: {e}\n{_available_tables_text(ref, tables)}"
+            hint = _sqlite_error_hint(sql, e)
+            hint_line = f"\n修正方向: {hint}" if hint else ""
+            return f"SQL 执行错误: {type(e).__name__}: {e}{hint_line}\n{_available_tables_text(ref, tables)}"
     finally:
         conn.close()
 
@@ -679,7 +701,9 @@ def query_command(workspace, sql: str, ref: str = "", limit: int = _DEFAULT_LIMI
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         columns, display_rows, has_more = _fetch_rows(conn, stripped, limit)
     except Exception as e:
-        return f"SQL 执行错误: {type(e).__name__}: {e}"
+        hint = _sqlite_error_hint(stripped, e)
+        suffix = f"\n修正方向: {hint}" if hint else ""
+        return f"SQL 执行错误: {type(e).__name__}: {e}{suffix}"
     finally:
         if conn is not None:
             conn.close()

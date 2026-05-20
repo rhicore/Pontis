@@ -13,6 +13,10 @@ This directory now keeps only the documents that still describe the current syst
 
 - [agent/guardrail_api.md](agent/guardrail_api.md): guardrail execution model and shared types.
 
+### Experiments
+
+- [experiments/bird_agent_framework_experiment_plan.md](experiments/bird_agent_framework_experiment_plan.md): BIRD no-finetune test-time framework comparison and thesis experiment plan.
+
 ### Extractors
 
 - [extractors/DBT.md](extractors/DBT.md): dbt project extraction ideas.

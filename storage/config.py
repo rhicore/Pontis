@@ -61,15 +61,20 @@ class StoreConfig:
         return entry.groups if entry else []
 
 
-def _parse_project(name: str, pdata) -> ProjectConfig:
+def _parse_project(name: str, pdata, base_dir: str = "") -> ProjectConfig:
     """从 YAML 数据解析 ProjectConfig。"""
     if not isinstance(pdata, dict):
         raise ValueError(f"Project '{name}' config must be a dict, got {type(pdata).__name__}")
 
     src = pdata.get("source", {})
+    source_path = src.get("path", "")
+    if source_path and src.get("type", "") == "fs":
+        expanded = os.path.expanduser(source_path)
+        if not os.path.isabs(expanded) and base_dir:
+            source_path = os.path.abspath(os.path.join(base_dir, expanded))
     source_cfg = SourceConfig(
         type=src.get("type", ""),
-        path=src.get("path", ""),
+        path=source_path,
     )
     graph = pdata.get("graph", {})
     graph_cfg = GraphConfig(
@@ -112,11 +117,12 @@ def load_config(config_path: str = None, project_path: str = None) -> StoreConfi
 
     merged_projects: Dict[str, ProjectConfig] = {}
     for src in sources:
+        base_dir = os.path.dirname(os.path.abspath(src))
         with open(src, "r") as f:
             data = yaml.safe_load(f) or {}
         for name, pdata in data.get("projects", {}).items():
             if name not in merged_projects:
-                merged_projects[name] = _parse_project(name, pdata)
+                merged_projects[name] = _parse_project(name, pdata, base_dir=base_dir)
 
     if project_path:
         pname = os.path.basename(os.path.abspath(project_path))

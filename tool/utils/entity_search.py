@@ -14,6 +14,9 @@ from tool.utils.ref_match import (
     _apply_post_filters,
     _build_cypher,
     _execute_projects,
+    _format_ref_segment,
+    _labels_for_output,
+    _node_segments,
     normalize_project_slash_ref,
     parse_urn,
 )
@@ -300,6 +303,41 @@ def _query_projects_for_search(workspace, project: str | None) -> list[str | Non
     return active or [None]
 
 
+def _semantic_display_ref(workspace, ref: str, node_project: str | None, node_meta: dict, labels: list[str]) -> str:
+    project, segments = parse_urn(ref or "")
+    node_segs = _node_segments(segments)
+    if not node_segs:
+        node_segs = [{"labels_and": [], "labels_or": []}]
+
+    if len(node_segs) == 1:
+        local_ref = _format_ref_segment(
+            node_meta.get("name", ""),
+            _labels_for_output(node_segs[-1], labels),
+        )
+    else:
+        structural_ref = node_meta.get("_ref") or node_meta.get("ref")
+        if structural_ref and "--" in structural_ref:
+            parts = [part for part in structural_ref.split("--") if part]
+        else:
+            path = display_ref_for_node(workspace, node_project, node_meta)
+            parts = [part.split(":", 1)[0] for part in path.split("/") if part]
+        if len(parts) > len(node_segs):
+            parts = parts[-len(node_segs):]
+        rendered = []
+        for idx, part in enumerate(parts):
+            seg = node_segs[idx] if idx < len(node_segs) else {"labels_and": [], "labels_or": []}
+            seg_labels = _labels_for_output(seg, labels if idx == len(parts) - 1 else [])
+            rendered.append(_format_ref_segment(part, seg_labels))
+        local_ref = "/".join(rendered) if rendered else _format_ref_segment(
+            node_meta.get("name", ""),
+            _labels_for_output(node_segs[-1], labels),
+        )
+
+    if project:
+        return f"{project}::{local_ref}"
+    return local_ref
+
+
 def _bm25_search(workspace, query: str, ref: str = "",
                  k1: float = 1.5, b: float = 0.75) -> List[tuple]:
     """BM25 检索，只搜索 brief 和 detail 字段。"""
@@ -386,7 +424,10 @@ def search_entities_command(
     current_cwd: str = ""
 ) -> str:
     """语义检索实体的 brief 和 detail。"""
-    ref = normalize_project_slash_ref(workspace, ref)
+    try:
+        ref = normalize_project_slash_ref(workspace, ref)
+    except ValueError as exc:
+        return f"Error: {exc}"
     page_conf = TOOL_PAGINATION["find"]
     if limit is None:
         limit = page_conf.default_limit
@@ -408,10 +449,8 @@ def search_entities_command(
 
     lines = []
     for score, ref_name, node_meta, info, labels, node_project in page:
-        display_ref = display_ref_for_node(workspace, node_project, node_meta)
-        entity_name = format_entity_name(display_ref, labels)
-        project_name = node_project or _get_project_name(workspace)
-        lines.append(f"{project_name}::\t{entity_name}\t{info}")
+        entity_ref = _semantic_display_ref(workspace, ref, node_project, node_meta, labels)
+        lines.append(f"{entity_ref}\t{info}")
     output = '\n'.join(lines)
 
     end = offset + len(page)

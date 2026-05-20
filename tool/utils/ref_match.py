@@ -22,7 +22,6 @@ from typing import List, Optional, Tuple
 from storage.query_inspector import cypher_label_clause, is_valid_label
 from tool.config import TOOL_PAGINATION
 from tool.utils.formatters import format_entity_name, get_info
-from tool.utils.display_ref import display_ref_for_node
 from tool.utils.knowledge_meta import normalize_knowledge_meta
 
 
@@ -76,20 +75,15 @@ def parse_urn(urn: str) -> Tuple[Optional[str], List[dict]]:
 
 
 def normalize_project_slash_ref(workspace, ref: str) -> str:
-    """Accept common `project/...` typo as `project::...` for active projects.
-
-    `project::` is the route for the whole query. Models sometimes write
-    `project/*:table`, which otherwise means "find an entity named project and
-    traverse from it". Normalizing only active project names keeps normal file
-    paths unchanged.
-    """
+    """Normalize valid shorthand refs and validate project routing."""
     text = (ref or "").strip()
-    if "::" in text or "/" not in text:
-        return text
-    first, rest = text.split("/", 1)
-    active = set(getattr(workspace, "active_projects", []) or [])
-    if first in active and rest:
-        return f"{first}::{rest}"
+    if "/" in text:
+        first, rest = text.split("/", 1)
+        active = set(getattr(workspace, "active_projects", []) or [])
+        if "::" not in text and first in active and rest:
+            raise ValueError(
+                f"项目路由格式: `project::ref`；示例: `{first}::{rest}`"
+            )
     return text
 
 
@@ -222,6 +216,50 @@ def _build_cypher(segments: List[dict]) -> Tuple[str, List[tuple]]:
     return cypher, post_filters
 
 
+def _node_segments(segments: List[dict]) -> List[dict]:
+    return [seg for seg in segments if not _is_varlen(seg)]
+
+
+def _labels_for_output(seg: dict, labels: List[str]) -> List[str]:
+    out: List[str] = []
+    actual = set(labels or [])
+    for label in seg.get("labels_and") or []:
+        if label not in out:
+            out.append(label)
+    for label in seg.get("labels_or") or []:
+        if label in actual and label not in out:
+            out.append(label)
+    return out
+
+
+def _format_ref_segment(name: str, labels: List[str]) -> str:
+    suffix = "".join(f":{label}" for label in labels)
+    return f"{name}{suffix}"
+
+
+def _row_path_ref(row: dict, node_segs: List[dict], project: str | None) -> tuple[str, dict] | None:
+    """Build the displayed ref from the same path variables used for matching."""
+    if len(node_segs) == 1:
+        var_names = ["n"]
+    else:
+        var_names = [chr(ord("a") + i) for i in range(len(node_segs))]
+
+    parts = []
+    main_info = None
+    for var, seg in zip(var_names, node_segs):
+        info = row.get(var)
+        if not info or not isinstance(info, dict):
+            return None
+        main_info = info
+        labels = _labels_for_output(seg, info.get("labels", []))
+        parts.append(_format_ref_segment(info.get("name", ""), labels))
+
+    local_ref = "/".join(parts)
+    if project:
+        local_ref = f"{project}::{local_ref}"
+    return local_ref, main_info
+
+
 # ═══════════════════════════════════════════════════════════
 #  后处理过滤
 # ═══════════════════════════════════════════════════════════
@@ -322,7 +360,10 @@ def match_ref_command(workspace, ref: str, offset: int = 0,
         offset: 起始索引
         limit: 每页最大条数
     """
-    ref = normalize_project_slash_ref(workspace, ref)
+    try:
+        ref = normalize_project_slash_ref(workspace, ref)
+    except ValueError as exc:
+        return f"Error: {exc}"
     page_conf = TOOL_PAGINATION["find"]
     if limit is None:
         limit = page_conf.default_limit
@@ -333,6 +374,7 @@ def match_ref_command(workspace, ref: str, offset: int = 0,
 
     # 解析 URN → Cypher
     project, segments = parse_urn(ref)
+    node_segs = _node_segments(segments)
     cypher, post_filters = _build_cypher(segments)
 
     # 执行 Cypher。project:: 是整条 ref 查询的路由，不是节点属性过滤。
@@ -345,26 +387,17 @@ def match_ref_command(workspace, ref: str, offset: int = 0,
     if not results:
         return "No objects found"
 
-    # 格式化：取最后一个变量的信息作为主结果
+    # 格式化：输出路径与输入 ref 的路径匹配逻辑保持一致
     all_items = []
     for row in results:
-        main_info = None
-        main_var = None
-        for var_key in reversed(list(row.keys())):
-            info = row.get(var_key)
-            if info and isinstance(info, dict):
-                main_info = info
-                main_var = var_key
-                break
-        if not main_info:
+        path_item = _row_path_ref(row, node_segs, project)
+        if not path_item:
             continue
+        entity_name, main_info = path_item
         node_project = main_info.get("__project") or project
         main_info = normalize_knowledge_meta(node_project, main_info.get("labels"), main_info)
-
-        name = display_ref_for_node(workspace, node_project, main_info, row=row, main_var=main_var)
         labels = main_info.get("labels", [])
         info_str = get_info(labels, main_info or {})
-        entity_name = format_entity_name(name, labels)
         all_items.append((_knowledge_priority(labels), entity_name.lower(), node_project, entity_name, info_str))
 
     if not all_items:
@@ -378,10 +411,8 @@ def match_ref_command(workspace, ref: str, offset: int = 0,
         return f"No results at offset {offset}. Total results: {total}"
 
     lines = []
-    show_project = project is None and len(_query_projects(workspace, project)) > 1
     for _, _, node_project, entity_name, info in page:
-        prefix = f"{node_project}::\t" if show_project and node_project else ""
-        lines.append(f"{prefix}{entity_name}\t{info}")
+        lines.append(f"{entity_name}\t{info}")
     output = "\n".join(lines)
 
     end = offset + len(page)

@@ -28,6 +28,10 @@ def _strip_outer_quotes(text: str) -> str:
     return text
 
 
+def _normalize_display_segment(segment: str) -> str:
+    return _strip_outer_quotes(_strip_display_label_suffix(segment).strip())
+
+
 def _normalize_relation_endpoint(text: str) -> str:
     parts = [p for p in text.split("/") if p]
     if not parts:
@@ -110,6 +114,12 @@ def _candidate_structured_refs(local_ref: str) -> list[str]:
 
 def resolve_entity(workspace, ref: str) -> tuple[dict | None, str | None]:
     """将 ref 解析为唯一节点元数据。"""
+    from tool.utils.ref_match import normalize_project_slash_ref
+
+    try:
+        ref = normalize_project_slash_ref(workspace, ref)
+    except ValueError as exc:
+        return None, str(exc)
     project, local_ref = _split_project_ref(ref)
     local_ref = _strip_outer_quotes(dotted_ref_to_path(local_ref))
 
@@ -266,7 +276,7 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
             return None, f"匹配到多个实体: {local_ref}"
 
     parts = _split_structured_path(local_ref)
-    normalized_parts = [_strip_display_label_suffix(p) for p in parts]
+    normalized_parts = [_normalize_display_segment(p) for p in parts]
     normalized_ref = "/".join(normalized_parts)
     requested_labels = _display_labels_from_last_segment(parts[-1] if parts else "")
 
@@ -305,7 +315,7 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
             return None, f"匹配到多个实体: {local_ref}"
 
     if requested_labels and parts:
-        tail_name = _strip_display_label_suffix(parts[-1])
+        tail_name = _normalize_display_segment(parts[-1])
         fallback = _lookup_exact_named_nodes(
             workspace, project, f"{tail_name}:{':'.join(sorted(requested_labels))}"
         )
