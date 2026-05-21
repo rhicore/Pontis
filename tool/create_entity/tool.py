@@ -65,6 +65,28 @@ def _has_wildcards(ref: str) -> bool:
     return any(c in ref for c in '*?[]')
 
 
+def _link_relation_entity_to_db(workspace, *, project: str | None, node_id: str | None) -> int:
+    if not node_id:
+        return 0
+    rows = workspace.cypher(
+        """
+        MATCH (r {id: $id})--(endpoint)
+        WHERE any(label IN coalesce(r.labels, []) WHERE label IN ['fk', 'rel', 'overlap'])
+          AND endpoint._db_ref IS NOT NULL
+        WITH r, collect(DISTINCT endpoint._db_ref) AS db_refs
+        UNWIND db_refs AS db_ref
+        MATCH (db {_ref: db_ref})
+        MERGE (db)-[:RELATED_TO]->(r)
+        RETURN count(DISTINCT db) AS n
+        """,
+        params={"id": node_id},
+        project=project,
+    )
+    if not rows:
+        return 0
+    return int(rows[0].get("n") or 0)
+
+
 def create_entity_command(workspace, ref: str, meta: dict = None,
                           edges: list = None) -> str:
     """创建实体节点。
@@ -193,12 +215,18 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
                 continue
             edge_results.append(f"  {a_name} ↔ {b_name}")
 
+    db_edges = 0
+    if set(labels or []) & {"fk", "rel", "overlap"}:
+        db_edges = _link_relation_entity_to_db(workspace, project=project, node_id=created_id)
+
     lines = [f"Created: {name}"]
     if labels:
         lines.append(f"Labels: {', '.join(labels)}")
     if edge_results:
         lines.append(f"Edges ({len(edge_results)}):")
         lines.extend(edge_results)
+    if db_edges:
+        lines.append(f"DB relation index edges: {db_edges}")
 
     return "\n".join(lines)
 

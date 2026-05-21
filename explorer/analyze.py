@@ -11,7 +11,6 @@
 import logging
 
 from storage.workspace import Workspace
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -114,9 +113,9 @@ COORDINATOR_PROMPT = """\
 
 def generate(workspace: Workspace) -> None:
     """为所有实体生成 AI 总结。"""
-    from agent.config import create_agent, AgentSpec
-    from agent.guardrail import build_guardrails
+    from agent.config import create_agent
     from agent.utils import load_agent_config
+    from explorer.utils.agent_spec import explorer_writer_spec
 
     config = load_agent_config(workspace.project_path)
     if not config["api_key"]:
@@ -125,14 +124,14 @@ def generate(workspace: Workspace) -> None:
 
     logger.info("=== Agent Analyze (summaries only) ===")
 
-    spec = AgentSpec(mode="writer")
-    spec.tools = [
-        "find", "meta", "query", "agent",
-        "create_entity", "update_meta", "add_edge", "delete",
-    ]
-    project_name = os.path.basename(os.path.abspath(workspace.project_path))
-    spec.projects = [project_name]
-    spec.guardrails = build_guardrails(spec, ["round_limit"])
+    spec = explorer_writer_spec(
+        workspace,
+        tools=[
+            "find", "meta", "query", "agent",
+            "create_entity", "update_meta", "add_edge", "delete",
+        ],
+        include_readme=True,
+    )
     agent = create_agent(workspace.project_path, spec)
 
     agent.chat(COORDINATOR_PROMPT)

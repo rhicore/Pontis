@@ -538,5 +538,10 @@ def _filter_by_requested_labels(nodes: list[dict], requested_labels: set[str]) -
     matched = [
         node for node in nodes
         if requested_labels.issubset(set(node.get("labels", [])))
+        and not (
+            "table" in requested_labels
+            and "csv_table" not in requested_labels
+            and "csv_table" in set(node.get("labels", []))
+        )
     ]
-    return matched or nodes
+    return matched if requested_labels else nodes

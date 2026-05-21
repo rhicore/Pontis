@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 
 from extractor.modules import csv_column_stats
 from storage.workspace import Workspace
@@ -137,17 +136,18 @@ def _dedupe_sources(sources: list[OpenFileSource]) -> list[OpenFileSource]:
 
 
 def _run_agent_for_csv(workspace: Workspace, source: OpenFileSource, *, force: bool) -> None:
-    from agent.config import AgentSpec, create_agent
-    from agent.guardrail import build_guardrails
+    from agent.config import create_agent
+    from explorer.utils.agent_spec import explorer_writer_spec
 
-    spec = AgentSpec(mode="writer", effort="high", max_rounds=120)
-    spec.tools = [
-        "find", "grep", "read", "meta", "agent",
-        "update_meta",
-    ]
-    project_name = os.path.basename(os.path.abspath(workspace.project_path))
-    spec.projects = [project_name]
-    spec.guardrails = build_guardrails(spec, ["round_limit"])
+    spec = explorer_writer_spec(
+        workspace,
+        tools=[
+            "find", "grep", "read", "meta", "agent",
+            "update_meta",
+        ],
+        effort="high",
+        max_rounds=120,
+    )
     agent = create_agent(workspace.project_path, spec)
 
     prompt = (

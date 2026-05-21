@@ -237,6 +237,14 @@ def _format_ref_segment(name: str, labels: List[str]) -> str:
     return f"{name}{suffix}"
 
 
+def _segment_semantics_match(seg: dict, labels: List[str]) -> bool:
+    requested = set(seg.get("labels_and") or []) | set(seg.get("labels_or") or [])
+    actual = set(labels or [])
+    if "table" in requested and "csv_table" not in requested and "csv_table" in actual:
+        return False
+    return True
+
+
 def _row_path_ref(row: dict, node_segs: List[dict], project: str | None) -> tuple[str, dict] | None:
     """Build the displayed ref from the same path variables used for matching."""
     if len(node_segs) == 1:
@@ -249,6 +257,8 @@ def _row_path_ref(row: dict, node_segs: List[dict], project: str | None) -> tupl
     for var, seg in zip(var_names, node_segs):
         info = row.get(var)
         if not info or not isinstance(info, dict):
+            return None
+        if not _segment_semantics_match(seg, info.get("labels", [])):
             return None
         main_info = info
         labels = _labels_for_output(seg, info.get("labels", []))

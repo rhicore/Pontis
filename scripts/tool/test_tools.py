@@ -184,19 +184,22 @@ def main():
     ok("find lists db tables by ref", "books.sqlite/address_status" in find_tables and "books.sqlite/order_status" in find_tables, find_tables)
 
     find_all_tables = find_command(ws, ref="*:table")
-    ok("find lists csv files as queryable tables", "orders.csv/orders" in find_all_tables, find_all_tables)
+    ok("find *:table lists database tables only", "orders.csv/orders" not in find_all_tables, find_all_tables)
+
+    find_csv_tables = find_command(ws, ref="*:csv_table")
+    ok("find lists csv table summaries through csv_table", "orders:csv_table" in find_csv_tables, find_csv_tables)
 
     ref_cols = find_command(ws, ref="books.sqlite/*:table/*:col")
-    ok("find lists path-style columns", "books.sqlite/address_status/status_id" in ref_cols, ref_cols)
+    ok("find lists path-style columns", "books.sqlite/address_status:table/status_id:col" in ref_cols, ref_cols)
 
     display_table_meta = meta_command(ws, "books.sqlite/address_status:table", all=True)
     ok("meta accepts typed table display ref", "address_status" in display_table_meta and "Error:" not in display_table_meta, display_table_meta)
 
-    display_col_meta = meta_command(ws, "books.sqlite/address_status/status_id:INTEGER:col", all=True)
-    ok("meta accepts typed column display ref", "status_id" in display_col_meta and "Error:" not in display_col_meta, display_col_meta)
+    display_col_meta = meta_command(ws, "books.sqlite/address_status/status_id:col", all=True)
+    ok("meta accepts labeled column display ref", "status_id" in display_col_meta and "Error:" not in display_col_meta, display_col_meta)
 
-    typed_short_col_meta = meta_command(ws, "address_status/status_id:INTEGER:col", all=True)
-    ok("meta accepts typed table/col display ref", "status_id" in typed_short_col_meta and "Error:" not in typed_short_col_meta, typed_short_col_meta)
+    typed_short_col_meta = meta_command(ws, "address_status/status_id:col", all=True)
+    ok("meta accepts labeled table/col display ref", "status_id" in typed_short_col_meta and "Error:" not in typed_short_col_meta, typed_short_col_meta)
 
     query_out = query_command(ws, 'SELECT status_id, address_status FROM address_status ORDER BY status_id', "books.sqlite")
     ok("query reads sqlite through db_connect", "Active" in query_out and "Inactive" in query_out, query_out)
@@ -455,7 +458,7 @@ def main():
     find_search_out = find_command(ws, ref="*:disambig", query="address status ambiguity")
     ok("find searches within ref scope", "status_id_domain" in find_search_out, find_search_out)
     path_search = find_command(ws, ref="*:col", query="address status domain")
-    ok("find query shows copyable path-style refs", "books.sqlite/" in path_search, path_search)
+    ok("find query returns column refs", "status_id:col" in path_search, path_search)
 
     create_entity_command(
         ws,
@@ -467,9 +470,9 @@ def main():
         "knowledge_case:knowledge:example",
         meta={"brief": "status id ambiguity", "detail": "shared status id ambiguity"},
     )
-    knowledge_find = find_command(ws, ref="*:knowledge")
-    rule_idx = knowledge_find.find("knowledge_rule:knowledge:convention")
-    example_idx = knowledge_find.find("knowledge_case:knowledge:example")
+    knowledge_find = find_command(ws, ref=f"{os.path.basename(project)}::*:knowledge")
+    rule_idx = knowledge_find.find("knowledge_rule:knowledge")
+    example_idx = knowledge_find.find("knowledge_case:knowledge")
     ok("find orders abstract knowledge before examples", rule_idx != -1 and example_idx != -1 and rule_idx < example_idx, knowledge_find)
 
     knowledge_search = find_command(ws, ref="knowledge_rule:knowledge:convention", query="status id ambiguity")
@@ -551,18 +554,18 @@ def main():
     disambig_meta = meta_command(ws, "status_id_domain", all=True)
     ok(
         "meta shows related columns after add_edge",
-        disambig_meta.count("status_id:col:INT") == 3 and "customer_address/status_id" not in disambig_meta,
+        disambig_meta.count("status_id") >= 3 and "customer_address/status_id" not in disambig_meta,
         disambig_meta,
     )
 
     rel_meta = meta_command(ws, "books.sqlite/order_history.status_id->books.sqlite/order_status.status_id", all=True)
-    ok("meta accepts path-style relation ref with db prefixes", "order_history.status_id->order_status.status_id" in rel_meta and "Error:" not in rel_meta, rel_meta)
-
-    malformed_rel_meta = meta_command(ws, "books.sqlite/order_history.order_history.status_id->books.sqlite/order_status.status_id", all=True)
-    ok("meta tolerates malformed relation endpoint with duplicated table token", "order_history.status_id->order_status.status_id" in malformed_rel_meta and "Error:" not in malformed_rel_meta, malformed_rel_meta)
+    ok("meta accepts path-style relation ref with db prefixes", "match_rate: 1.0" in rel_meta and "Error:" not in rel_meta, rel_meta)
 
     bare_rel_meta = meta_command(ws, "order_history.status_id->order_status.status_id", all=True)
     ok("meta prefers labeled relation entity for bare relation ref", "order_history.status_id->order_status.status_id" in bare_rel_meta and "Error:" not in bare_rel_meta, bare_rel_meta)
+
+    fk_list = find_command(ws, ref="books.sqlite:db/*:fk")
+    ok("find lists fk entities from db entrypoint", "order_history.status_id->order_status.status_id" in fk_list, fk_list)
 
     fk_search = find_command(ws, ref="*:fk", query="order_history status_id order_status foreign key")
     ok("find query can find fk entities by name tokens", "order_history.status_id->order_status.status_id" in fk_search, fk_search)

@@ -51,7 +51,7 @@ class LLMClient:
         return client
 
     def _call(self, client, messages: list) -> str:
-        kwargs = {"max_tokens": 8192}
+        kwargs = {}
         if self.thinking:
             kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
             kwargs["reasoning_effort"] = self.thinking_effort

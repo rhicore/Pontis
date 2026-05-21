@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """BIRD 数据库提取脚本。"""
+import json
 import logging
 import shutil
 import sys
 from pathlib import Path
 
-from scripts.BIRD.common import get_db_base, get_preprocess_dir
+from scripts.BIRD.common import (
+    PONTIS_WORKSPACE_ROOT,
+    get_data_dir,
+    get_db_base,
+    get_preprocess_dir,
+    get_run_id,
+    get_run_name,
+    set_run_id,
+)
 from extractor.engine import (
     RunOptions,
     file_log_handler,
@@ -31,6 +40,7 @@ AGENT_PIPELINE = [
     "agent_join_detect",
     "agent_disambiguate",
     "agent_readme",
+    "agent_query_overview",
 ]
 
 EMBEDDING_PIPELINE = [
@@ -45,6 +55,29 @@ def _sum_timings(timings: dict, names: list[str]) -> float:
     return sum(timings.get(name, 0.0) for name in names)
 
 
+def _load_query_cases(db_id: str, train: bool) -> list[dict]:
+    """Load question/evidence cases for one BIRD database."""
+    path = get_data_dir(train) / ("train.json" if train else "dev.json")
+    if not path.exists():
+        logger.warning("BIRD case file not found: %s", path)
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        logger.warning("BIRD case file is not a JSON list: %s", path)
+        return []
+    cases = []
+    for item in data:
+        if not isinstance(item, dict) or str(item.get("db_id", "")) != db_id:
+            continue
+        cases.append({
+            "question_id": item.get("question_id", item.get("id")),
+            "db_id": item.get("db_id"),
+            "question": item.get("question", ""),
+            "evidence": item.get("evidence", ""),
+        })
+    return cases
+
+
 def extract_one(
     db_dir: str,
     preprocess_dir: str | Path | None = None,
@@ -53,11 +86,12 @@ def extract_one(
     ai_only: bool = False,
     agent_only: bool = False,
     debug: bool = False,
+    train: bool = False,
 ) -> dict:
     """提取单个 BIRD 数据库目录。"""
     db_dir = Path(db_dir).resolve()
     name = db_dir.name
-    pontis_dir = Path(preprocess_dir).resolve() if preprocess_dir else get_preprocess_dir(name, train=False)
+    pontis_dir = Path(preprocess_dir).resolve() if preprocess_dir else get_preprocess_dir(name, train=train)
 
     if force and pontis_dir.exists():
         try:
@@ -82,6 +116,7 @@ def extract_one(
         "join_detect": 0.0,
         "disambiguate": 0.0,
         "readme": 0.0,
+        "query_overview": 0.0,
         "embedding": 0.0,
     }
 
@@ -113,16 +148,26 @@ def extract_one(
                 result["ai_db"] = ai_timings.get("ai_db_summary", 0.0)
 
             agent_pipeline = [name for name in AGENT_PIPELINE if name in registry]
+            module_kwargs = {}
+            if "agent_query_overview" in agent_pipeline:
+                module_kwargs["agent_query_overview"] = {
+                    "cases": _load_query_cases(name, train=train),
+                }
             agent_timings = run_modules(
                 agent_pipeline,
                 workspace,
                 config=config,
-                options=RunOptions(continue_on_error=True, collect_timing=True),
+                options=RunOptions(
+                    continue_on_error=True,
+                    collect_timing=True,
+                    module_kwargs=module_kwargs,
+                ),
             )
             result["agent"] = agent_timings.get("agent_analyze", 0.0)
             result["join_detect"] = agent_timings.get("agent_join_detect", 0.0)
             result["disambiguate"] = agent_timings.get("agent_disambiguate", 0.0)
             result["readme"] = agent_timings.get("agent_readme", 0.0)
+            result["query_overview"] = agent_timings.get("agent_query_overview", 0.0)
 
             if result["ai_columns"]:
                 logger.info(f"AI columns phase done: {result['ai_columns']:.1f}s")
@@ -138,6 +183,8 @@ def extract_one(
                 logger.info(f"Disambiguate phase done: {result['disambiguate']:.1f}s")
             if result["readme"]:
                 logger.info(f"README phase done: {result['readme']:.1f}s")
+            if result["query_overview"]:
+                logger.info(f"Query overview phase done: {result['query_overview']:.1f}s")
 
         registry = get_registry()
         embedding_pipeline = [name for name in EMBEDDING_PIPELINE if name in registry]
@@ -156,13 +203,38 @@ def extract_one(
     return result
 
 
+def _parse_run_id(argv: list[str]) -> str | None:
+    for i, arg in enumerate(argv):
+        if arg == "--run-id" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--run-id="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def _parse_db_filter(argv: list[str]) -> str | None:
+    skip_next = False
+    for arg in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--run-id":
+            skip_next = True
+            continue
+        if arg.startswith("--"):
+            continue
+        return arg
+    return None
+
+
 def main() -> None:
-    args = set(sys.argv[1:])
-    db_filter = None
-    for arg in sys.argv[1:]:
-        if not arg.startswith("-"):
-            db_filter = arg
-            break
+    argv = sys.argv[1:]
+    run_id = _parse_run_id(argv)
+    if run_id:
+        set_run_id(run_id)
+
+    args = set(argv)
+    db_filter = _parse_db_filter(argv)
 
     no_ai = "--no-ai" in args or "--static-only" in args
     ai_only = "--ai-only" in args
@@ -195,10 +267,13 @@ def main() -> None:
     split = "train" if train else "dev"
     print(f"=== BIRD Extract ({split}, {mode}) ===")
     print(f"Databases: {len(db_dirs)}\n")
+    print(f"Run id: {get_run_id()}")
+    print(f"Preprocess logs: {PONTIS_WORKSPACE_ROOT / 'preprocess_logs' / get_run_name(train)}\n")
 
     success, failed = [], []
     total_static = total_ai_col = total_ai_tbl = total_ai_db = 0.0
     total_agent = total_join = total_disambig = total_readme = 0.0
+    total_query_overview = 0.0
 
     for i, db_dir in enumerate(db_dirs, 1):
         name = db_dir.name
@@ -213,6 +288,7 @@ def main() -> None:
                 ai_only=ai_only,
                 agent_only=agent_only,
                 debug=debug,
+                train=train,
             )
             total_static += result["static"]
             total_ai_col += result["ai_columns"]
@@ -222,6 +298,7 @@ def main() -> None:
             total_join += result["join_detect"]
             total_disambig += result["disambiguate"]
             total_readme += result["readme"]
+            total_query_overview += result["query_overview"]
 
             parts = []
             if result["static"]:
@@ -240,6 +317,8 @@ def main() -> None:
                 parts.append(f"Disambig: {result['disambiguate']:.1f}s")
             if result["readme"]:
                 parts.append(f"README: {result['readme']:.1f}s")
+            if result["query_overview"]:
+                parts.append(f"Query Overview: {result['query_overview']:.1f}s")
             print(f"  {', '.join(parts)}")
             success.append(name)
         except Exception as e:
@@ -253,13 +332,15 @@ def main() -> None:
     print(f"Done: {len(success)} ok, {len(failed)} failed")
     total_all = (
         total_static + total_ai_col + total_ai_tbl + total_ai_db +
-        total_agent + total_join + total_disambig + total_readme
+        total_agent + total_join + total_disambig + total_readme +
+        total_query_overview
     )
     print(
         f"Time: static {total_static:.1f}s, AI cols {total_ai_col:.1f}s, "
         f"AI tables {total_ai_tbl:.1f}s, AI db {total_ai_db:.1f}s, "
         f"agent {total_agent:.1f}s, join {total_join:.1f}s, "
-        f"disambig {total_disambig:.1f}s, readme {total_readme:.1f}s, total {total_all:.1f}s"
+        f"disambig {total_disambig:.1f}s, readme {total_readme:.1f}s, "
+        f"query overview {total_query_overview:.1f}s, total {total_all:.1f}s"
     )
     if failed:
         print(f"Failed: {', '.join(failed)}")

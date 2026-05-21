@@ -2,16 +2,42 @@
 
 from __future__ import annotations
 
+import os
+from datetime import datetime
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TEXT2SQL_ROOT = PROJECT_ROOT.parent
 PONTIS_WORKSPACE_ROOT = TEXT2SQL_ROOT / "workspace" / "baselines" / "pontis"
+_RUN_ID = (
+    os.environ.get("PONTIS_BIRD_RUN_ID")
+    or os.environ.get("TEXT2SQL_RUN_ID")
+    or os.environ.get("BASELINE_RUN_ID")
+    or datetime.now().strftime("%Y%m%d_%H%M%S")
+)
+
+
+def get_run_id() -> str:
+    return _RUN_ID
+
+
+def set_run_id(run_id: str) -> None:
+    global _RUN_ID
+    _RUN_ID = run_id
+    os.environ.setdefault("TEXT2SQL_RUN_ID", run_id)
+
+
+def get_split_name(train: bool) -> str:
+    return "bird_train" if train else "bird_dev"
+
+
+def get_run_name(train: bool, run_id: str | None = None) -> str:
+    return f"{get_split_name(train)}_{run_id or get_run_id()}"
 
 
 def get_data_dir(train: bool) -> Path:
-    split = "bird_train" if train else "bird_dev"
+    split = get_split_name(train)
     workspace_data = TEXT2SQL_ROOT / "workspace" / "baselines" / "pontis" / "data" / split
     if workspace_data.exists():
         return workspace_data
@@ -31,13 +57,11 @@ def get_db_dir(db_id: str, train: bool) -> Path:
 
 
 def get_preprocess_dir(db_id: str, train: bool) -> Path:
-    split = "bird_train" if train else "bird_dev"
-    return PONTIS_WORKSPACE_ROOT / "preprocess_logs" / split / db_id
+    return PONTIS_WORKSPACE_ROOT / "preprocess_logs" / get_run_name(train) / db_id
 
 
 def get_runtime_dir(db_id: str, train: bool) -> Path:
-    split = "bird_train" if train else "bird_dev"
-    return PONTIS_WORKSPACE_ROOT / "runtime_logs" / split / db_id
+    return PONTIS_WORKSPACE_ROOT / "runtime_logs" / get_run_name(train) / db_id
 
 
 def get_benchmark_dir(db_id: str, train: bool) -> Path:
@@ -45,13 +69,11 @@ def get_benchmark_dir(db_id: str, train: bool) -> Path:
 
 
 def get_progress_path(train: bool) -> Path:
-    split = "bird_train" if train else "bird_dev"
-    return PONTIS_WORKSPACE_ROOT / "runtime_logs" / split / "progress.log"
+    return PONTIS_WORKSPACE_ROOT / "runtime_logs" / get_run_name(train) / "progress.log"
 
 
 def get_results_dir(train: bool) -> Path:
-    split = "bird_train" if train else "bird_dev"
-    return PONTIS_WORKSPACE_ROOT / "results" / split
+    return PONTIS_WORKSPACE_ROOT / "results" / get_run_name(train)
 
 
 def iter_db_dirs(train: bool):

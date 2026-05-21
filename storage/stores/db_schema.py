@@ -365,6 +365,7 @@ class SQLiteSchemaModule(StoreModule):
                         "labels": ["fk"],
                     }
                     register(fnode)
+                    link(db_rel, fk_ref)
                     link(table_ref, fk_ref)
                     link(f"{table_ref}--{from_col}", fk_ref)
                     link(f"{db_name}--{to_table}", fk_ref)
@@ -407,6 +408,7 @@ class SQLiteSchemaModule(StoreModule):
                             "labels": ["fk"],
                         }
                         register(fnode)
+                        link(db_rel, fk_ref)
                         link(f"{db_name}--{table_name}", fk_ref)
                         link(f"{db_name}--{table_name}--{col_name}", fk_ref)
                         link(f"{db_name}--{ref_table}", fk_ref)

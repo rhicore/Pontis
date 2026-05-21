@@ -14,6 +14,45 @@ def _selector_pattern(selector: dict, var: str, prefix: str) -> tuple[str, dict]
     return f"({var}{labels} {{name: ${prefix}_name}})", {f"{prefix}_name": selector["name"]}
 
 
+def _relation_endpoint_db_refs(workspace, *, project: str | None, node_id: str | None) -> list[str]:
+    if not node_id:
+        return []
+    rows = workspace.cypher(
+        """
+        MATCH (r {id: $id})--(endpoint)
+        WHERE any(label IN coalesce(r.labels, []) WHERE label IN ['fk', 'rel', 'overlap'])
+          AND endpoint._db_ref IS NOT NULL
+        RETURN collect(DISTINCT endpoint._db_ref) AS db_refs
+        """,
+        params={"id": node_id},
+        project=project,
+    )
+    if not rows:
+        return []
+    return list(rows[0].get("db_refs") or [])
+
+
+def _link_relation_entity_to_db(workspace, *, project: str | None, node: dict) -> int:
+    if not set(node.get("labels") or []) & {"fk", "rel", "overlap"}:
+        return 0
+    db_refs = _relation_endpoint_db_refs(workspace, project=project, node_id=node.get("id"))
+    if not db_refs:
+        return 0
+    rows = workspace.cypher(
+        """
+        UNWIND $db_refs AS db_ref
+        MATCH (db {_ref: db_ref}), (r {id: $id})
+        MERGE (db)-[:RELATED_TO]->(r)
+        RETURN count(DISTINCT db) AS n
+        """,
+        params={"id": node.get("id"), "db_refs": db_refs},
+        project=project,
+    )
+    if not rows:
+        return 0
+    return int(rows[0].get("n") or 0)
+
+
 def add_edge_command(workspace, edges: list) -> str:
     """通过 Cypher 为已有节点添加 RELATED_TO 边。
 
@@ -76,9 +115,16 @@ def add_edge_command(workspace, edges: list) -> str:
         if not rows:
             results.append(f"跳过: 无法创建边 ({e['a_ref']} ↔ {e['b_ref']})")
             continue
+        e["db_edges"] = (
+            _link_relation_entity_to_db(workspace, project=e["project"], node=e["a_selector"])
+            + _link_relation_entity_to_db(workspace, project=e["project"], node=e["b_selector"])
+        )
 
     results.insert(0, f"已添加 {len(valid_edges)} 条边:")
     for e in valid_edges:
         results.append(f"  {e['a_ref']} ↔ {e['b_ref']}")
+    db_edges = sum(int(e.get("db_edges") or 0) for e in valid_edges)
+    if db_edges:
+        results.append(f"DB relation index edges: {db_edges}")
 
     return "\n".join(results)

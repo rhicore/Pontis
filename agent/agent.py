@@ -12,8 +12,9 @@ from storage.workspace import Workspace
 from agent.utils import load_agent_config
 from agent.config import default_spec
 from agent.tools import build_registry
-from agent.prompt import build_prompt
+from agent.prompt import build_prompt_messages
 from agent.guardrail_api import Guardrail, CallVerdict, GuardrailContext
+from agent.runtime_metrics import estimate_messages_tokens, estimate_tokens, split_prompt_tokens
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -30,7 +31,7 @@ class PontusAgent:
 
     def __init__(self, project_path: str,
                  tools=None,
-                 system_prompt: Optional[str] = None,
+                 system_prompt: Optional[Union[str, List[str]]] = None,
                  guardrails: Optional[List[Guardrail]] = None,
                  logger_name: Optional[str] = None,
                  trace_callback=None,
@@ -56,11 +57,20 @@ class PontusAgent:
         )
 
         self.tools = tools or build_registry(default_spec(project_path))
-        self.system_prompt = system_prompt or build_prompt(default_spec(project_path))
+        if not system_prompt:
+            system_prompt = build_prompt_messages(default_spec(project_path))
+        self.system_prompt = system_prompt
         self.guardrails = guardrails or []
         self._tool_history: List[Tuple[str, dict, str]] = []
-        self.messages = [{"role": "system", "content": self.system_prompt}]
+        self._system_messages = self._normalize_system_prompt(self.system_prompt)
+        self.messages = list(self._system_messages)
         self._empty_text_retries = 0
+        self._llm_rounds = 0
+        self._input_tokens = 0
+        self._pre_input_tokens = 0
+        self._runtime_input_tokens = 0
+        self._output_tokens = 0
+        self._total_tokens = 0
 
     # ──────────────── LLM 调用 ────────────────
 
@@ -69,7 +79,6 @@ class PontusAgent:
         kwargs = {
             "model": self.config["model"],
             "messages": self.messages,
-            "max_tokens": self.config.get("max_tokens", 8192),
         }
         if tool_defs:
             kwargs["tools"] = tool_defs
@@ -82,10 +91,50 @@ class PontusAgent:
 
     def _call_llm_round(self):
         """调用 LLM 并将 response 追加到消息历史。"""
+        static_prompt_tokens = self._static_prompt_tokens()
         response = self._call_llm()
+        self._record_llm_usage(response, static_prompt_tokens=static_prompt_tokens)
         msg = response.choices[0].message
         self.messages.append(self._msg_to_dict(msg))
         return msg
+
+    def _static_prompt_tokens(self) -> int:
+        return estimate_messages_tokens(self._system_messages) + estimate_tokens(self.tools.get_definitions())
+
+    def _record_llm_usage(self, response, *, static_prompt_tokens: int = 0) -> None:
+        self._llm_rounds += 1
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return
+        input_tokens = (
+            getattr(usage, "prompt_tokens", None)
+            if getattr(usage, "prompt_tokens", None) is not None
+            else getattr(usage, "input_tokens", 0)
+        )
+        output_tokens = (
+            getattr(usage, "completion_tokens", None)
+            if getattr(usage, "completion_tokens", None) is not None
+            else getattr(usage, "output_tokens", 0)
+        )
+        total_tokens = getattr(usage, "total_tokens", None)
+        if total_tokens is None:
+            total_tokens = (input_tokens or 0) + (output_tokens or 0)
+        split = split_prompt_tokens(int(input_tokens or 0), static_prompt_tokens)
+        self._input_tokens += int(input_tokens or 0)
+        self._pre_input_tokens += split["pre_input_tokens"]
+        self._runtime_input_tokens += split["runtime_input_tokens"]
+        self._output_tokens += int(output_tokens or 0)
+        self._total_tokens += int(total_tokens or 0)
+
+    def llm_metrics(self) -> dict:
+        return {
+            "llm_rounds": self._llm_rounds,
+            "input_tokens": self._input_tokens,
+            "pre_input_tokens": self._pre_input_tokens,
+            "runtime_input_tokens": self._runtime_input_tokens,
+            "output_tokens": self._output_tokens,
+            "total_tokens": self._total_tokens,
+        }
 
     def _msg_to_dict(self, msg) -> dict:
         d = msg.to_dict()
@@ -94,6 +143,23 @@ class PontusAgent:
             if rc:
                 d["reasoning_content"] = rc
         return d
+
+    @staticmethod
+    def _normalize_system_prompt(system_prompt: Union[str, List[str]]) -> List[dict]:
+        if isinstance(system_prompt, str):
+            parts = [system_prompt]
+        else:
+            parts = [str(part) for part in system_prompt if str(part).strip()]
+        return [{"role": "system", "content": part} for part in parts]
+
+    def set_system_prompt(self, system_prompt: Union[str, List[str]]) -> None:
+        """Replace system messages while preserving non-system conversation."""
+        self.system_prompt = system_prompt
+        self._system_messages = self._normalize_system_prompt(system_prompt)
+        idx = 0
+        while idx < len(self.messages) and self.messages[idx].get("role") == "system":
+            idx += 1
+        self.messages = list(self._system_messages) + self.messages[idx:]
 
     # ──────────────── 工具执行 ────────────────
 
@@ -201,7 +267,30 @@ class PontusAgent:
                 })
                 continue
 
-            args = modified_args or self._parse_args(tc.function.arguments)
+            parsed_args, parse_error = self._parse_args_or_error(tc.function.arguments)
+            if parse_error:
+                content = (
+                    "Tool argument parse error: "
+                    f"{parse_error}. Retry this tool call with valid JSON arguments. "
+                    "For long text fields, preserve the target ref and fields exactly."
+                )
+                self.logger.info(f"Tool argument parse error call#{i}({name}): {parse_error}")
+                yield {
+                    "type": "tool_call",
+                    "name": name,
+                    "arguments": {"__parse_error": parse_error},
+                    "id": tc.id,
+                }
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": content,
+                })
+                yield {"type": "tool_result", "name": name,
+                       "result": content, "id": tc.id}
+                continue
+
+            args = modified_args or parsed_args
             yield {"type": "tool_call", "name": name,
                    "arguments": args, "id": tc.id}
             result = self._execute_tool(name, args, tc.id)
@@ -291,25 +380,31 @@ class PontusAgent:
 
     @staticmethod
     def _parse_args(args_str) -> dict:
+        parsed, _ = PontusAgent._parse_args_or_error(args_str)
+        return parsed
+
+    @staticmethod
+    def _parse_args_or_error(args_str) -> tuple[dict, str | None]:
         if args_str is None:
-            return {}
+            return {}, None
         if isinstance(args_str, dict):
-            return args_str
+            return args_str, None
         if hasattr(args_str, "model_dump"):
             dumped = args_str.model_dump()
-            return dumped if isinstance(dumped, dict) else {}
+            return (dumped, None) if isinstance(dumped, dict) else ({}, "arguments object is not a JSON object")
         if hasattr(args_str, "to_dict"):
             dumped = args_str.to_dict()
-            return dumped if isinstance(dumped, dict) else {}
+            return (dumped, None) if isinstance(dumped, dict) else ({}, "arguments object is not a JSON object")
         if not isinstance(args_str, str):
-            return {}
+            return {}, "arguments are not a string or object"
 
+        last_error = None
         for loader in (json.loads, json.JSONDecoder(strict=False).decode):
             try:
                 parsed = loader(args_str)
-                return parsed if isinstance(parsed, dict) else {}
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
+                return (parsed, None) if isinstance(parsed, dict) else ({}, "arguments JSON is not an object")
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                last_error = exc
 
         repaired = []
         in_string = False
@@ -369,19 +464,21 @@ class PontusAgent:
         for loader in (json.loads, json.JSONDecoder(strict=False).decode):
             try:
                 parsed = loader(repaired_args)
-                return parsed if isinstance(parsed, dict) else {}
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
+                return (parsed, None) if isinstance(parsed, dict) else ({}, "repaired arguments JSON is not an object")
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                last_error = exc
 
         balanced_args = PontusAgent._append_missing_json_closers(repaired_args)
         if balanced_args != repaired_args:
             for loader in (json.loads, json.JSONDecoder(strict=False).decode):
                 try:
                     parsed = loader(balanced_args)
-                    return parsed if isinstance(parsed, dict) else {}
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    pass
-        return {}
+                    return (parsed, None) if isinstance(parsed, dict) else ({}, "balanced arguments JSON is not an object")
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    last_error = exc
+        if last_error:
+            return {}, f"invalid JSON arguments ({last_error})"
+        return {}, "invalid JSON arguments"
 
     @staticmethod
     def _next_nonspace(text: str, start: int) -> str | None:
@@ -412,13 +509,20 @@ class PontusAgent:
                 if not stack or stack[-1] != ch:
                     return text
                 stack.pop()
-        if in_string or not stack:
+        suffix = ""
+        if in_string:
+            if escape:
+                suffix += "\\"
+            suffix += '"'
+        if stack:
+            suffix += "".join(reversed(stack))
+        if not suffix:
             return text
-        return text + "".join(reversed(stack))
+        return text + suffix
 
     def reset_conversation(self):
         """Clear conversation history (keep system prompt) for a fresh session."""
-        self.messages = [self.messages[0]]
+        self.messages = list(self._system_messages)
 
     def run(self):
         """Run the interactive REPL."""

@@ -1,7 +1,7 @@
 """Tool definitions and execution dispatcher for the agent.
 
 Uses ToolRegistry pattern: tools are registered with (schema, executor) pairs,
-allowing different agent modes to have different tool sets.
+allowing each agent instance to use an explicit tool set.
 """
 import importlib
 from typing import Callable, Dict, List, Tuple
@@ -27,7 +27,7 @@ def _load_prompt(tool_name: str) -> str:
 # ==================== Tool Registry ====================
 
 class ToolRegistry:
-    """工具注册表，支持组合不同模式下的工具集。"""
+    """工具注册表，支持组合不同 agent 实例的工具集。"""
 
     def __init__(self):
         self._tools: Dict[str, Tuple[dict, Callable]] = {}
@@ -252,7 +252,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Max rows to return, default 100",
+                            "description": "Max rows to return, default 20",
                         },
                     },
                     "required": ["sql", "ref"],
@@ -496,7 +496,7 @@ def _exec_query(workspace, arguments: dict) -> str:
         workspace,
         sql=arguments["sql"],
         ref=arguments.get("ref", ""),
-        limit=arguments.get("limit", 100),
+        limit=arguments.get("limit", 20),
     )
 
 
@@ -594,22 +594,21 @@ _WRITE_EXECUTORS = {
 def build_registry(spec) -> ToolRegistry:
     """根据 AgentSpec 构建工具注册表。
 
-    使用 spec.tools（由 resolve_mode 填充）作为工具列表。
+    使用 spec.tools 作为工具列表；调用方必须显式设置。
     """
     tool_names = spec.tools
-    mode = spec.mode
 
     readonly_schemas = _get_readonly_schemas()
     write_schemas = _get_write_schemas()
+    writable_agent = any(name in write_schemas for name in tool_names)
 
     registry = ToolRegistry()
 
     for name in tool_names:
         if name == "agent":
             from agent.tool_use.sub_agent.tool import AgentExecutor
-            sub_mode = "writer" if mode in ("writer", "sub_agent") else "readonly"
             registry.register("agent", _get_agent_schema(),
-                              AgentExecutor(registry, mode=sub_mode))
+                              AgentExecutor(registry, writable=writable_agent))
         elif name in readonly_schemas:
             registry.register(name, readonly_schemas[name], _READONLY_EXECUTORS[name])
         elif name in write_schemas:

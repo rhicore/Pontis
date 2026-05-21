@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -117,6 +118,32 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(str(row[1]).lower() == column.lower() for row in rows)
 
 
+def _column_declared_type(conn: sqlite3.Connection, table: str, column: str) -> str:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({_quote_ident(table)})").fetchall()
+    except Exception:
+        return ""
+    for row in rows:
+        if str(row[1]).lower() == column.lower():
+            return str(row[2] or "").upper()
+    return ""
+
+
+def _is_year_prefix_like(column: str, declared_type: str, pattern: str) -> bool:
+    """Allow date/year prefix filters such as OpenDate LIKE '1980%'."""
+    if not re.fullmatch(r"\d{4}%", str(pattern)):
+        return False
+    col_l = column.lower()
+    type_u = declared_type.upper()
+    return (
+        "DATE" in type_u
+        or "TIME" in type_u
+        or col_l.endswith("date")
+        or "date" in col_l
+        or "year" in col_l
+    )
+
+
 def _count(conn: sqlite3.Connection, table: str, column: str, op: str, value: object) -> int:
     table_sql = _quote_ident(table)
     column_sql = _quote_ident(column)
@@ -197,6 +224,7 @@ class SQLValueGroundingCheck(Guardrail):
             try:
                 if not _column_exists(conn, physical_table, column):
                     continue
+                declared_type = _column_declared_type(conn, physical_table, column)
                 if op == "=":
                     exact_count = _count(conn, physical_table, column, "=", value)
                     if exact_count == 0:
@@ -233,6 +261,9 @@ class SQLValueGroundingCheck(Guardrail):
                 distinct = _distinct_count(conn, physical_table, column)
                 total = max(_total_count(conn, physical_table), 1)
                 ratio = like_count / total
+
+                if _is_year_prefix_like(column, declared_type, str(value)):
+                    continue
 
                 if exact_candidate is not None and exact_count > 0:
                     issues.append(ValueIssue(

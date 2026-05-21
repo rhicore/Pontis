@@ -217,7 +217,7 @@ class CSVSchemaModule(StoreModule):
             "_ref": table_ref,
             "column_count": len(headers),
             "delimiter": delimiter,
-            "labels": ["table", "csv_table"],
+            "labels": ["csv_table"],
         })
         link(csv_rel, table_ref)
 

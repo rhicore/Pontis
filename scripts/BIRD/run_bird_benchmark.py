@@ -40,17 +40,22 @@ from scripts.BIRD.common import (
     get_preprocess_dir,
     get_progress_path,
     get_results_dir,
+    get_run_id,
+    get_run_name,
+    set_run_id,
+    PONTIS_WORKSPACE_ROOT,
 )
+from scripts.BIRD.bird_readme import build_bird_readme_system_prompt
 
 logger = logging.getLogger(__name__)
 
-# BIRD 求解阶段不使用专门的 agent mode。
+# BIRD 求解阶段不使用通用 agent 默认配置。
 # 这里显式声明脚本需要的工具、prompt 段和 guardrail，避免通用 agent 配置
 # 被 benchmark 特例污染。
-BIRD_BENCHMARK_TOOLS = ["find", "grep", "meta", "query"]
+BIRD_BENCHMARK_TOOLS = ["find", "meta", "query"]
 BIRD_BENCHMARK_PROMPTS = [
-    "base", "tool", "ontology", "meta", "sql",
-    "guardrail", "project", "readme",
+    "base", "tool", "ontology", "sql",
+    "guardrail", "project", "readme", "effort",
 ]
 BIRD_BENCHMARK_GUARDRAILS = [
     "round_limit", "exploration_check",
@@ -71,6 +76,7 @@ QUERY_PROMPT_BASE_TEMPLATE = """\
 {project_scope}
 
 输出格式：一个 ```sql``` 代码块，代码块内是一条 SQLite SELECT 语句。多值答案用单列多行表示。
+SELECT 输出列按问题文字顺序给出；题目列出多个地址字段时分别输出字段，不拼接成单个字符串。
 
 {bird_global_section}
 
@@ -108,6 +114,7 @@ QUERY_PROMPT_MINIMAL_TEMPLATE = """\
 {bird_global_section}
 
 输出格式：一个 ```sql``` 代码块，代码块内是一条 SQLite SELECT 语句。
+SELECT 输出列按问题文字顺序给出；题目列出多个地址字段时分别输出字段，不拼接成单个字符串。
 
 问题：{question}
 
@@ -348,8 +355,10 @@ class TraceCollector:
 
     def write_logs(self, bench_dir: Path, qid: int, q: dict,
                    response: str, predicted_sql: str | None,
-                   result_str: str, elapsed: float):
+                   result_str: str, elapsed: float,
+                   efficiency: dict | None = None):
         """写两个日志文件。"""
+        efficiency = efficiency or empty_efficiency_metrics()
         # ── 通用头部 ──
         header = "\n".join([
             f"Q{qid} [{q.get('difficulty', '?')}] {result_str} {elapsed:.1f}s",
@@ -357,6 +366,15 @@ class TraceCollector:
             f"Evidence: {q.get('evidence', '') or '(无)'}",
             f"Predicted SQL: {predicted_sql or 'PARSE_ERROR'}",
             f"Golden SQL: {q['SQL']}",
+            (
+                "LLM Efficiency: "
+                f"rounds={efficiency.get('llm_rounds', 0)}, "
+                f"input_tokens={efficiency.get('input_tokens', 0)}, "
+                f"pre_input_tokens={efficiency.get('pre_input_tokens', 0)}, "
+                f"runtime_input_tokens={efficiency.get('runtime_input_tokens', 0)}, "
+                f"output_tokens={efficiency.get('output_tokens', 0)}, "
+                f"total_tokens={efficiency.get('total_tokens', 0)}"
+            ),
         ])
 
         # ── 详细版 ──
@@ -435,6 +453,57 @@ def _normalize_block_message(msg: str) -> str:
     return " ".join((msg or "").split())
 
 
+EFFICIENCY_FIELDS = (
+    "llm_rounds",
+    "input_tokens",
+    "pre_input_tokens",
+    "runtime_input_tokens",
+    "output_tokens",
+    "total_tokens",
+)
+
+
+def empty_efficiency_metrics() -> dict:
+    return {field: 0 for field in EFFICIENCY_FIELDS}
+
+
+def get_agent_efficiency_metrics(agent) -> dict:
+    if hasattr(agent, "llm_metrics"):
+        metrics = agent.llm_metrics()
+        return {field: int(metrics.get(field, 0) or 0) for field in EFFICIENCY_FIELDS}
+    return empty_efficiency_metrics()
+
+
+def aggregate_efficiency(rows: list[dict]) -> dict:
+    count = len(rows)
+    totals = {
+        field: sum(int(row.get(field, 0) or 0) for row in rows)
+        for field in EFFICIENCY_FIELDS
+    }
+    averages = {
+        "llm_rounds_per_query": round(totals["llm_rounds"] / count, 3) if count else 0.0,
+        "input_tokens_per_query": round(totals["input_tokens"] / count, 3) if count else 0.0,
+        "output_tokens_per_query": round(totals["output_tokens"] / count, 3) if count else 0.0,
+        "total_tokens_per_query": round(totals["total_tokens"] / count, 3) if count else 0.0,
+    }
+    return {"totals": totals, "averages": averages}
+
+
+def format_efficiency_line(rows: list[dict], indent: str = "") -> str:
+    eff = aggregate_efficiency(rows)
+    avg = eff["averages"]
+    totals = eff["totals"]
+    return (
+        f"{indent}Efficiency: "
+        f"LLM rounds/q={avg['llm_rounds_per_query']:.2f}, "
+        f"pre-input tokens/q={avg['pre_input_tokens_per_query']:.1f}, "
+        f"runtime-input tokens/q={avg['runtime_input_tokens_per_query']:.1f}, "
+        f"output tokens/q={avg['output_tokens_per_query']:.1f}, "
+        f"total tokens/q={avg['total_tokens_per_query']:.1f}, "
+        f"total tokens={totals['total_tokens']}"
+    )
+
+
 # ═══════════════════════════════════════════════════════════
 #  辅助
 # ═══════════════════════════════════════════════════════════
@@ -452,6 +521,13 @@ def build_agent_projects(db_id: str, use_bird_global: bool) -> list[str]:
     if use_bird_global:
         projects.append("bird")
     return projects
+
+
+def build_bird_benchmark_system_prompt(spec) -> list[str]:
+    """Build benchmark system prompt, always including BIRD prior knowledge."""
+    from agent.prompt import build_prompt_messages
+
+    return [*build_prompt_messages(spec), build_bird_readme_system_prompt()]
 
 
 def load_query_prompt_template(args) -> str:
@@ -534,17 +610,21 @@ def run_reflection_for_case(db_id: str, q: dict,
                             predicted_sql: str | None, result_str: str,
                             elapsed: float, bench_dir: Path,
                             use_bird_global: bool) -> None:
-    from agent.config import AgentSpec, resolve_mode
-    from agent.prompt import build_prompt_messages
+    from agent.config import AgentSpec
+    from agent.guardrail import build_guardrails
     from agent.tools import build_registry
 
-    reflection_spec = AgentSpec(mode="reflection", effort="max")
+    reflection_spec = AgentSpec(
+        effort="max",
+        tools=["find", "grep", "read", "jd", "meta", "bash", "query"],
+        prompts=["base", "tool", "ontology", "project", "readme", "effort"],
+    )
     reflection_spec.projects = build_agent_projects(db_id, use_bird_global)
-    resolve_mode(reflection_spec)
+    reflection_spec.guardrails = build_guardrails(reflection_spec, ["round_limit"])
 
     # 方案 1：沿用同一个 agent 会话，只在反思阶段切到 reflection 配置。
     agent.tools = build_registry(reflection_spec)
-    agent.set_system_prompt(build_prompt_messages(reflection_spec))
+    agent.set_system_prompt(build_bird_benchmark_system_prompt(reflection_spec))
     agent.guardrails = reflection_spec.guardrails
     while agent.messages and agent.messages[0].get("role") == "system":
         agent.messages.pop(0)
@@ -626,7 +706,13 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]):
         if r['correct']:
             by_diff[r.get('difficulty', '?')][0] += 1
 
-    lines = [f"=== {db_id} Summary ===", f"Total: {correct}/{total} ({pct:.1f}%)", "", "By difficulty:"]
+    lines = [
+        f"=== {db_id} Summary ===",
+        f"Total: {correct}/{total} ({pct:.1f}%)",
+        format_efficiency_line(results),
+        "",
+        "By difficulty:",
+    ]
     for diff in ["simple", "moderate", "challenging"]:
         c, t = by_diff.get(diff, [0, 0])
         if t > 0:
@@ -634,7 +720,12 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]):
     lines += ["", "Per query:"]
     for r in sorted(results, key=lambda r: r['question_id']):
         status = "OK" if r['correct'] else r['result']
-        lines.append(f"  Q{r['question_id']} [{r.get('difficulty', '?')}] {status} {r['elapsed']:.1f}s")
+        lines.append(
+            f"  Q{r['question_id']} [{r.get('difficulty', '?')}] {status} {r['elapsed']:.1f}s "
+            f"rounds={r.get('llm_rounds', 0)} "
+            f"pre_in={r.get('pre_input_tokens', 0)} runtime_in={r.get('runtime_input_tokens', 0)} "
+            f"out={r.get('output_tokens', 0)} total={r.get('total_tokens', 0)}"
+        )
     (bench_dir / "summary.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -656,6 +747,7 @@ def write_total_summary(output_dir: Path, all_results: list[dict]):
         lines.append(f"Database: {db_id} — {c}/{t} ({c/t*100:.1f}%)")
     pct = total_correct / total_count * 100 if total_count else 0
     lines.append(f"\nTotal: {total_correct}/{total_count} ({pct:.1f}%)")
+    lines.append(format_efficiency_line(all_results))
 
     by_diff = defaultdict(list)
     for r in all_results:
@@ -668,6 +760,9 @@ def write_total_summary(output_dir: Path, all_results: list[dict]):
         c = sum(1 for r in results if r['correct'])
         t = len(results)
         lines.append(f"  {diff}: {c}/{t} ({c/t*100:.1f}%)")
+    lines.append("\nEfficiency by database:")
+    for db_id in sorted(by_db.keys()):
+        lines.append(f"  {db_id}: {format_efficiency_line(by_db[db_id])}")
 
     text = "\n".join(lines) + "\n"
     summary_path.write_text(text, encoding="utf-8")
@@ -702,14 +797,17 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict]):
         by_db[row.get("db_id", "unknown")].append(row)
         by_diff[row.get("difficulty") or "unknown"].append(row)
     summary = {
+        "run_id": get_run_id(),
         "total": total,
         "correct": correct,
         "accuracy": correct / total if total else 0.0,
+        "efficiency": aggregate_efficiency(all_results),
         "by_database": {
             db_id: {
                 "total": len(rows),
                 "correct": sum(1 for row in rows if row.get("correct")),
                 "accuracy": sum(1 for row in rows if row.get("correct")) / len(rows) if rows else 0.0,
+                "efficiency": aggregate_efficiency(rows),
             }
             for db_id, rows in sorted(by_db.items())
         },
@@ -718,6 +816,7 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict]):
                 "total": len(rows),
                 "correct": sum(1 for row in rows if row.get("correct")),
                 "accuracy": sum(1 for row in rows if row.get("correct")) / len(rows) if rows else 0.0,
+                "efficiency": aggregate_efficiency(rows),
             }
             for diff, rows in sorted(by_diff.items())
         },
@@ -726,7 +825,24 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict]):
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    lines = ["# Pontis BIRD Evaluation", "", f"Total: {correct}/{total} ({summary['accuracy'] * 100:.2f}%)", ""]
+    avg = summary["efficiency"]["averages"]
+    totals = summary["efficiency"]["totals"]
+    lines = [
+        "# Pontis BIRD Evaluation",
+        "",
+        f"Total: {correct}/{total} ({summary['accuracy'] * 100:.2f}%)",
+        "",
+        "## Efficiency",
+        "",
+        f"- LLM Rounds / Query: {avg['llm_rounds_per_query']:.3f}",
+        f"- Input Tokens / Query: {avg['input_tokens_per_query']:.3f}",
+        f"- Pre-Input Tokens / Query: {avg['pre_input_tokens_per_query']:.3f}",
+        f"- Runtime Input Tokens / Query: {avg['runtime_input_tokens_per_query']:.3f}",
+        f"- Output Tokens / Query: {avg['output_tokens_per_query']:.3f}",
+        f"- Total Tokens / Query: {avg['total_tokens_per_query']:.3f}",
+        f"- Total Tokens: {totals['total_tokens']}",
+        "",
+    ]
     lines.append("## By Database")
     for db_id, item in summary["by_database"].items():
         lines.append(f"- {db_id}: {item['correct']}/{item['total']} ({item['accuracy'] * 100:.2f}%)")
@@ -931,11 +1047,13 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             str(db_dir),
             preprocess_dir=get_preprocess_dir(db_id, args.train),
             force=args.force_extract,
+            train=args.train,
         )
         parts = []
         if r["static"]: parts.append(f"Static {r['static']:.0f}s")
         if r["ai_columns"]: parts.append(f"AI Cols {r['ai_columns']:.0f}s")
         if r["agent"]: parts.append(f"Agent {r['agent']:.0f}s")
+        if r.get("query_overview"): parts.append(f"Query Overview {r['query_overview']:.0f}s")
         if r.get("embedding"): parts.append(f"Embedding {r['embedding']:.0f}s")
         print(f"[{db_id}] Extract done: {', '.join(parts)}")
 
@@ -962,7 +1080,6 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         collector = TraceCollector()
 
         spec = AgentSpec(
-            mode="readonly",
             effort="max",
             tools=list(BIRD_BENCHMARK_TOOLS),
             prompts=list(BIRD_BENCHMARK_PROMPTS),
@@ -974,6 +1091,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             spec,
             trace_callback=collector.callback,
         )
+        agent.set_system_prompt(build_bird_benchmark_system_prompt(spec))
         agent._reflection_collector = collector
 
         prompt = build_query_prompt(q, args)
@@ -988,11 +1106,13 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             elapsed = time.time() - t0
             print(f"  Q{qid} [{q.get('difficulty', '?')}] ERROR: {e}")
             error_response = f"ERROR: {type(e).__name__}: {e}"
-            collector.write_logs(bench_dir, qid, q, error_response, None, "ERROR", elapsed)
-            return {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
+            efficiency = get_agent_efficiency_metrics(agent)
+            collector.write_logs(bench_dir, qid, q, error_response, None, "ERROR", elapsed, efficiency)
+            return {'run_id': get_run_id(), 'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
                     'question': q.get('question'), 'evidence': q.get('evidence', ''),
                     'golden_sql': q.get('SQL'), 'predicted_sql': None,
                     'correct': False, 'result': "ERROR", 'elapsed': round(elapsed, 1),
+                    **efficiency,
                     'use_bird_global': args.use_bird_global,
                     'prompt_profile': args.prompt_profile,
                     'prompt_file': str(args.prompt_file) if args.prompt_file else None}
@@ -1010,6 +1130,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             if repaired_sql and repaired_sql != predicted_sql:
                 predicted_sql = repaired_sql
                 predicted_result = execute_sql(db_path, predicted_sql)
+        elapsed = time.time() - t0
         correct = is_correct(predicted_result, golden_result)
 
         result_str = (
@@ -1019,7 +1140,8 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             else "WRONG"
         )
 
-        collector.write_logs(bench_dir, qid, q, response, predicted_sql, result_str, elapsed)
+        efficiency = get_agent_efficiency_metrics(agent)
+        collector.write_logs(bench_dir, qid, q, response, predicted_sql, result_str, elapsed, efficiency)
 
         if args.reflection:
             try:
@@ -1037,12 +1159,16 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                 print(f"  Q{qid} reflection ERROR: {e}")
 
         status = "OK" if correct else "FAIL"
-        print(f"  Q{qid} [{q.get('difficulty', '?')}] {status} {result_str} ({elapsed:.1f}s)")
+        print(
+            f"  Q{qid} [{q.get('difficulty', '?')}] {status} {result_str} ({elapsed:.1f}s) "
+            f"rounds={efficiency['llm_rounds']} tokens={efficiency['total_tokens']}"
+        )
 
-        return {'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
+        return {'run_id': get_run_id(), 'db_id': db_id, 'question_id': qid, 'difficulty': q.get('difficulty', '?'),
                 'question': q.get('question'), 'evidence': q.get('evidence', ''),
                 'golden_sql': q.get('SQL'), 'predicted_sql': predicted_sql,
                 'correct': correct, 'result': result_str, 'elapsed': round(elapsed, 1),
+                **efficiency,
                 'use_bird_global': args.use_bird_global,
                 'prompt_profile': args.prompt_profile,
                 'prompt_file': str(args.prompt_file) if args.prompt_file else None}
@@ -1087,6 +1213,7 @@ def main():
     parser.add_argument("--db-workers", type=int, default=1, help="并行数据库数（默认 1）")
     parser.add_argument("--qids", help="只测试指定 question_id，逗号分隔")
     parser.add_argument("--limit", type=int, help="每库最多测试 N 条")
+    parser.add_argument("--run-id", help="输出目录 run id；默认使用当前时间戳 YYYYmmdd_HHMMSS")
     parser.add_argument("--reflection", action="store_true", help="每题验证后立即运行 reflection，不再读日志二次分析")
     parser.add_argument(
         "--no-exec-repair",
@@ -1152,6 +1279,9 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.run_id:
+        set_run_id(args.run_id)
+
     if args.prompt_file and not args.prompt_file.exists():
         print(f"Error: prompt file not found: {args.prompt_file}")
         sys.exit(1)
@@ -1189,6 +1319,9 @@ def main():
     print(f"=== BIRD {mode_label} Benchmark ===")
     print(f"Databases: {len(by_db)}, Queries: {total_queries}")
     print(f"DB workers: {args.db_workers}, Query workers/db: {args.workers}\n")
+    print(f"Run id: {get_run_id()}")
+    print(f"Preprocess logs: {PONTIS_WORKSPACE_ROOT / 'preprocess_logs' / get_run_name(args.train)}")
+    print(f"Runtime logs: {PONTIS_WORKSPACE_ROOT / 'runtime_logs' / get_run_name(args.train)}")
     print(
         "Config: "
         f"bird_global={'on' if args.use_bird_global else 'off'}, "
@@ -1198,6 +1331,7 @@ def main():
 
     if args.output_dir is None:
         args.output_dir = get_results_dir(args.train)
+    print(f"Results: {args.output_dir}\n")
 
     cleanup_all(db_base, by_db, train=args.train, force_extract=args.force_extract)
     if args.clear_bird_knowledge and not args.use_bird_global:

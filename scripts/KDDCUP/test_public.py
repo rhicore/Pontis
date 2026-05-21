@@ -197,6 +197,16 @@ KDD_TEST_TOOLS = [
     "agent",
 ]
 
+KDD_TEST_PROMPTS = [
+    "base",
+    "tool",
+    "ontology",
+    "sql",
+    "guardrail",
+    "project",
+    "readme",
+]
+
 KDD_TEST_GUARDRAILS = [
     "round_limit",
     "exploration_check",
@@ -544,23 +554,28 @@ def run_reflection_for_task(
     task_out_dir: Path,
     effort: str,
 ) -> None:
-    from agent.config import AgentSpec, resolve_mode
-    from agent.prompt import build_prompt
+    from agent.config import AgentSpec
+    from agent.guardrail import build_guardrails
+    from agent.prompt import build_prompt_messages
     from agent.tools import ToolRegistry
 
-    reflection_spec = AgentSpec(mode="reflection", effort=effort)
+    reflection_prompts = ["base", "tool", "ontology", "project", "readme"]
+    if effort != "mid":
+        reflection_prompts.append("effort")
+    reflection_spec = AgentSpec(
+        effort=effort,
+        tools=["find", "grep", "read", "jd", "meta", "bash", "query"],
+        prompts=reflection_prompts,
+    )
     reflection_spec.projects = [task.task_id]
-    resolve_mode(reflection_spec)
+    reflection_spec.guardrails = build_guardrails(reflection_spec, ["round_limit"])
 
     saved_callback = agent._trace_callback
     reflection_collector = TraceCollector()
     try:
         agent.tools = ToolRegistry()
         agent.guardrails = reflection_spec.guardrails
-        agent.system_prompt = build_prompt(reflection_spec)
-        while agent.messages and agent.messages[0].get("role") == "system":
-            agent.messages.pop(0)
-        agent.messages.insert(0, {"role": "system", "content": agent.system_prompt})
+        agent.set_system_prompt(build_prompt_messages(reflection_spec))
         agent._trace_callback = reflection_collector.callback
 
         response = agent.chat(build_reflection_case_prompt(task, collector, result, columns, rows))
@@ -702,11 +717,14 @@ def run_task(
         if extract_first:
             maybe_extract_task(task, public_root, run_dir / "extract_summaries")
 
+        prompts = list(KDD_TEST_PROMPTS)
+        if effort != "mid":
+            prompts.append("effort")
         spec = AgentSpec(
-            mode="readonly",
             effort=effort,
             max_rounds=max_rounds,
             tools=list(KDD_TEST_TOOLS),
+            prompts=prompts,
         )
         spec.projects = [task.task_id]
         spec.guardrails = build_guardrails(spec, KDD_TEST_GUARDRAILS)
@@ -734,11 +752,14 @@ def run_task(
                 best_eval = result.eval
                 for repair_idx in range(1, repair_low_score + 1):
                     repair_collector = TraceCollector()
+                    repair_prompts = list(KDD_TEST_PROMPTS)
+                    if effort != "mid":
+                        repair_prompts.append("effort")
                     repair_spec = AgentSpec(
-                        mode="readonly",
                         effort=effort,
                         max_rounds=max_rounds,
                         tools=list(KDD_TEST_TOOLS),
+                        prompts=repair_prompts,
                     )
                     repair_spec.projects = [task.task_id]
                     repair_spec.guardrails = build_guardrails(repair_spec, KDD_TEST_GUARDRAILS)

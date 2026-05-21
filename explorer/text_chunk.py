@@ -5,7 +5,6 @@
 """
 import argparse
 import logging
-import os
 
 from storage.workspace import Workspace
 from tool.utils.workspace_access import OpenFileSource, resolve_file_sources
@@ -146,17 +145,18 @@ def _should_process(source: OpenFileSource, *, file: str | None, min_chars: int)
 
 
 def _run_agent_for_file(workspace: Workspace, source: OpenFileSource, *, force: bool) -> None:
-    from agent.config import create_agent, AgentSpec
-    from agent.guardrail import build_guardrails
+    from agent.config import create_agent
+    from explorer.utils.agent_spec import explorer_writer_spec
 
-    spec = AgentSpec(mode="writer", effort="high", max_rounds=120)
-    spec.tools = [
-        "find", "grep", "read", "meta", "agent",
-        "create_entity", "update_meta", "add_edge", "delete",
-    ]
-    project_name = os.path.basename(os.path.abspath(workspace.project_path))
-    spec.projects = [project_name]
-    spec.guardrails = build_guardrails(spec, ["round_limit"])
+    spec = explorer_writer_spec(
+        workspace,
+        tools=[
+            "find", "grep", "read", "meta", "agent",
+            "create_entity", "update_meta", "add_edge", "delete",
+        ],
+        effort="high",
+        max_rounds=120,
+    )
     agent = create_agent(workspace.project_path, spec)
 
     prompt = (

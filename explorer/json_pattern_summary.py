@@ -5,7 +5,6 @@
 """
 import argparse
 import logging
-import os
 
 from storage.workspace import Workspace
 from tool.utils.workspace_access import OpenFileSource, resolve_file_sources
@@ -111,17 +110,18 @@ def _load_json_sources(workspace: Workspace, file: str | None = None) -> list[Op
 
 
 def _run_agent_for_json(workspace: Workspace, source: OpenFileSource, *, force: bool) -> None:
-    from agent.config import AgentSpec, create_agent
-    from agent.guardrail import build_guardrails
+    from agent.config import create_agent
+    from explorer.utils.agent_spec import explorer_writer_spec
 
-    spec = AgentSpec(mode="writer", effort="high", max_rounds=120)
-    spec.tools = [
-        "find", "jd", "meta", "agent",
-        "update_meta",
-    ]
-    project_name = os.path.basename(os.path.abspath(workspace.project_path))
-    spec.projects = [project_name]
-    spec.guardrails = build_guardrails(spec, ["round_limit"])
+    spec = explorer_writer_spec(
+        workspace,
+        tools=[
+            "find", "jd", "meta", "agent",
+            "update_meta",
+        ],
+        effort="high",
+        max_rounds=120,
+    )
     agent = create_agent(workspace.project_path, spec)
 
     prompt = (

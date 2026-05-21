@@ -7,7 +7,6 @@
     python -m explorer.join_detect ./my_data
 """
 import logging
-import os
 
 from storage.workspace import Workspace
 
@@ -131,9 +130,9 @@ brief 和 detail 必须遵循以下规范：
 
 def generate(workspace: Workspace) -> None:
     """发现高置信度列关联，创建 rel 实体。"""
-    from agent.config import create_agent, AgentSpec
-    from agent.guardrail import build_guardrails
+    from agent.config import create_agent
     from agent.utils import load_agent_config
+    from explorer.utils.agent_spec import explorer_writer_spec
 
     config = load_agent_config(workspace.project_path)
     if not config["api_key"]:
@@ -142,14 +141,14 @@ def generate(workspace: Workspace) -> None:
 
     logger.info("=== Agent Join Detect (high-confidence only) ===")
 
-    spec = AgentSpec(mode="writer")
-    spec.tools = [
-        "find", "meta", "query",
-        "create_entity", "update_meta", "add_edge", "delete",
-    ]
-    project_name = os.path.basename(os.path.abspath(workspace.project_path))
-    spec.projects = [project_name]
-    spec.guardrails = build_guardrails(spec, ["round_limit"])
+    spec = explorer_writer_spec(
+        workspace,
+        tools=[
+            "find", "meta", "query",
+            "create_entity", "update_meta", "add_edge", "delete",
+        ],
+        include_readme=True,
+    )
     agent = create_agent(workspace.project_path, spec)
 
     agent.chat(PROMPT)

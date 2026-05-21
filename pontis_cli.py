@@ -162,10 +162,11 @@ def _parse_repl_direct(line: str) -> tuple[str | None, list[str] | None]:
 def _run_interactive(project_path: str, active_projects: list[str]) -> None:
     project_root = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, project_root)
-    from agent.config import AgentSpec, create_agent
+    from agent.config import create_agent, default_spec
 
     workspace = _make_workspace(project_path, active_projects)
-    spec = AgentSpec(projects=active_projects)
+    spec = default_spec(project_path)
+    spec.projects = active_projects
     agent = create_agent(project_path, spec=spec)
 
     print(f"\n\033[1mPontis Agent\033[0m — {project_path}")

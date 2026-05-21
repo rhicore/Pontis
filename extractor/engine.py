@@ -7,7 +7,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from storage.workspace import Workspace
 
@@ -28,6 +28,7 @@ class RunOptions:
 
     continue_on_error: bool = True
     collect_timing: bool = False
+    module_kwargs: Optional[Dict[str, Dict[str, Any]]] = None
 
 
 @contextmanager
@@ -93,12 +94,14 @@ def get_registry() -> Dict[str, object]:
         from explorer.join_detect import generate as agent_join_detect
         from explorer.disambiguate import generate as agent_disambiguate
         from explorer.readme import generate as agent_readme
+        from explorer.query_overview import generate as agent_query_overview
         from explorer.text_chunk import generate as agent_text_chunk
         from explorer.json_pattern_summary import generate as agent_json_pattern_summary
         from explorer.csv_summary import generate as agent_csv_summary
         _REGISTRY["agent_join_detect"] = agent_join_detect
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
         _REGISTRY["agent_readme"] = agent_readme
+        _REGISTRY["agent_query_overview"] = agent_query_overview
         _REGISTRY["agent_text_chunk"] = agent_text_chunk
         _REGISTRY["agent_json_pattern_summary"] = agent_json_pattern_summary
         _REGISTRY["agent_csv_summary"] = agent_csv_summary
@@ -141,10 +144,11 @@ def run_modules(
 
         try:
             t0 = time.time()
+            kwargs = (options.module_kwargs or {}).get(name, {})
             if name in CONFIG_MODULES:
-                func(workspace, config=config)
+                func(workspace, config=config, **kwargs)
             else:
-                func(workspace)
+                func(workspace, **kwargs)
             if options.collect_timing:
                 timings[name] = time.time() - t0
         except Exception as e:

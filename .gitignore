@@ -1,14 +1,42 @@
 # Python-generated files
 __pycache__/
+**/__pycache__/
 *.py[oc]
+*$py.class
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
 # Virtual environments
-.venv
+.venv/
+venv/
+env/
 .neo4j/
 
-example_data
-rubbish
+# Local data and generated artifacts
+example_data/
+rubbish/
+workspace/
+runtime_logs/
+preprocess_logs/
+results/
+
+# Local environment and config
 .env
+.env.*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

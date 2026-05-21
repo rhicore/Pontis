@@ -18,7 +18,7 @@ _WRITE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-_DEFAULT_LIMIT = 100
+_DEFAULT_LIMIT = 20
 _MAX_RESULT_CHARS = 8000
 _JSON_RECORD_KEYS = ("records", "data", "items", "rows", "results")
 _TYPE_SAMPLE_ROWS = 5000
@@ -29,8 +29,27 @@ _REAL_RE = re.compile(
 )
 
 
-def _is_readonly_sql(sql: str) -> bool:
+def _strip_leading_sql_comments(sql: str) -> str:
     stripped = sql.strip()
+    while stripped:
+        if stripped.startswith("--"):
+            newline = stripped.find("\n")
+            if newline < 0:
+                return ""
+            stripped = stripped[newline + 1:].lstrip()
+            continue
+        if stripped.startswith("/*"):
+            end = stripped.find("*/")
+            if end < 0:
+                return ""
+            stripped = stripped[end + 2:].lstrip()
+            continue
+        break
+    return stripped
+
+
+def _is_readonly_sql(sql: str) -> bool:
+    stripped = _strip_leading_sql_comments(sql)
     if not stripped:
         return False
 

@@ -1,4 +1,8 @@
-"""SQL JOIN 路径合理性检查 — query 工具 warn 提醒，最终 SQL 文本输出 block。"""
+"""SQL JOIN 路径合理性检查。
+
+该 guardrail 只拦截最终 SQL 中没有图关系支撑的 JOIN。
+工具使用阶段不插入提醒，JOIN 探索由系统提示和工具元数据引导。
+"""
 import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
@@ -15,8 +19,8 @@ _ENTITY_PATTERN = re.compile(
 class BridgeTableCheck(Guardrail):
     """JOIN 路径合理性检测。
 
-    query 工具调用 → warn（柔和提醒，允许执行）
-    文本 SQL 输出 → block（必须确认 JOIN 路径才能输出）
+    query 工具调用 → 不拦截、不提醒。
+    文本 SQL 输出 → 仅 block 没有 fk/rel/overlap 实体支撑的 JOIN。
     """
 
     def __init__(self):
@@ -26,16 +30,6 @@ class BridgeTableCheck(Guardrail):
 
     def check(self, ctx: GuardrailContext) -> dict:
         result = {}
-
-        for i, (name, args) in enumerate(ctx.pending_calls):
-            if name != "query":
-                continue
-            sql = args.get("sql", "")
-            if not sql:
-                continue
-            msg = self._check_sql(ctx, sql, strict=False)
-            if msg:
-                result[i] = CallVerdict("warn", msg)
 
         if not ctx.pending_calls:
             sql = get_sql_from_messages(ctx.messages)
@@ -104,21 +98,14 @@ class BridgeTableCheck(Guardrail):
                 continue
 
             if matched:
-                types = {rtype for _, rtype in matched}
-                has_fk_rel = bool(types & {"fk", "rel"})
-                if has_fk_rel:
-                    hint = "存在 fk/rel 关系，读取后可确认"
-                else:
-                    hint = "存在 overlap 线索"
-                lines.append(f"  - {t1}.{c1} ↔ {t2}.{c2}（{hint}）：")
-                for full_ref, _ in matched:
-                    lines.append(f"    - {full_ref}")
-                    suggested_refs.append(full_ref)
-            else:
-                lines.append(
-                    f"  - {t1}.{c1} ↔ {t2}.{c2}（"
-                    "请确认 JOIN 条件或桥接表）"
-                )
+                # 有显式关系实体时，JOIN 路径在图谱层面已经可解释。
+                # 不要求 agent 必须先 meta 读取，否则会把正确 SQL 打回去重写。
+                continue
+
+            lines.append(
+                f"  - {t1}.{c1} ↔ {t2}.{c2}（"
+                "图谱中没有对应 fk/rel/overlap 实体）"
+            )
 
         if not lines:
             return ""
@@ -126,10 +113,10 @@ class BridgeTableCheck(Guardrail):
         body = "\n".join(lines)
         hint = _format_meta_examples(suggested_refs)
         if strict:
-            return ("以下 JOIN 关系需要读取相关实体确认：\n"
+            return ("以下 JOIN 关系缺少图谱关系支撑：\n"
                     + body
                     + hint
-                    + "\n\n请读取这些关系实体后重新思考 SQL。")
+                    + "\n\n请先确认表之间是否存在正确连接路径，再输出最终 SQL。")
         return ("⚠️ 以下 JOIN 关系建议读取确认：\n"
                 + body
                 + hint)

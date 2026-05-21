@@ -14,7 +14,6 @@ def load_agent_config(project_path: str = None) -> dict:
         "provider": _defaults.AGENT_PROVIDER,
         "model": _defaults.AGENT_MODEL,
         "api_key": _defaults.AGENT_API_KEY,
-        "max_tokens": _defaults.AGENT_MAX_TOKENS,
         "temperature": _defaults.AGENT_TEMPERATURE,
         "effort": os.environ.get("PONTIS_EFFORT", "mid"),
         "thinking": _defaults.AGENT_THINKING,
@@ -25,7 +24,6 @@ def load_agent_config(project_path: str = None) -> dict:
         "agent_provider": "provider",
         "agent_model": "model",
         "agent_api_key": "api_key",
-        "agent_max_tokens": "max_tokens",
         "agent_temperature": "temperature",
         "agent_effort": "effort",
         "agent_thinking": "thinking",
@@ -47,7 +45,6 @@ def load_agent_config(project_path: str = None) -> dict:
     env_key = os.environ.get("OPENAI_API_KEY", "")
     env_url = os.environ.get("OPENAI_BASE_URL", "")
     env_model = os.environ.get("PONTIS_AGENT_MODEL", "")
-    env_max_tokens = os.environ.get("PONTIS_AGENT_MAX_TOKENS", "")
 
     if model_url:
         cfg["provider"] = model_url
@@ -64,11 +61,5 @@ def load_agent_config(project_path: str = None) -> dict:
         cfg["model"] = model_name
     elif env_model:
         cfg["model"] = env_model
-
-    if env_max_tokens:
-        try:
-            cfg["max_tokens"] = int(env_max_tokens)
-        except ValueError:
-            pass
 
     return cfg
