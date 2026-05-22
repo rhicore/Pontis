@@ -141,7 +141,7 @@ def run_instance_command(
     cmd = [
         sys.executable,
         "-m",
-        "storage.neo4j.instances",
+        "scripts.neo4j_instances",
         command,
         task_id,
         "--config",

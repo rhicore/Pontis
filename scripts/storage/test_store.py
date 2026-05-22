@@ -2,7 +2,7 @@
 
 Prerequisites:
   source .neo4j/neo4j.env
-  uv run python -m storage.neo4j.instances start storage_test
+  uv run python -m scripts.neo4j_instances start storage_test
 
 The tests exercise the current storage architecture:
 - Workspace.cypher selects source modules through query triggers.

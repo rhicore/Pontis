@@ -27,6 +27,11 @@ BIRD_README_DETAIL = """
 - evidence 指定的表、列、值、方向和计算顺序优先于语义猜测；不要把明确公式改写成另一种看似等价的口径
 - 比较词绑定到具体度量：`amount > 40`、`score >= 90`、`cost < average` 是值过滤；只有题目或 evidence 明说“数量/次数/个数”时才转成 `COUNT(...)`
 
+- evidence 的公式按字面执行，即使公式看起来不符合常规统计习惯；优先保持 evidence 中的聚合函数、条件位置、分母和乘以 100 的顺序
+- evidence 给出的术语映射通常是本题绑定，不自动推广成全库默认过滤或默认 JOIN 路径
+- evidence 同时给出输出含义和过滤含义时，先区分字段角色：目标输出字段、过滤字段、排序字段、公式字段、JOIN 字段
+- question 与 evidence 冲突时，evidence 中的列名、代码值、公式和时间范围优先；question 中的自然语言用于确定目标实体和输出契约
+
 ### 输出契约
 
 - SELECT 只返回题目要求的字段或表达式
@@ -38,6 +43,13 @@ BIRD_README_DETAIL = """
 - `full name` 若 evidence/schema 指向多个原字段，默认分别输出这些原字段；只有题目要求一个完整字符串时才用拼接表达式
 - 关系端点查询保持同一行语义：问“哪些 A 与 B 相连/对应”时输出同一条关系中的端点列，不把两个端点 `UNION` 成单列实体集合
 
+- 枚举值、状态值、类型代码、评级代码通常返回原始数据库值；只有题目要求解释含义时才把代码翻译成自然语言文本
+- “what is/which is/list” 后面紧跟的名词通常决定 SELECT 字段；过滤、排序、分组用到的辅助字段不自动输出
+- 题目同时要求多个字段时，输出为同一行中的多个列；只有集合语义明确时才使用复合查询
+- 题目要求 percentage/ratio/count 同时又说 list IDs/names 时，先判断它是否真的要求两个输出集合；BIRD 里多数问题只需要主要度量或主要实体，不把度量和列表强行 `UNION` 成一列
+- `Rank ... by ...` 如果题目要求“rank/ranking”本身，通常需要输出排序指标和 `RANK() OVER (...)`；如果只是要 top/bottom 实体，则用 `ORDER BY ... LIMIT ...`
+- 输出字段的顺序按 question 中出现的顺序；同义字段候选存在时，优先使用 evidence 指定的来源表和列
+
 ### 最小必要 SQL
 
 - SQL 只表达题目、evidence 和 schema 支持的必要逻辑
@@ -48,6 +60,11 @@ BIRD_README_DETAIL = """
 - 图谱或元数据说明存在编码格式问题时，先使用图谱给出的原始 JOIN 键；只有验证结果表明必须清洗、补零或截取时才在最终 SQL 中转换键值
 - 行类型、状态、非空、有效记录等列说明用于消歧；题目或 evidence 没有要求时，不把它们加成默认过滤条件
 
+- 不为了“更干净”而添加 `DISTINCT`、`GROUP BY`、`ORDER BY`、`LIMIT`、`IS NOT NULL`、`COALESCE`、`ROUND` 或别名格式化
+- 不把 SQL 写成报表查询；BIRD 答案通常是最小 SELECT，避免解释性列、辅助列和格式化展示列
+- 候选 SQL 能直接表达题意时，不引入 CTE；CTE 适合窗口函数、分阶段聚合、复合查询分支排序等必要场景
+- 多表 join 后不要自动去重；只有目标实体因 join 粒度被重复且问题要求唯一实体时才使用 DISTINCT
+
 ### 过滤条件
 
 - WHERE 条件来自题目、evidence 或明确的 schema 约束
@@ -55,6 +72,13 @@ BIRD_README_DETAIL = """
 - 低基数枚举列优先使用真实存在的精确值
 - LIKE 用于题目或 evidence 表达模糊包含、前缀、后缀或模式匹配的场景
 - 日期过滤保持题目要求的粒度：年份、年月、日期范围分别对应不同写法
+
+- 状态、行类型、有效记录、非空、活动/关闭等字段只有被 question/evidence 明确提到时才过滤
+- 样例值和 topk 用于确认真实值拼写；不要因为某列有默认值或大量空值就自动加条件
+- 自然语言中的地点、机构、角色、类别要先确认对应列；城市、县、地区、学区、国家、状态不是同一维度
+- `LIKE '%value%'` 适合题目说包含/mention/substring；精确枚举、代码、ID、固定名称优先等值匹配
+- 区间端点按 question/evidence 的包含性处理；“between A and B”通常包含两端
+- 问题说“valid”时先看 evidence 是否定义 valid；没有定义时不要自动等同于非空、活动状态或格式合法
 
 ### DISTINCT 与 COUNT
 
@@ -65,6 +89,13 @@ BIRD_README_DETAIL = """
 - 复数名词不自动推出 DISTINCT，先判断数据库中一行代表什么业务实体
 - 百分比公式中的分母沿用 evidence 指定的表、行集和实体粒度；不要把行数换成更自然的去重实体数或更大的基础表总数
 - “平均每组数量”先按组统计数量再 `AVG`；“满足条件的比例”才使用条件布尔值或条件计数除以总数
+
+- evidence 写 `COUNT(id)`、`COUNT(*)`、`COUNT(DISTINCT id)`、`SUM(CASE...)` 时按原形式和目标列执行
+- 百分比常见写法是 `CAST(numerator AS REAL) * 100 / denominator`；只有题目要求小数位时才 `ROUND`
+- “proportion/percentage of X among Y” 的分母是 Y 对应的行集或实体集，不自动扩大到全表
+- “how many X have condition” 通常是目标实体 X 的 count；“how many records/rows” 才按行数
+- “average amount per group/entity” 先明确是 `AVG(amount)`、`SUM(amount)/COUNT(entity)` 还是先分组再 AVG；按 evidence 公式优先
+- 条件聚合优先保持在同一 SELECT 中；不为了可读性拆成多个 UNION 分支
 
 ### JOIN 选择
 
@@ -77,6 +108,13 @@ BIRD_README_DETAIL = """
 - 不为“看起来相关”的表额外补 JOIN；只有目标字段、过滤条件、输出列或 evidence 需要该表时才加入
 - 同一业务对象有多个路径时，先用题目措辞确定路径：拥有者、作者、参与者、交易发生者、记录创建者、关系端点不是同一个角色
 
+- 同义字段分布在多个表时，按 question/evidence 选择来源表；不要自动换成语义更自然但来源不同的列
+- 表 A 已经含有目标输出列时，不为了解释来源额外 JOIN 到表 B；反之，题目要求表 B 的专有字段时不要用表 A 的同名字段替代
+- 桥表既可能表示关系本身，也可能表示事件/历史/交易记录；问关系端点时保留同一行的端点，问事件属性时保留事件行粒度
+- LEFT JOIN 只在题目要求保留无匹配实体、查缺失、包含无记录对象时使用；普通存在关系查询优先 INNER JOIN
+- JOIN 键使用数据库中的原始列关系；补零、截取、大小写转换、CAST、TRIM 只有在题目/evidence 或验证结果明确需要时才进入最终 SQL
+- 如果图谱关系和 BIRD evidence 指向不同路径，最终 SQL 优先满足 evidence 的字段来源和输出契约
+
 ### 排序、极值与 Top-N
 
 - top N、最高、最低、最大、最小通常对应 `ORDER BY ... LIMIT ...`
@@ -87,6 +125,12 @@ BIRD_README_DETAIL = """
 - 当题目要返回拥有极值的实体或其属性时，用 `ORDER BY` 定位目标行；用 `WHERE value = (SELECT MAX(...))` 只适合题目要求所有并列极值
 - “第 N 高/低”使用 `ORDER BY ... LIMIT 1 OFFSET N-1`；不要把 N 改成相邻序号或额外返回前 N 行
 
+- “rank by” 与 “top N by” 不同：rank 通常需要窗口排名列，top N 通常只需要排序后截取
+- “most common/least common” 通常先 `GROUP BY` 目标值并按 `COUNT(...)` 排序；输出是否包含 count 取决于题目是否要求数量
+- “highest average/lowest average” 先判断平均值是已有列还是需要聚合计算；已有 average 列不要再 AVG
+- “nth highest/lowest” 使用排序和 offset；不要返回前 N 个，也不要用 `MAX/MIN` 嵌套替代
+- 排序 tie-breaker 只有题目/evidence 要求时才添加；额外 tie-breaker 可能改变 BIRD 执行结果
+
 ### 文本、日期与格式值
 
 - TEXT 列可能存储数值、金额、百分比、时长、日期或代码
@@ -95,11 +139,21 @@ BIRD_README_DETAIL = """
 - 输出格式由题目决定；题目未要求格式化时，保留 SQL 计算的自然结果
 - 存储为文本的时间/时长值若题目给出显示前缀，优先用等值或前缀匹配验证真实格式；只有题目要求最近/差值/排序时才转成数值计算
 
+- 题目要求输出代码、状态、日期、时间、金额时，默认输出数据库原值；不自动转成人类解释或重新格式化
+- 年份过滤常用 `STRFTIME('%Y', date_col) = 'YYYY'`；若 evidence 指定 `LIKE 'YYYY%'` 或范围条件，则按 evidence
+- 日期范围比较优先使用原列可比较格式；只有确认文本格式不适合直接比较时才转换
+- 文本数值排序/比较要确认字段真实存储；BIRD gold 有时按原文本/原列计算，避免过度 CAST
+- 字符串拼接只用于题目明确要求单个字符串；地址、姓名、多个属性通常分别输出原字段
+
 ### 复合查询
 
 - SQLite 的复合查询中，各分支若需要自己的排序或限制，先放入 CTE 或子查询
 - `UNION` 会去重，`UNION ALL` 保留全部行
 - `INTERSECT`、`EXCEPT` 适合集合语义明确的题目
+
+- 复合查询只用于题目明确表达集合并、交、差，或必须把多个同构来源合并为同一输出 schema 的情况
+- 不用 UNION 把不同含义的输出拼成一列；不同含义的输出应作为同一 SELECT 的不同列，或只返回题目主目标
+- 复合查询各分支的列数、列含义和类型必须一致；排序一般放在外层
 
 ### 解题顺序
 
