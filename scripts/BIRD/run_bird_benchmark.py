@@ -65,8 +65,9 @@
       --reflection            每题验证后，只对错题做同会话复盘。
                               错题日志：q{id}.reflection.log。
                               复盘会看到 Result、Predicted SQL、Golden SQL、
-                              predicted/golden execution result，并输出二分类：
-                              Database Understanding Error 或 Golden SQL Style Error。
+                              predicted/golden execution result，并可继续调用工具核验数据库证据。
+                              输出三分类：DB_EXPLORATION_FIXABLE、
+                              DATASET_PRIOR_REQUIRED 或 GOLDEN_SQL_STYLE。
 
     bird 全局经验库：
       --use-bird-global       显式开启。会额外连接 `bird` project，检索 train example。
@@ -251,12 +252,17 @@ SQL_REPAIR_PROMPT_TEMPLATE = """\
 # 输入时机：
 # - 只有开启 `--reflection` 时才会使用
 # - 每道错题完成、SQL 已执行并得到 wrong / error 结果之后输入
-# - 复用同一个 agent 会话，让 agent 基于刚才的完整执行轨迹复盘，并决定是否更新 `bird` 知识
+# - 复用同一个 agent 会话，让 agent 基于刚才的执行轨迹继续调用工具核验数据库证据
 REFLECTION_CASE_PROMPT_TEMPLATE = """\
 你现在仍在同一个对话上下文里：刚刚的 benchmark 消息、工具调用和最终 SQL 都还在。
 你不是新开一个会话，而是继续复盘这条已经完成并已验证结果的 benchmark case。
 
-按 benchmark 的解题工作流回放这道错题，判断做错的根因，并在存在可迁移经验时更新 `bird`。
+按 benchmark 的解题工作流回放这道错题，判断做错的根因。你拥有正常 agent 的工具权限；
+不要只根据下面的文本包下结论，必须主动调用工具重新核验 predicted SQL 和 golden SQL 涉及的
+表、列、值、连接路径、行粒度和关键中间结果。
+golden SQL 在本阶段是有意提供给你的：把它当成待验证假设的来源，沿着它使用的表、列、值、
+连接路径、行粒度和中间结果做定向探索，再与 predicted SQL 的假设逐项对比。不要在未确认
+当前数据库是否支持 golden interpretation 之前完成分类。
 
 本轮复盘对象：
 - 数据库项目：{db_id}
@@ -293,20 +299,41 @@ Golden execution result：
 {trace_detail}
 
 你的任务：
-1. 在 `bird` 中检索最相关的已有知识，先判断已有实体是否可以补充或修正。
-2. 可迁移经验写入 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:example`。
-3. `knowledge:example` 写成解释型 benchmark case，包含 question、evidence、golden_sql、db_id、question_id、difficulty、schema_background、bird_bias、why_this_case_matters、transfer_hint；错误案例补充 predicted_sql、primary_error_category、mistake_summary、wrong_assumption、fix_hint。
-4. 知识内容使用高密度摘要字段，例如 `decision_summary`、`mistake_summary`、`verification_note`、`rejected_alternatives`。
-5. example 与对应的抽象知识实体建立普通图边；抽象知识使用去 schema 化表达。
-6. 没有新的跨库经验时，明确说明本轮不写入知识实体。
-7. 新建实体前说明已检查的相关实体、已有实体的缺口和新实体的必要性。
+1. 先用工具做数据库证据审计：查询 predicted SQL 与 golden SQL 的关键中间集合，检查 schema/meta/样例值/连接路径/行粒度。必要时把两个 SQL 拆成更小的 COUNT、DISTINCT、GROUP BY、JOIN 覆盖率或样例行查询。
+2. 如果启用了 `bird` 全局项目，可以检索相关经验辅助解释，但不能用其他题的 golden SQL 偏好替代当前数据库证据。
+3. 最终只输出复盘结论，不输出长篇工具过程。
 
-错误二分类要求：
-- 必须把主因归入且只归入以下两类之一：
-  - `Database Understanding Error`：SQL 错在对数据库本身的理解，例如表、列、连接关系、字段含义、枚举值、常量、单位、时间字段、主外键关系、业务对象或一行数据代表什么。
-  - `Golden SQL Style Error`：SQL 使用的数据库对象和值大体正确，但表达策略不符合目标答案，例如聚合、去重、分组粒度、过滤位置、子查询结构、排序、limit/tie、NULL 处理、重复行处理或 SQLite 表达方式。
-- 分类决策规则：如果必须改表/列/值/实体选择才能修正，选 `Database Understanding Error`；如果主要是重写 SQL 策略，选 `Golden SQL Style Error`。
-- 最终复盘文本必须包含四行：`primary_error_category`、`mistake_summary`、`minimum_fix`、`classification_reason`。
+错误三分类要求：
+- 必须把主因归入且只归入以下三类之一：`DB_EXPLORATION_FIXABLE`、`DATASET_PRIOR_REQUIRED`、`GOLDEN_SQL_STYLE`。
+
+分类测试：
+1. 先判断 predicted SQL 和 golden SQL 是在“数据库语义”上不一致，还是只在“答案呈现/SQL 表达”上不一致。
+2. 如果二者使用的数据库实体和值大体相同，差异主要是输出形状、聚合呈现、DISTINCT、分组、排序、LIMIT/tie、NULL 处理、重复行、舍入/格式或 SQLite 表达方式，选 `GOLDEN_SQL_STYLE`。
+3. 否则这是数据库理解错误。接着做 database-only oracle test：
+   - 假设一个 oracle 只能读取当前 question、evidence、schema、完整数据库内容和当前项目图谱/文档。
+   - oracle 不能读取其他 query-SQL pair、benchmark 历史、训练样例或隐藏 golden 风格。
+   - 如果这个 oracle 能找到当前数据库中的具体证据，唯一排除 predicted interpretation 并支持 golden interpretation，选 `DB_EXPLORATION_FIXABLE`。
+   - 如果这个 oracle 不能唯一决定，golden 的选择依赖同库 query log、业务约定、benchmark 约定、命名先验或跨题经验，选 `DATASET_PRIOR_REQUIRED`。
+
+类别定义：
+- `DB_EXPLORATION_FIXABLE`：当前数据库信息足够；错误应该能通过更充分数据库探索或更好的 schema/value 标注修正。
+- `DATASET_PRIOR_REQUIRED`：当前数据库信息不足以唯一决定；错误需要 query-log 记忆、benchmark 约定、业务先验、命名先验或跨题经验修正。
+- `GOLDEN_SQL_STYLE`：数据库理解基本正确；错误在目标 SQL 风格或结果形状。
+
+硬边界：
+- 不要用“是否要改表/列/JOIN”区分前两类；`DB_EXPLORATION_FIXABLE` 和 `DATASET_PRIOR_REQUIRED` 都可能需要改表、列、值或连接。
+- `DB_EXPLORATION_FIXABLE` 必须在 `decisive_db_evidence` 中引用具体当前数据库事实，例如字段含义、样例值、枚举覆盖、主外键路径、行粒度、JOIN 覆盖率、中间查询结果或某个候选路径会错误增删行的证据。
+- 如果 `decisive_db_evidence` 只能写得很空泛、缺失，或者只是“golden SQL 使用了另一个表/列”，不要选 `DB_EXPLORATION_FIXABLE`，应选 `DATASET_PRIOR_REQUIRED`。
+
+最终复盘文本必须包含以下字段：
+primary_error_category: DB_EXPLORATION_FIXABLE | DATASET_PRIOR_REQUIRED | GOLDEN_SQL_STYLE
+database_only_oracle_verdict: yes_unique_db_evidence | no_needs_prior | not_applicable_style
+decisive_db_evidence: 当前数据库中支持分类的具体证据；若不是 DB_EXPLORATION_FIXABLE，写 none
+plausible_alternatives: 若是 DATASET_PRIOR_REQUIRED，列出 predicted 与 golden 各自为何都可解释；否则写 none
+missing_prior: 若是 DATASET_PRIOR_REQUIRED，说明需要哪类 query log / 业务口径 / benchmark 先验；否则写 none
+mistake_summary: 一句话总结错误
+minimum_fix: 最小修正方向
+classification_reason: 为什么该错因属于上面的唯一类别
 """
 
 REFLECTION_CASE_NO_BIRD_PROMPT_TEMPLATE = """\
@@ -314,6 +341,11 @@ REFLECTION_CASE_NO_BIRD_PROMPT_TEMPLATE = """\
 你不是新开一个会话，而是继续复盘这条已经完成并已验证结果的 benchmark case。
 
 本次运行使用当前数据库项目、工具调用轨迹、预测 SQL 和 golden SQL 做复盘，输出高密度错误归因与可复用改进建议。
+你拥有正常 agent 的工具权限；不要只根据下面的文本包下结论，必须主动调用工具重新核验
+predicted SQL 和 golden SQL 涉及的表、列、值、连接路径、行粒度和关键中间结果。
+golden SQL 在本阶段是有意提供给你的：把它当成待验证假设的来源，沿着它使用的表、列、值、
+连接路径、行粒度和中间结果做定向探索，再与 predicted SQL 的假设逐项对比。不要在未确认
+当前数据库是否支持 golden interpretation 之前完成分类。
 
 本轮复盘对象：
 - 数据库项目：{db_id}
@@ -350,12 +382,41 @@ Golden execution result：
 {trace_detail}
 
 你的任务：
-1. 生成简短错误总结和最小修正方向。
-2. 必须把主因归入且只归入以下两类之一：
-   - `Database Understanding Error`：SQL 错在对数据库本身的理解，例如表、列、连接关系、字段含义、枚举值、常量、单位、时间字段、主外键关系、业务对象或一行数据代表什么。
-   - `Golden SQL Style Error`：SQL 使用的数据库对象和值大体正确，但表达策略不符合目标答案，例如聚合、去重、分组粒度、过滤位置、子查询结构、排序、limit/tie、NULL 处理、重复行处理或 SQLite 表达方式。
-3. 分类决策规则：如果必须改表/列/值/实体选择才能修正，选 `Database Understanding Error`；如果主要是重写 SQL 策略，选 `Golden SQL Style Error`。
-4. 输出只包含复盘结论。最终文本必须包含四行：`primary_error_category`、`mistake_summary`、`minimum_fix`、`classification_reason`。
+1. 先用工具做数据库证据审计：查询 predicted SQL 与 golden SQL 的关键中间集合，检查 schema/meta/样例值/连接路径/行粒度。必要时把两个 SQL 拆成更小的 COUNT、DISTINCT、GROUP BY、JOIN 覆盖率或样例行查询。
+2. 判断当前错误属于哪一种信息来源问题，而不是简单判断 SQL 文本差异。
+3. 输出只包含复盘结论，不输出长篇工具过程。
+
+错误三分类要求：
+- 必须把主因归入且只归入以下三类之一：`DB_EXPLORATION_FIXABLE`、`DATASET_PRIOR_REQUIRED`、`GOLDEN_SQL_STYLE`。
+
+分类测试：
+1. 先判断 predicted SQL 和 golden SQL 是在“数据库语义”上不一致，还是只在“答案呈现/SQL 表达”上不一致。
+2. 如果二者使用的数据库实体和值大体相同，差异主要是输出形状、聚合呈现、DISTINCT、分组、排序、LIMIT/tie、NULL 处理、重复行、舍入/格式或 SQLite 表达方式，选 `GOLDEN_SQL_STYLE`。
+3. 否则这是数据库理解错误。接着做 database-only oracle test：
+   - 假设一个 oracle 只能读取当前 question、evidence、schema、完整数据库内容和当前项目图谱/文档。
+   - oracle 不能读取其他 query-SQL pair、benchmark 历史、训练样例或隐藏 golden 风格。
+   - 如果这个 oracle 能找到当前数据库中的具体证据，唯一排除 predicted interpretation 并支持 golden interpretation，选 `DB_EXPLORATION_FIXABLE`。
+   - 如果这个 oracle 不能唯一决定，golden 的选择依赖同库 query log、业务约定、benchmark 约定、命名先验或跨题经验，选 `DATASET_PRIOR_REQUIRED`。
+
+类别定义：
+- `DB_EXPLORATION_FIXABLE`：当前数据库信息足够；错误应该能通过更充分数据库探索或更好的 schema/value 标注修正。
+- `DATASET_PRIOR_REQUIRED`：当前数据库信息不足以唯一决定；错误需要 query-log 记忆、benchmark 约定、业务先验、命名先验或跨题经验修正。
+- `GOLDEN_SQL_STYLE`：数据库理解基本正确；错误在目标 SQL 风格或结果形状。
+
+硬边界：
+- 不要用“是否要改表/列/JOIN”区分前两类；`DB_EXPLORATION_FIXABLE` 和 `DATASET_PRIOR_REQUIRED` 都可能需要改表、列、值或连接。
+- `DB_EXPLORATION_FIXABLE` 必须在 `decisive_db_evidence` 中引用具体当前数据库事实，例如字段含义、样例值、枚举覆盖、主外键路径、行粒度、JOIN 覆盖率、中间查询结果或某个候选路径会错误增删行的证据。
+- 如果 `decisive_db_evidence` 只能写得很空泛、缺失，或者只是“golden SQL 使用了另一个表/列”，不要选 `DB_EXPLORATION_FIXABLE`，应选 `DATASET_PRIOR_REQUIRED`。
+
+最终复盘文本必须包含以下字段：
+primary_error_category: DB_EXPLORATION_FIXABLE | DATASET_PRIOR_REQUIRED | GOLDEN_SQL_STYLE
+database_only_oracle_verdict: yes_unique_db_evidence | no_needs_prior | not_applicable_style
+decisive_db_evidence: 当前数据库中支持分类的具体证据；若不是 DB_EXPLORATION_FIXABLE，写 none
+plausible_alternatives: 若是 DATASET_PRIOR_REQUIRED，列出 predicted 与 golden 各自为何都可解释；否则写 none
+missing_prior: 若是 DATASET_PRIOR_REQUIRED，说明需要哪类 query log / 业务口径 / benchmark 先验；否则写 none
+mistake_summary: 一句话总结错误
+minimum_fix: 最小修正方向
+classification_reason: 为什么该错因属于上面的唯一类别
 """
 
 DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
@@ -590,19 +651,26 @@ EFFICIENCY_FIELDS = (
     "runtime_output_tokens",
     "cached_input_tokens",
     "uncached_input_tokens",
+    "cache_hit_input_tokens",
+    "cache_miss_input_tokens",
+    "cache_unknown_input_tokens",
+    "fresh_input_tokens",
     "output_tokens",
     "total_tokens",
 )
 
 
 def empty_efficiency_metrics() -> dict:
-    return {field: 0 for field in EFFICIENCY_FIELDS}
+    metrics = {field: 0 for field in EFFICIENCY_FIELDS}
+    metrics["cache_accounting_source"] = "unknown"
+    return metrics
 
 
 def get_agent_efficiency_metrics(agent) -> dict:
     if hasattr(agent, "llm_metrics"):
         metrics = agent.llm_metrics()
         out = {field: int(metrics.get(field, 0) or 0) for field in EFFICIENCY_FIELDS}
+        out["cache_accounting_source"] = str(metrics.get("cache_accounting_source") or "unknown")
         if not out["runtime_output_tokens"] and out["output_tokens"]:
             out["runtime_output_tokens"] = out["output_tokens"]
         if not out["output_tokens"] and out["runtime_output_tokens"]:
@@ -762,20 +830,25 @@ def run_reflection_for_case(db_id: str, q: dict,
                             include_bird_readme: bool,
                             predicted_execution: set | str,
                             golden_execution: set | str) -> None:
-    from agent.config import AgentSpec
+    from agent.config import AgentSpec, DEFAULT_READONLY_TOOLS, DEFAULT_READONLY_PROMPTS
     from agent.guardrail import build_guardrails
     from agent.tools import build_registry
+    from storage.workspace import Workspace
 
     reflection_spec = AgentSpec(
         effort="max",
-        tools=["find", "grep", "read", "jd", "meta", "bash", "query"],
-        prompts=["base", "tool", "ontology", "project", "readme", "effort"],
+        tools=list(DEFAULT_READONLY_TOOLS),
+        prompts=list(DEFAULT_READONLY_PROMPTS) + ["effort"],
     )
     reflection_spec.projects = build_agent_projects(db_id, use_bird_global)
     reflection_spec.guardrails = build_guardrails(reflection_spec, ["round_limit"])
 
     # 方案 1：沿用同一个 agent 会话，只在反思阶段切到 reflection 配置。
     agent.tools = build_registry(reflection_spec)
+    agent.workspace = Workspace(
+        project_path=agent.project_path,
+        active_projects=reflection_spec.projects,
+    )
     agent.set_system_prompt(
         build_bird_benchmark_system_prompt(
             reflection_spec,
