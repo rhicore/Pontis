@@ -7,16 +7,110 @@
 
 每个 query 生成一个主日志：
   q{id}.log        详细版（含每轮工具调用的完整参数和返回值）
-启用 `--reflection` 时，还会额外生成：
+启用 `--reflection` 时，错题还会额外生成：
   q{id}.reflection.log  题后复盘结果
 
-Usage:
+常用命令：
+    # dev 全量，本地直接跑。注意：如果 Neo4j 在 Slurm 节点上，应优先用 bird_benchmark_slurm。
     python -m scripts.BIRD.run_bird_benchmark
+
+    # dev 全量，只跑 benchmark，不重新 extract。
+    python -m scripts.BIRD.run_bird_benchmark --skip-extract
+
+    # train 全量。
     python -m scripts.BIRD.run_bird_benchmark --train
+
+    # 单库 / 单题 / 小样本。
     python -m scripts.BIRD.run_bird_benchmark --db toxicology
-    python -m scripts.BIRD.run_bird_benchmark --train --skip-extract
-    python -m scripts.BIRD.run_bird_benchmark --train --limit 10
-    python -m scripts.BIRD.run_bird_benchmark --train --db citeseer --qids 4141 --reflection
+    python -m scripts.BIRD.run_bird_benchmark --db toxicology --qids 1201,1202
+    python -m scripts.BIRD.run_bird_benchmark --db toxicology --limit 10
+
+    # 开错题 reflection。只对错题生成 q{id}.reflection.log。
+    python -m scripts.BIRD.run_bird_benchmark --skip-extract --reflection
+
+    # 关闭 BIRD 数据集级 README 注入，用于 ablation。
+    python -m scripts.BIRD.run_bird_benchmark --skip-extract --no-bird-readme
+
+    # 默认不使用 bird 全局经验库，只用当前数据库项目。
+    python -m scripts.BIRD.run_bird_benchmark --skip-extract
+
+    # 推荐 Slurm 入口：固定到 Neo4j 所在节点，避免 localhost:768x 连错机器。
+    python -m scripts.BIRD.bird_benchmark_slurm submit \
+      --job-name bird-benchmark-dev \
+      --cpus-per-task 24 --mem 128G --time 2-00:00:00 \
+      -- \
+      --skip-extract --db-workers 6 --workers 20 \
+      --reflection \
+      --run-id bird_dev_full_benchmark_YYYYmmdd
+
+参数速查：
+    数据范围：
+      --train                 跑 train；默认跑 dev。
+      --db A[,B]              只跑指定数据库，可逗号分隔。
+      --qids 1,2,3            只跑指定 question_id。
+      --limit N               每个数据库最多取前 N 题。
+
+    Extract 控制：
+      --skip-extract          跳过 extract，直接 benchmark。
+      --force-extract         重新 extract 并覆盖 preprocess 输出。
+      --extract-only          只 extract，不 benchmark。
+
+    并发：
+      --db-workers N          并行数据库数。全 dev 常用 4-6。
+      --workers N             每个数据库内并行 query 数。全 dev 常用 10-20。
+                              总并发约为 db-workers * workers；过大可能被 LLM API、
+                              Neo4j、日志 IO 或 guardrail 反复调用拖慢。
+
+    Reflection：
+      --reflection            每题验证后，只对错题做同会话复盘。
+                              错题日志：q{id}.reflection.log。
+                              复盘会看到 Result、Predicted SQL、Golden SQL、
+                              predicted/golden execution result，并输出二分类：
+                              Database Understanding Error 或 Golden SQL Style Error。
+
+    bird 全局经验库：
+      --use-bird-global       显式开启。会额外连接 `bird` project，检索 train example。
+      --no-bird-global        显式关闭，只使用当前数据库 project。默认就是关闭。
+      --clear-bird-knowledge  运行前清空 bird 中除 README 外的知识节点。
+      --no-auto-sync-bird-global
+                              bird 为空时不自动导入 train examples，直接失败。
+      --no-bird-global-embedding
+                              自动同步 bird 时不生成 embedding。
+      --bird-train-json PATH  指定 bird 全局经验同步用的 train.json。
+
+    Prompt：
+      --prompt-profile full|minimal
+                              full 是默认完整 prompt；minimal 只保留最小输出协议。
+      --prompt-file PATH      用自定义主求解 prompt 模板。
+      --no-bird-readme        不把 Pontis/scripts/BIRD/bird_readme.py 注入系统提示词。
+                              用于评估数据集级 SQL 写作逻辑的贡献。
+
+    SQL 修复：
+      --no-exec-repair        最终 SQL 执行失败时，不追加一次无工具修复。
+
+    输出：
+      --run-id ID             输出目录 ID。dev 日志写到
+                              workspace/baselines/pontis/runtime_logs/bird_dev_<ID>/。
+      --output-dir PATH       结构化 results/evaluation 输出目录；默认在
+                              workspace/baselines/pontis/results/bird_dev_<ID>/。
+
+输出文件：
+    progress.log              每库状态与总体进度。
+    benchmark/q{id}.log       每题详细日志。
+    benchmark/q{id}.reflection.log
+                              错题复盘日志，仅 --reflection 且题目错误时生成。
+    results/results.jsonl     每题结构化结果。
+    results/predictions.json  question_id -> predicted SQL。
+    evaluation/evaluation.json / summary.md
+                              accuracy、token、rounds 等汇总。
+
+指标含义：
+    Accuracy                  SQL 执行结果与 golden SQL 执行结果集合相等的比例。
+    Pre-input Tokens/Q        每题稳定上下文输入 token，可被 prompt cache 命中的部分。
+    Runtime Input Tokens/Q    每题运行中新增输入 token，包括历史工具结果等。
+    Runtime Output Tokens/Q   每题模型输出 token，包括工具调用参数、文本和最终 SQL。
+    LLM Rounds/Q              每题串行 LLM 调用轮次。
+    Total Tokens/Q            input + output 总 token，由 provider usage 汇总。
 """
 import json
 import logging
@@ -156,13 +250,13 @@ SQL_REPAIR_PROMPT_TEMPLATE = """\
 # 题后反思 prompt。
 # 输入时机：
 # - 只有开启 `--reflection` 时才会使用
-# - 每道题完成、SQL 已执行并得到 correct / wrong / error 结果之后输入
+# - 每道错题完成、SQL 已执行并得到 wrong / error 结果之后输入
 # - 复用同一个 agent 会话，让 agent 基于刚才的完整执行轨迹复盘，并决定是否更新 `bird` 知识
 REFLECTION_CASE_PROMPT_TEMPLATE = """\
 你现在仍在同一个对话上下文里：刚刚的 benchmark 消息、工具调用和最终 SQL 都还在。
 你不是新开一个会话，而是继续复盘这条已经完成并已验证结果的 benchmark case。
 
-按 benchmark 的解题工作流回放这道题，判断做对/做错的根因，并在存在可迁移经验时更新 `bird`。
+按 benchmark 的解题工作流回放这道错题，判断做错的根因，并在存在可迁移经验时更新 `bird`。
 
 本轮复盘对象：
 - 数据库项目：{db_id}
@@ -189,17 +283,30 @@ Benchmark 调用链摘要：
 Guardrail / blocks：
 {blocks_summary}
 
+Predicted execution result：
+{predicted_execution}
+
+Golden execution result：
+{golden_execution}
+
 详细执行轨迹：
 {trace_detail}
 
 你的任务：
 1. 在 `bird` 中检索最相关的已有知识，先判断已有实体是否可以补充或修正。
 2. 可迁移经验写入 `knowledge:convention` / `knowledge:pattern` / `knowledge:lesson` / `knowledge:example`。
-3. `knowledge:example` 写成解释型 benchmark case，包含 question、evidence、golden_sql、db_id、question_id、difficulty、schema_background、bird_bias、why_this_case_matters、transfer_hint；错误案例补充 predicted_sql、error_type、mistake_summary、wrong_assumption、fix_hint。
+3. `knowledge:example` 写成解释型 benchmark case，包含 question、evidence、golden_sql、db_id、question_id、difficulty、schema_background、bird_bias、why_this_case_matters、transfer_hint；错误案例补充 predicted_sql、primary_error_category、mistake_summary、wrong_assumption、fix_hint。
 4. 知识内容使用高密度摘要字段，例如 `decision_summary`、`mistake_summary`、`verification_note`、`rejected_alternatives`。
 5. example 与对应的抽象知识实体建立普通图边；抽象知识使用去 schema 化表达。
 6. 没有新的跨库经验时，明确说明本轮不写入知识实体。
 7. 新建实体前说明已检查的相关实体、已有实体的缺口和新实体的必要性。
+
+错误二分类要求：
+- 必须把主因归入且只归入以下两类之一：
+  - `Database Understanding Error`：SQL 错在对数据库本身的理解，例如表、列、连接关系、字段含义、枚举值、常量、单位、时间字段、主外键关系、业务对象或一行数据代表什么。
+  - `Golden SQL Style Error`：SQL 使用的数据库对象和值大体正确，但表达策略不符合目标答案，例如聚合、去重、分组粒度、过滤位置、子查询结构、排序、limit/tie、NULL 处理、重复行处理或 SQLite 表达方式。
+- 分类决策规则：如果必须改表/列/值/实体选择才能修正，选 `Database Understanding Error`；如果主要是重写 SQL 策略，选 `Golden SQL Style Error`。
+- 最终复盘文本必须包含四行：`primary_error_category`、`mistake_summary`、`minimum_fix`、`classification_reason`。
 """
 
 REFLECTION_CASE_NO_BIRD_PROMPT_TEMPLATE = """\
@@ -233,14 +340,22 @@ Benchmark 调用链摘要：
 Guardrail / blocks：
 {blocks_summary}
 
+Predicted execution result：
+{predicted_execution}
+
+Golden execution result：
+{golden_execution}
+
 详细执行轨迹：
 {trace_detail}
 
 你的任务：
-1. 判断错误是否来自 schema linking、值定位、join 路径、聚合粒度、排序/limit、SQL 组织、输出契约或执行语法。
-2. 若结果正确，指出最关键的成功条件和仍可能脆弱的地方。
-3. 若结果错误，给出最小修正方向。
-4. 输出只包含复盘结论。
+1. 生成简短错误总结和最小修正方向。
+2. 必须把主因归入且只归入以下两类之一：
+   - `Database Understanding Error`：SQL 错在对数据库本身的理解，例如表、列、连接关系、字段含义、枚举值、常量、单位、时间字段、主外键关系、业务对象或一行数据代表什么。
+   - `Golden SQL Style Error`：SQL 使用的数据库对象和值大体正确，但表达策略不符合目标答案，例如聚合、去重、分组粒度、过滤位置、子查询结构、排序、limit/tie、NULL 处理、重复行处理或 SQLite 表达方式。
+3. 分类决策规则：如果必须改表/列/值/实体选择才能修正，选 `Database Understanding Error`；如果主要是重写 SQL 策略，选 `Golden SQL Style Error`。
+4. 输出只包含复盘结论。最终文本必须包含四行：`primary_error_category`、`mistake_summary`、`minimum_fix`、`classification_reason`。
 """
 
 DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
@@ -292,6 +407,20 @@ def is_correct(predicted: set | str, golden: set | str) -> bool:
     if isinstance(predicted, str) or isinstance(golden, str):
         return False
     return predicted == golden
+
+
+def format_execution_result(result: set | str, limit: int = 20) -> str:
+    """Compact execution result for reflection prompts."""
+    if isinstance(result, str):
+        return result
+    rows = sorted(result, key=lambda row: tuple(str(item) for item in row))
+    shown = rows[:limit]
+    text = json.dumps(shown, ensure_ascii=False, default=str)
+    if len(rows) > limit:
+        text += f"\n... ({len(rows) - limit} more rows; total {len(rows)})"
+    else:
+        text += f"\n(total {len(rows)})"
+    return text
 
 
 # ═══════════════════════════════════════════════════════════
@@ -372,7 +501,7 @@ class TraceCollector:
                 f"input_tokens={efficiency.get('input_tokens', 0)}, "
                 f"pre_input_tokens={efficiency.get('pre_input_tokens', 0)}, "
                 f"runtime_input_tokens={efficiency.get('runtime_input_tokens', 0)}, "
-                f"output_tokens={efficiency.get('output_tokens', 0)}, "
+                f"runtime_output_tokens={efficiency.get('runtime_output_tokens', efficiency.get('output_tokens', 0))}, "
                 f"total_tokens={efficiency.get('total_tokens', 0)}"
             ),
         ])
@@ -458,6 +587,9 @@ EFFICIENCY_FIELDS = (
     "input_tokens",
     "pre_input_tokens",
     "runtime_input_tokens",
+    "runtime_output_tokens",
+    "cached_input_tokens",
+    "uncached_input_tokens",
     "output_tokens",
     "total_tokens",
 )
@@ -470,7 +602,12 @@ def empty_efficiency_metrics() -> dict:
 def get_agent_efficiency_metrics(agent) -> dict:
     if hasattr(agent, "llm_metrics"):
         metrics = agent.llm_metrics()
-        return {field: int(metrics.get(field, 0) or 0) for field in EFFICIENCY_FIELDS}
+        out = {field: int(metrics.get(field, 0) or 0) for field in EFFICIENCY_FIELDS}
+        if not out["runtime_output_tokens"] and out["output_tokens"]:
+            out["runtime_output_tokens"] = out["output_tokens"]
+        if not out["output_tokens"] and out["runtime_output_tokens"]:
+            out["output_tokens"] = out["runtime_output_tokens"]
+        return out
     return empty_efficiency_metrics()
 
 
@@ -483,6 +620,11 @@ def aggregate_efficiency(rows: list[dict]) -> dict:
     averages = {
         "llm_rounds_per_query": round(totals["llm_rounds"] / count, 3) if count else 0.0,
         "input_tokens_per_query": round(totals["input_tokens"] / count, 3) if count else 0.0,
+        "pre_input_tokens_per_query": round(totals["pre_input_tokens"] / count, 3) if count else 0.0,
+        "runtime_input_tokens_per_query": round(totals["runtime_input_tokens"] / count, 3) if count else 0.0,
+        "runtime_output_tokens_per_query": round(totals["runtime_output_tokens"] / count, 3) if count else 0.0,
+        "cached_input_tokens_per_query": round(totals["cached_input_tokens"] / count, 3) if count else 0.0,
+        "uncached_input_tokens_per_query": round(totals["uncached_input_tokens"] / count, 3) if count else 0.0,
         "output_tokens_per_query": round(totals["output_tokens"] / count, 3) if count else 0.0,
         "total_tokens_per_query": round(totals["total_tokens"] / count, 3) if count else 0.0,
     }
@@ -496,8 +638,8 @@ def format_efficiency_line(rows: list[dict], indent: str = "") -> str:
     return (
         f"{indent}Efficiency: "
         f"LLM rounds/q={avg['llm_rounds_per_query']:.2f}, "
-        f"pre-input tokens/q={avg['pre_input_tokens_per_query']:.1f}, "
-        f"runtime-input tokens/q={avg['runtime_input_tokens_per_query']:.1f}, "
+        f"cached input tokens/q={avg['cached_input_tokens_per_query']:.1f}, "
+        f"uncached input tokens/q={avg['uncached_input_tokens_per_query']:.1f}, "
         f"output tokens/q={avg['output_tokens_per_query']:.1f}, "
         f"total tokens/q={avg['total_tokens_per_query']:.1f}, "
         f"total tokens={totals['total_tokens']}"
@@ -523,11 +665,14 @@ def build_agent_projects(db_id: str, use_bird_global: bool) -> list[str]:
     return projects
 
 
-def build_bird_benchmark_system_prompt(spec) -> list[str]:
-    """Build benchmark system prompt, always including BIRD prior knowledge."""
+def build_bird_benchmark_system_prompt(spec, include_bird_readme: bool = True) -> list[str]:
+    """Build benchmark system prompt for BIRD benchmark runs."""
     from agent.prompt import build_prompt_messages
 
-    return [*build_prompt_messages(spec), build_bird_readme_system_prompt()]
+    messages = list(build_prompt_messages(spec))
+    if include_bird_readme:
+        messages.append(build_bird_readme_system_prompt())
+    return messages
 
 
 def load_query_prompt_template(args) -> str:
@@ -547,17 +692,17 @@ def build_query_prompt(q: dict, args) -> str:
     current_project = q.get("db_id") or "current_project"
     bird_global_note = (
         "本次运行启用 `bird` 全局经验库。"
-        if getattr(args, "use_bird_global", True)
+        if getattr(args, "use_bird_global", False)
         else "本次运行未启用 `bird` 全局经验库。"
     )
     project_scope = (
         BIRD_PROJECT_SCOPE
-        if getattr(args, "use_bird_global", True)
+        if getattr(args, "use_bird_global", False)
         else LOCAL_ONLY_PROJECT_SCOPE
     ).format(current_project=current_project)
     bird_global_section = (
         BIRD_GLOBAL_PROMPT_SECTION
-        if getattr(args, "use_bird_global", True)
+        if getattr(args, "use_bird_global", False)
         else ""
     )
     template = load_query_prompt_template(args)
@@ -583,7 +728,9 @@ def build_query_prompt(q: dict, args) -> str:
 
 def build_reflection_case_prompt(db_id: str, q: dict, collector: TraceCollector,
                                  predicted_sql: str | None, result_str: str,
-                                 elapsed: float, use_bird_global: bool) -> str:
+                                 elapsed: float, use_bird_global: bool,
+                                 predicted_execution: set | str,
+                                 golden_execution: set | str) -> str:
     template = (
         REFLECTION_CASE_PROMPT_TEMPLATE
         if use_bird_global
@@ -601,6 +748,8 @@ def build_reflection_case_prompt(db_id: str, q: dict, collector: TraceCollector,
         golden_sql=q["SQL"],
         calls_summary=collector.summarize_calls(),
         blocks_summary=collector.summarize_blocks(),
+        predicted_execution=format_execution_result(predicted_execution),
+        golden_execution=format_execution_result(golden_execution),
         trace_detail=collector.detailed_trace_text(),
     )
 
@@ -609,7 +758,10 @@ def run_reflection_for_case(db_id: str, q: dict,
                             agent,
                             predicted_sql: str | None, result_str: str,
                             elapsed: float, bench_dir: Path,
-                            use_bird_global: bool) -> None:
+                            use_bird_global: bool,
+                            include_bird_readme: bool,
+                            predicted_execution: set | str,
+                            golden_execution: set | str) -> None:
     from agent.config import AgentSpec
     from agent.guardrail import build_guardrails
     from agent.tools import build_registry
@@ -624,7 +776,12 @@ def run_reflection_for_case(db_id: str, q: dict,
 
     # 方案 1：沿用同一个 agent 会话，只在反思阶段切到 reflection 配置。
     agent.tools = build_registry(reflection_spec)
-    agent.set_system_prompt(build_bird_benchmark_system_prompt(reflection_spec))
+    agent.set_system_prompt(
+        build_bird_benchmark_system_prompt(
+            reflection_spec,
+            include_bird_readme=include_bird_readme,
+        )
+    )
     agent.guardrails = reflection_spec.guardrails
     while agent.messages and agent.messages[0].get("role") == "system":
         agent.messages.pop(0)
@@ -638,6 +795,8 @@ def run_reflection_for_case(db_id: str, q: dict,
         result_str=result_str,
         elapsed=elapsed,
         use_bird_global=use_bird_global,
+        predicted_execution=predicted_execution,
+        golden_execution=golden_execution,
     )
     response = agent.chat(prompt)
     qid = q.get("question_id", 0)
@@ -647,6 +806,10 @@ def run_reflection_for_case(db_id: str, q: dict,
         f"Evidence: {q.get('evidence', '') or '(无)'}",
         f"Predicted SQL: {predicted_sql or 'PARSE_ERROR'}",
         f"Golden SQL: {q['SQL']}",
+        "Predicted execution result:",
+        format_execution_result(predicted_execution),
+        "Golden execution result:",
+        format_execution_result(golden_execution),
         "",
         response or "",
         "",
@@ -724,7 +887,8 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]):
             f"  Q{r['question_id']} [{r.get('difficulty', '?')}] {status} {r['elapsed']:.1f}s "
             f"rounds={r.get('llm_rounds', 0)} "
             f"pre_in={r.get('pre_input_tokens', 0)} runtime_in={r.get('runtime_input_tokens', 0)} "
-            f"out={r.get('output_tokens', 0)} total={r.get('total_tokens', 0)}"
+            f"runtime_out={r.get('runtime_output_tokens', r.get('output_tokens', 0))} "
+            f"total={r.get('total_tokens', 0)}"
         )
     (bench_dir / "summary.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -835,9 +999,8 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict]):
         "## Efficiency",
         "",
         f"- LLM Rounds / Query: {avg['llm_rounds_per_query']:.3f}",
-        f"- Input Tokens / Query: {avg['input_tokens_per_query']:.3f}",
-        f"- Pre-Input Tokens / Query: {avg['pre_input_tokens_per_query']:.3f}",
-        f"- Runtime Input Tokens / Query: {avg['runtime_input_tokens_per_query']:.3f}",
+        f"- Cached Input Tokens / Query: {avg['cached_input_tokens_per_query']:.3f}",
+        f"- Uncached Input Tokens / Query: {avg['uncached_input_tokens_per_query']:.3f}",
         f"- Output Tokens / Query: {avg['output_tokens_per_query']:.3f}",
         f"- Total Tokens / Query: {avg['total_tokens_per_query']:.3f}",
         f"- Total Tokens: {totals['total_tokens']}",
@@ -977,7 +1140,7 @@ def cleanup_bird_global(clear_bird_knowledge: bool = False):
 
 def ensure_bird_global_ready(args) -> None:
     """Make --use-bird-global fail fast or populate bird before benchmark."""
-    if not getattr(args, "use_bird_global", True):
+    if not getattr(args, "use_bird_global", False):
         return
 
     from storage.workspace import Workspace
@@ -1091,7 +1254,12 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             spec,
             trace_callback=collector.callback,
         )
-        agent.set_system_prompt(build_bird_benchmark_system_prompt(spec))
+        agent.set_system_prompt(
+            build_bird_benchmark_system_prompt(
+                spec,
+                include_bird_readme=args.bird_readme,
+            )
+        )
         agent._reflection_collector = collector
 
         prompt = build_query_prompt(q, args)
@@ -1114,6 +1282,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                     'correct': False, 'result': "ERROR", 'elapsed': round(elapsed, 1),
                     **efficiency,
                     'use_bird_global': args.use_bird_global,
+                    'bird_readme': args.bird_readme,
                     'prompt_profile': args.prompt_profile,
                     'prompt_file': str(args.prompt_file) if args.prompt_file else None}
 
@@ -1143,7 +1312,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         efficiency = get_agent_efficiency_metrics(agent)
         collector.write_logs(bench_dir, qid, q, response, predicted_sql, result_str, elapsed, efficiency)
 
-        if args.reflection:
+        if args.reflection and not correct:
             try:
                 run_reflection_for_case(
                     db_id=db_id,
@@ -1154,6 +1323,9 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                     elapsed=elapsed,
                     bench_dir=bench_dir,
                     use_bird_global=args.use_bird_global,
+                    include_bird_readme=args.bird_readme,
+                    predicted_execution=predicted_result,
+                    golden_execution=golden_result,
                 )
             except Exception as e:
                 print(f"  Q{qid} reflection ERROR: {e}")
@@ -1170,6 +1342,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                 'correct': correct, 'result': result_str, 'elapsed': round(elapsed, 1),
                 **efficiency,
                 'use_bird_global': args.use_bird_global,
+                'bird_readme': args.bird_readme,
                 'prompt_profile': args.prompt_profile,
                 'prompt_file': str(args.prompt_file) if args.prompt_file else None}
 
@@ -1214,7 +1387,7 @@ def main():
     parser.add_argument("--qids", help="只测试指定 question_id，逗号分隔")
     parser.add_argument("--limit", type=int, help="每库最多测试 N 条")
     parser.add_argument("--run-id", help="输出目录 run id；默认使用当前时间戳 YYYYmmdd_HHMMSS")
-    parser.add_argument("--reflection", action="store_true", help="每题验证后立即运行 reflection，不再读日志二次分析")
+    parser.add_argument("--reflection", action="store_true", help="错题验证后立即运行 reflection，不再读日志二次分析")
     parser.add_argument(
         "--no-exec-repair",
         dest="exec_repair",
@@ -1226,14 +1399,14 @@ def main():
         "--use-bird-global",
         dest="use_bird_global",
         action="store_true",
-        default=True,
-        help="启用 bird 全局经验库（默认）",
+        default=False,
+        help="启用 bird 全局经验库（默认关闭）",
     )
     parser.add_argument(
         "--no-bird-global",
         dest="use_bird_global",
         action="store_false",
-        help="禁用 bird 全局经验库，只使用当前数据库项目",
+        help="禁用 bird 全局经验库，只使用当前数据库项目（默认）",
     )
     parser.add_argument(
         "--prompt-profile",
@@ -1248,6 +1421,19 @@ def main():
             "使用自定义主求解 prompt 模板；可包含 {question}、{evidence}、"
             "{bird_global_note}、{project_scope}、{bird_global_section}"
         ),
+    )
+    parser.add_argument(
+        "--bird-readme",
+        dest="bird_readme",
+        action="store_true",
+        default=True,
+        help="把 Pontis/scripts/BIRD/bird_readme.py 注入系统提示词（默认开启）",
+    )
+    parser.add_argument(
+        "--no-bird-readme",
+        dest="bird_readme",
+        action="store_false",
+        help="关闭 BIRD 数据集级 README 系统提示词注入，用于 ablation",
     )
     parser.add_argument(
         "--output-dir",
@@ -1325,6 +1511,7 @@ def main():
     print(
         "Config: "
         f"bird_global={'on' if args.use_bird_global else 'off'}, "
+        f"bird_readme={'on' if args.bird_readme else 'off'}, "
         f"prompt_profile={args.prompt_profile}, "
         f"prompt_file={args.prompt_file or '(none)'}\n"
     )

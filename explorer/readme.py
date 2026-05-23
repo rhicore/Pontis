@@ -138,3 +138,16 @@ def generate(workspace: Workspace) -> None:
 
     agent.chat(PROMPT)
     logger.info("=== Agent README Writer done ===")
+    return _preprocess_metrics(agent)
+
+
+def _preprocess_metrics(agent) -> dict:
+    if not hasattr(agent, "llm_metrics"):
+        return {}
+    metrics = agent.llm_metrics()
+    return {
+        "preprocess_llm_calls": int(metrics.get("llm_rounds", 0) or 0),
+        "preprocess_llm_input_tokens": int(metrics.get("input_tokens", 0) or 0),
+        "preprocess_llm_output_tokens": int(metrics.get("output_tokens", 0) or 0),
+        "preprocess_llm_total_tokens": int(metrics.get("total_tokens", 0) or 0),
+    }

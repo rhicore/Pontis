@@ -45,7 +45,7 @@ def _split_csv(value: str | None) -> list[str]:
 
 
 def _benchmark_uses_bird_global(benchmark_args: list[str]) -> bool:
-    use_bird = True
+    use_bird = False
     for arg in benchmark_args:
         if arg == "--no-bird-global":
             use_bird = False

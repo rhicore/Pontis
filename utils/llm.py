@@ -6,6 +6,9 @@ import os
 import threading
 import yaml
 import logging
+from collections import Counter
+
+from utils.token_metrics import add_usage
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,8 @@ class LLMClient:
         self.thinking = thinking
         self.thinking_effort = thinking_effort
         self._local = threading.local()
+        self._metrics = Counter()
+        self._metrics_lock = threading.Lock()
 
     def _get_client(self):
         client = getattr(self._local, 'client', None)
@@ -64,10 +69,45 @@ class LLMClient:
                 timeout=120,
                 **kwargs,
             )
+            self._record_usage(response)
             return response.choices[0].message.content or ""
         except Exception as e:
             logger.warning(f"LLM call failed: {e}")
             return ""
+
+    def _record_usage(self, response) -> None:
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return
+        input_tokens = (
+            getattr(usage, "prompt_tokens", None)
+            if getattr(usage, "prompt_tokens", None) is not None
+            else getattr(usage, "input_tokens", 0)
+        )
+        output_tokens = (
+            getattr(usage, "completion_tokens", None)
+            if getattr(usage, "completion_tokens", None) is not None
+            else getattr(usage, "output_tokens", 0)
+        )
+        total_tokens = getattr(usage, "total_tokens", None)
+        input_tokens = int(input_tokens or 0)
+        output_tokens = int(output_tokens or 0)
+        total_tokens = int(total_tokens) if total_tokens is not None else input_tokens + output_tokens
+        with self._metrics_lock:
+            self._metrics["preprocess_llm_calls"] += 1
+            self._metrics["preprocess_llm_input_tokens"] += input_tokens
+            self._metrics["preprocess_llm_output_tokens"] += output_tokens
+            self._metrics["preprocess_llm_total_tokens"] += total_tokens
+        add_usage(
+            "preprocess_llm",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+        )
+
+    def metrics(self) -> dict:
+        with self._metrics_lock:
+            return dict(self._metrics)
 
     def complete(self, prompt: str) -> str:
         client = self._get_client()

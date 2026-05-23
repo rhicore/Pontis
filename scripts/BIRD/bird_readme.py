@@ -18,6 +18,22 @@ BIRD_README_BRIEF = "BIRD 数据集通用 SQL 约定"
 BIRD_README_DETAIL = """
 ## BIRD 数据集通用 SQL 约定
 
+### 高优先级写作约定
+
+- BIRD 评测按 SQL 执行结果精确比对；最终 SQL 优先匹配题目、evidence 和数据库给出的最小结果形态，不自动写成更“自然”或更“报表化”的查询
+- 不把自然语言合理性覆盖 evidence：evidence 给出的公式、字段、条件值、分子分母、比较方向、输出标度和计算顺序优先
+- 如果题目和 evidence 已能直接翻译成简单 SQL，最终 SQL 保持简单；不要主动加入清洗、解释列、去重、排序、格式化、状态过滤、非空过滤或最新记录截取
+- `COUNT` 默认不要自动 `DISTINCT`；即使题目自然语言说 patients/accounts/molecules/cards，只要 SQL 已 JOIN 到明细表且 evidence/golden 风格公式是 `COUNT(id)`、`COUNT(*)` 或 `SUM(CASE...)`，通常按 JOIN 后行粒度计数
+- 只有题目明确要求 `unique`、`distinct`、`different`、不重复实体，或 JOIN 粒度明显重复同一目标且题目目标是唯一实体时，才使用 `DISTINCT`
+- `top`、`highest`、`lowest`、`maximum`、`minimum` 默认用 `ORDER BY ... LIMIT 1` 定位一行；只有题目明确要求 all/every/ties/all with max/min 时，才用 `WHERE value = (SELECT MAX/MIN(...))`、窗口函数或保留并列
+- 历史快照表、日志表、实验室检查表、多次测量表中，不要默认取最新记录；只有题目/evidence 出现 latest/current/recent/last/most recent 或明确日期条件时，才加 `ORDER BY date DESC LIMIT 1`
+- 题目或 evidence 明确说 `percent` / `percentage` 时，默认输出 0-100 标度，常用 `CAST(numerator AS REAL) * 100 / denominator`；`ratio` / `proportion` 才可能输出 0-1，且仍以 evidence 为准
+- evidence 给出简单比较表达式时，最终 SQL 优先保留简单表达式；不要无依据地对 TEXT 数值列添加 `CAST`、`GLOB`、白名单、字符串清洗或格式归一化
+- `normal` / `abnormal`、`YES` / `NO`、`well-finished` / `NOT well-finished` 这类状态题，如果 evidence 给出状态映射，SELECT 应输出映射后的状态 literal，而不是原始字段值
+- 状态 literal 尽量使用 question/evidence/schema 中出现的词形和大小写；没有依据时使用最短标签，不输出解释性长句
+- 关系端点查询先判断输出是 relationship pair 还是 entity set；题目说 connected atoms / atoms of bond / bond endpoints 时，默认保留同一关系行的端点列，不自行 `UNION`/`DISTINCT` 成单列集合
+- 不把解释性比较结论自动加进 SELECT；如果 evidence 只定义 percentage/deviation/count 公式，优先只返回公式结果，除非 question 明确要求同时输出哪个类别更多
+
 ### 输入证据
 
 - evidence 是题目的一部分，用于给出公式、代码映射、时间范围、字段映射或术语解释
@@ -31,6 +47,7 @@ BIRD_README_DETAIL = """
 - evidence 给出的术语映射通常是本题绑定，不自动推广成全库默认过滤或默认 JOIN 路径
 - evidence 同时给出输出含义和过滤含义时，先区分字段角色：目标输出字段、过滤字段、排序字段、公式字段、JOIN 字段
 - question 与 evidence 冲突时，evidence 中的列名、代码值、公式和时间范围优先；question 中的自然语言用于确定目标实体和输出契约
+- evidence 有时用简写表达题型意图；例如“最常见/most common”仍通常表示按目标值分组计数后取最高频，而不是返回文本字段的字典序 `MAX`
 
 ### 输出契约
 
@@ -45,6 +62,8 @@ BIRD_README_DETAIL = """
 
 - 枚举值、状态值、类型代码、评级代码通常返回原始数据库值；只有题目要求解释含义时才把代码翻译成自然语言文本
 - “what is/which is/list” 后面紧跟的名词通常决定 SELECT 字段；过滤、排序、分组用到的辅助字段不自动输出
+- 题目问某指标是否 normal/abnormal/within range 时，通常需要返回由阈值条件计算出的状态表达；不要只返回原始测量值
+- 状态 literal 的形式来自 question、evidence 或 schema；没有依据时不要随意把状态改写成 `yes/no`、`1/0` 或任意大小写
 - 题目同时要求多个字段时，输出为同一行中的多个列；只有集合语义明确时才使用复合查询
 - 题目要求 percentage/ratio/count 同时又说 list IDs/names 时，先判断它是否真的要求两个输出集合；BIRD 里多数问题只需要主要度量或主要实体，不把度量和列表强行 `UNION` 成一列
 - `Rank ... by ...` 如果题目要求“rank/ranking”本身，通常需要输出排序指标和 `RANK() OVER (...)`；如果只是要 top/bottom 实体，则用 `ORDER BY ... LIMIT ...`
@@ -87,12 +106,13 @@ BIRD_README_DETAIL = """
 - `COUNT(*)`、`COUNT(id)`、`COUNT(DISTINCT id)` 和条件聚合表达不同含义
 - 百分比、ratio、average 的分子和分母按题目与 evidence 明确指定的实体集合确定
 - 复数名词不自动推出 DISTINCT，先判断数据库中一行代表什么业务实体
+- 实验、检测、交易、事件等明细表中，`COUNT(ID)` 不一定表示唯一实体数；如果 evidence 写 `COUNT(ID)`、`COUNT(*)` 或 `SUM(CASE...)`，通常保持明细行粒度
 - 百分比公式中的分母沿用 evidence 指定的表、行集和实体粒度；不要把行数换成更自然的去重实体数或更大的基础表总数
 - “平均每组数量”先按组统计数量再 `AVG`；“满足条件的比例”才使用条件布尔值或条件计数除以总数
 
 - evidence 写 `COUNT(id)`、`COUNT(*)`、`COUNT(DISTINCT id)`、`SUM(CASE...)` 时按原形式和目标列执行
 - 百分比常见写法是 `CAST(numerator AS REAL) * 100 / denominator`；只有题目要求小数位时才 `ROUND`
-- “proportion/percentage of X among Y” 的分母是 Y 对应的行集或实体集，不自动扩大到全表
+- “proportion/ratio/percentage of X among Y” 的分母是 Y 对应的行集或实体集，不自动扩大到全表；其中 percentage 通常输出 0-100 标度，ratio/proportion 才可能输出 0-1 标度
 - “how many X have condition” 通常是目标实体 X 的 count；“how many records/rows” 才按行数
 - “average amount per group/entity” 先明确是 `AVG(amount)`、`SUM(amount)/COUNT(entity)` 还是先分组再 AVG；按 evidence 公式优先
 - 条件聚合优先保持在同一 SELECT 中；不为了可读性拆成多个 UNION 分支
@@ -127,6 +147,7 @@ BIRD_README_DETAIL = """
 
 - “rank by” 与 “top N by” 不同：rank 通常需要窗口排名列，top N 通常只需要排序后截取
 - “most common/least common” 通常先 `GROUP BY` 目标值并按 `COUNT(...)` 排序；输出是否包含 count 取决于题目是否要求数量
+- 如果题目要求 top N 个拥有最高/最低指标的实体或属性，默认按明细行排序后 `LIMIT N`；只有题目要求唯一实体或每个实体聚合时才先按实体分组取 `MAX/MIN`
 - “highest average/lowest average” 先判断平均值是已有列还是需要聚合计算；已有 average 列不要再 AVG
 - “nth highest/lowest” 使用排序和 offset；不要返回前 N 个，也不要用 `MAX/MIN` 嵌套替代
 - 排序 tie-breaker 只有题目/evidence 要求时才添加；额外 tie-breaker 可能改变 BIRD 执行结果
@@ -144,6 +165,7 @@ BIRD_README_DETAIL = """
 - 日期范围比较优先使用原列可比较格式；只有确认文本格式不适合直接比较时才转换
 - 文本数值排序/比较要确认字段真实存储；BIRD gold 有时按原文本/原列计算，避免过度 CAST
 - 字符串拼接只用于题目明确要求单个字符串；地址、姓名、多个属性通常分别输出原字段
+- 对 evidence 给出的简单数值比较、区间或枚举，最终 SQL 优先保持简单表达；不要无依据地加入手工清洗、额外枚举、LIKE 扩展或非空过滤
 
 ### 复合查询
 

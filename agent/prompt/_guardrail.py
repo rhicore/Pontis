@@ -10,6 +10,7 @@ _SECTIONS = {
     "disambig_check": "- `disambig_check`: 同名或近义实体需要读取相关消歧信息。",
     "value_grounding_check": "- `value_grounding_check`: 最终 SQL 的过滤值会验证存在性、LIKE 精度和枚举列匹配。",
     "exploration_check": "- `exploration_check`: 避免过宽全图枚举，优先从 DB/table/col/known neighbor 定向探索。",
+    "rule_review": "- `rule_review`: 最终 SQL 会由独立 reviewer 按当前任务注入的 rule context 复审。",
 }
 
 

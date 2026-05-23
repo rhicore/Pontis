@@ -72,6 +72,9 @@ def generate(workspace: Workspace, config=None) -> None:
         _ensure_vector_indexes(workspace, actual_dimensions)
         logger.info("Semantic embedding done: %s nodes", total)
 
+    if config and hasattr(config, "add_preprocess_token_metrics") and hasattr(client, "metrics"):
+        config.add_preprocess_token_metrics(client.metrics())
+
 
 def _ensure_node_ids(workspace: Workspace) -> None:
     workspace.cypher(

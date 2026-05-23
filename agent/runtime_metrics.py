@@ -3,7 +3,20 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from typing import Any
+
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.append(str(_ROOT))
+
+from token_cache_accounting import (  # noqa: E402
+    merge_cache_accounting_sources,
+    normalize_cache_accounting,
+    serialize_request,
+    split_static_prompt_tokens,
+)
 
 
 def estimate_tokens(value: Any) -> int:
@@ -46,9 +59,4 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
 
 
 def split_prompt_tokens(total_prompt_tokens: int, static_prompt_tokens: int) -> dict[str, int]:
-    pre_input_tokens = min(max(0, int(total_prompt_tokens or 0)), max(0, int(static_prompt_tokens or 0)))
-    runtime_input_tokens = max(0, int(total_prompt_tokens or 0) - pre_input_tokens)
-    return {
-        "pre_input_tokens": pre_input_tokens,
-        "runtime_input_tokens": runtime_input_tokens,
-    }
+    return split_static_prompt_tokens(total_prompt_tokens, static_prompt_tokens)

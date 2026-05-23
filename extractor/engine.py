@@ -91,6 +91,7 @@ def get_registry() -> Dict[str, object]:
 
     # Explorer 模块 — 独立版（可单独调用）
     try:
+        from explorer.schema_prepare import generate as agent_schema_prepare
         from explorer.join_detect import generate as agent_join_detect
         from explorer.disambiguate import generate as agent_disambiguate
         from explorer.readme import generate as agent_readme
@@ -98,6 +99,7 @@ def get_registry() -> Dict[str, object]:
         from explorer.text_chunk import generate as agent_text_chunk
         from explorer.json_pattern_summary import generate as agent_json_pattern_summary
         from explorer.csv_summary import generate as agent_csv_summary
+        _REGISTRY["agent_schema_prepare"] = agent_schema_prepare
         _REGISTRY["agent_join_detect"] = agent_join_detect
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
         _REGISTRY["agent_readme"] = agent_readme
@@ -146,9 +148,15 @@ def run_modules(
             t0 = time.time()
             kwargs = (options.module_kwargs or {}).get(name, {})
             if name in CONFIG_MODULES:
-                func(workspace, config=config, **kwargs)
+                module_result = func(workspace, config=config, **kwargs)
             else:
-                func(workspace, **kwargs)
+                module_result = func(workspace, **kwargs)
+            if (
+                config is not None
+                and isinstance(module_result, dict)
+                and hasattr(config, "add_preprocess_token_metrics")
+            ):
+                config.add_preprocess_token_metrics(module_result)
             if options.collect_timing:
                 timings[name] = time.time() - t0
         except Exception as e:

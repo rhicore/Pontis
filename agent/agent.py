@@ -14,7 +14,14 @@ from agent.config import default_spec
 from agent.tools import build_registry
 from agent.prompt import build_prompt_messages
 from agent.guardrail_api import Guardrail, CallVerdict, GuardrailContext
-from agent.runtime_metrics import estimate_messages_tokens, estimate_tokens, split_prompt_tokens
+from agent.runtime_metrics import (
+    estimate_messages_tokens,
+    estimate_tokens,
+    merge_cache_accounting_sources,
+    normalize_cache_accounting,
+    serialize_request,
+    split_prompt_tokens,
+)
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -71,6 +78,12 @@ class PontusAgent:
         self._runtime_input_tokens = 0
         self._output_tokens = 0
         self._total_tokens = 0
+        self._cache_hit_input_tokens = 0
+        self._cache_miss_input_tokens = 0
+        self._cache_unknown_input_tokens = 0
+        self._fresh_input_tokens = 0
+        self._cache_accounting_sources: List[str] = []
+        self._previous_prompt_text: Optional[str] = None
 
     # ──────────────── LLM 调用 ────────────────
 
@@ -92,8 +105,14 @@ class PontusAgent:
     def _call_llm_round(self):
         """调用 LLM 并将 response 追加到消息历史。"""
         static_prompt_tokens = self._static_prompt_tokens()
+        prompt_text = serialize_request(self.messages, self.tools.get_definitions())
         response = self._call_llm()
-        self._record_llm_usage(response, static_prompt_tokens=static_prompt_tokens)
+        self._record_llm_usage(
+            response,
+            static_prompt_tokens=static_prompt_tokens,
+            prompt_text=prompt_text,
+        )
+        self._previous_prompt_text = prompt_text
         msg = response.choices[0].message
         self.messages.append(self._msg_to_dict(msg))
         return msg
@@ -101,7 +120,7 @@ class PontusAgent:
     def _static_prompt_tokens(self) -> int:
         return estimate_messages_tokens(self._system_messages) + estimate_tokens(self.tools.get_definitions())
 
-    def _record_llm_usage(self, response, *, static_prompt_tokens: int = 0) -> None:
+    def _record_llm_usage(self, response, *, static_prompt_tokens: int = 0, prompt_text: str | None = None) -> None:
         self._llm_rounds += 1
         usage = getattr(response, "usage", None)
         if not usage:
@@ -120,11 +139,23 @@ class PontusAgent:
         if total_tokens is None:
             total_tokens = (input_tokens or 0) + (output_tokens or 0)
         split = split_prompt_tokens(int(input_tokens or 0), static_prompt_tokens)
+        cache = normalize_cache_accounting(
+            usage=usage,
+            input_tokens=int(input_tokens or 0),
+            static_prompt_tokens=static_prompt_tokens,
+            current_prompt=prompt_text,
+            previous_prompt=self._previous_prompt_text,
+        )
         self._input_tokens += int(input_tokens or 0)
         self._pre_input_tokens += split["pre_input_tokens"]
         self._runtime_input_tokens += split["runtime_input_tokens"]
         self._output_tokens += int(output_tokens or 0)
         self._total_tokens += int(total_tokens or 0)
+        self._cache_hit_input_tokens += cache["cache_hit_input_tokens"]
+        self._cache_miss_input_tokens += cache["cache_miss_input_tokens"]
+        self._cache_unknown_input_tokens += cache["cache_unknown_input_tokens"]
+        self._fresh_input_tokens += cache["fresh_input_tokens"]
+        self._cache_accounting_sources.append(cache["cache_accounting_source"])
 
     def llm_metrics(self) -> dict:
         return {
@@ -132,8 +163,16 @@ class PontusAgent:
             "input_tokens": self._input_tokens,
             "pre_input_tokens": self._pre_input_tokens,
             "runtime_input_tokens": self._runtime_input_tokens,
+            "runtime_output_tokens": self._output_tokens,
             "output_tokens": self._output_tokens,
             "total_tokens": self._total_tokens,
+            "cached_input_tokens": self._cache_hit_input_tokens,
+            "uncached_input_tokens": self._cache_miss_input_tokens + self._cache_unknown_input_tokens,
+            "cache_hit_input_tokens": self._cache_hit_input_tokens,
+            "cache_miss_input_tokens": self._cache_miss_input_tokens,
+            "cache_unknown_input_tokens": self._cache_unknown_input_tokens,
+            "fresh_input_tokens": self._fresh_input_tokens,
+            "cache_accounting_source": merge_cache_accounting_sources(self._cache_accounting_sources),
         }
 
     def _msg_to_dict(self, msg) -> dict:

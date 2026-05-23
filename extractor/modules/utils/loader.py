@@ -3,7 +3,8 @@
 Contains: Config and common utilities. LLM client moved to utils/llm.py.
 """
 import os
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import Optional
 
 from utils.llm import LLMClient, apply_yaml
@@ -31,6 +32,7 @@ class Config:
     embedding_api_key: Optional[str] = None
     embedding_dimensions: int = 1536
     embedding_batch_size: int = 64
+    preprocess_token_metrics: Counter = field(default_factory=Counter)
 
     def get_llm(self) -> Optional[LLMClient]:
         """从此配置创建 LLM 客户端。"""
@@ -53,6 +55,19 @@ class Config:
             dimensions=self.embedding_dimensions,
             batch_size=self.embedding_batch_size,
         )
+
+    def add_preprocess_token_metrics(self, metrics: dict | None) -> None:
+        if not metrics:
+            return
+        for key, value in metrics.items():
+            self.preprocess_token_metrics[key] += int(value or 0)
+
+    def get_preprocess_token_metrics(self) -> dict:
+        metrics = dict(self.preprocess_token_metrics)
+        llm_total = int(metrics.get("preprocess_llm_total_tokens", 0) or 0)
+        embedding_total = int(metrics.get("preprocess_embedding_total_tokens", 0) or 0)
+        metrics["preprocess_total_tokens"] = llm_total + embedding_total
+        return metrics
 
 
 def load_config(path: Optional[str] = None) -> Config:

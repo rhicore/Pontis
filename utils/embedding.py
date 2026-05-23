@@ -6,9 +6,11 @@ from dataclasses import dataclass
 import logging
 import os
 import threading
+from collections import Counter
 from typing import Iterable
 
 from utils.llm import apply_yaml
+from utils.token_metrics import add_usage
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,8 @@ class EmbeddingClient:
         self.model = model
         self.dimensions = dimensions
         self._local = threading.local()
+        self._metrics = Counter()
+        self._metrics_lock = threading.Lock()
 
     def _get_client(self):
         client = getattr(self._local, "client", None)
@@ -70,11 +74,38 @@ class EmbeddingClient:
         if self.dimensions:
             kwargs["dimensions"] = self.dimensions
         response = client.embeddings.create(**kwargs)
+        self._record_usage(response)
         return [list(item.embedding) for item in response.data]
 
     def embed_one(self, text: str) -> list[float]:
         vectors = self.embed([text])
         return vectors[0] if vectors else []
+
+    def _record_usage(self, response) -> None:
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return
+        input_tokens = (
+            getattr(usage, "prompt_tokens", None)
+            if getattr(usage, "prompt_tokens", None) is not None
+            else getattr(usage, "input_tokens", 0)
+        )
+        total_tokens = getattr(usage, "total_tokens", None)
+        input_tokens = int(input_tokens or 0)
+        total_tokens = int(total_tokens) if total_tokens is not None else input_tokens
+        with self._metrics_lock:
+            self._metrics["preprocess_embedding_calls"] += 1
+            self._metrics["preprocess_embedding_input_tokens"] += input_tokens
+            self._metrics["preprocess_embedding_total_tokens"] += total_tokens
+        add_usage(
+            "preprocess_embedding",
+            input_tokens=input_tokens,
+            total_tokens=total_tokens,
+        )
+
+    def metrics(self) -> dict:
+        with self._metrics_lock:
+            return dict(self._metrics)
 
 
 def load_embedding_config(path: str | None = None) -> EmbeddingConfig:

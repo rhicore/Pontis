@@ -66,6 +66,9 @@ def generate(workspace: Workspace, config=None) -> None:
             except Exception as e:
                 logger.warning(f"Failed for {db_ref}: {e}")
 
+    if config and hasattr(config, "add_preprocess_token_metrics") and hasattr(llm, "metrics"):
+        config.add_preprocess_token_metrics(llm.metrics())
+
 
 def _process_database(db_ref: str, workspace: Workspace, llm) -> None:
     """处理一个数据库：按表分组，表与表之间也并行。"""
