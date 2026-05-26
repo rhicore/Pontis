@@ -13,7 +13,7 @@ from agent.utils import load_agent_config
 from agent.config import default_spec
 from agent.tools import build_registry
 from agent.prompt import build_prompt_messages
-from agent.guardrail_api import Guardrail, CallVerdict, GuardrailContext
+from agent.guardrail_api import Guardrail, CallVerdict, GuardrailContext, PostToolAction
 from agent.runtime_metrics import (
     estimate_messages_tokens,
     estimate_tokens,
@@ -229,6 +229,44 @@ class PontusAgent:
                 verdicts[key].append((g.__class__.__name__, v))
         return dict(verdicts)
 
+    def _drain_guardrail_messages(self, rounds: int) -> Iterator[dict]:
+        """消费非阻塞 guardrail sidechain 已完成的补充消息。"""
+        ctx = GuardrailContext(
+            messages=self.messages,
+            tool_history=self._tool_history,
+            workspace=self.workspace,
+            rounds=rounds,
+            pending_calls=[],
+            agent=self,
+        )
+        for g in self.guardrails:
+            for content in g.drain_ready(ctx):
+                if not content:
+                    continue
+                source = g.__class__.__name__
+                self.logger.info(f"Guardrail sidechain [{source}]:\n  " + "\n  ".join(content.split("\n")))
+                self.messages.append({"role": "user", "content": content})
+                yield {"type": "sidechain", "guardrail": source, "content": content}
+
+    def _apply_post_tool_action(self, action: Optional[PostToolAction],
+                                result: str) -> Tuple[str, List[str], List[str]]:
+        appended = []
+        trace_messages = []
+        if action is None or action.is_empty():
+            return result, appended, trace_messages
+        if action.replace_result is not None:
+            result = action.replace_result
+            self.messages[-1]["content"] = result
+        for content in action.append_messages:
+            if not content:
+                continue
+            self.messages.append({"role": "user", "content": content})
+            appended.append(content)
+        for content in action.trace_messages:
+            if content:
+                trace_messages.append(content)
+        return result, appended, trace_messages
+
     @staticmethod
     def _aggregate(vs: List[Tuple[str, CallVerdict]]) -> Tuple[str, str, Optional[dict]]:
         """聚合单个调用的所有裁决。"""
@@ -335,10 +373,19 @@ class PontusAgent:
             result = self._execute_tool(name, args, tc.id)
 
             for g in self.guardrails:
-                modified = g.post_check(ctx, i, name, args, result)
-                if modified is not None:
-                    result = modified
-                    self.messages[-1]["content"] = result
+                action_result = g.post_tool(ctx, i, name, args, result)
+                result, appended, trace_messages = self._apply_post_tool_action(action_result, result)
+                for content in appended:
+                    source = g.__class__.__name__
+                    self.logger.info(f"Guardrail append [{source}] call#{i}({name}): {content}")
+                    yield {"type": "append", "guardrail": source,
+                           "call_index": i, "content": content}
+                for content in trace_messages:
+                    source = g.__class__.__name__
+                    self.logger.info(f"Guardrail trace [{source}] call#{i}({name}): {content}")
+                    yield {"type": "trace", "guardrail": source,
+                           "call_index": i, "content": content,
+                           "trace_only": True}
 
             yield {"type": "tool_result", "name": name,
                    "result": result, "id": tc.id}
@@ -353,6 +400,9 @@ class PontusAgent:
         for wmsg in deferred_warnings:
             self.messages.append({"role": "user", "content": wmsg})
 
+        for event in self._drain_guardrail_messages(ctx.rounds):
+            yield event
+
     # ──────────────── 核心循环 ────────────────
 
     def _run_loop(self, user_input: str) -> Iterator[dict]:
@@ -361,6 +411,11 @@ class PontusAgent:
         rounds = 0
 
         while True:
+            for event in self._drain_guardrail_messages(rounds):
+                if self._trace_callback:
+                    self._trace_callback(event)
+                yield event
+
             msg = self._call_llm_round()
             self._log_response(msg)
 
@@ -374,6 +429,7 @@ class PontusAgent:
                 workspace=self.workspace,
                 rounds=rounds,
                 pending_calls=pending,
+                agent=self,
             )
 
             done = False

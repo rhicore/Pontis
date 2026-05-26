@@ -8,8 +8,9 @@ _SECTIONS = {
     "sql_check": "- `sql_check`: SQL 引用关键表/列/关系前应已通过工具确认。",
     "bridge_check": "- `bridge_check`: JOIN 需要图谱中的 `fk` / `rel` / `overlap` 支撑。",
     "disambig_check": "- `disambig_check`: 同名或近义实体需要读取相关消歧信息。",
+    "meta_disambig_prefetch": "- `meta_disambig_prefetch`: 读取带相邻消歧或 hint 的 meta 后，可能收到后台 sidechain 返回的上下文辨析；应结合当前证据重新判断表、列、值、JOIN 和聚合选择。",
     "value_grounding_check": "- `value_grounding_check`: 最终 SQL 的过滤值会验证存在性、LIKE 精度和枚举列匹配。",
-    "exploration_check": "- `exploration_check`: 避免过宽全图枚举，优先从 DB/table/col/known neighbor 定向探索。",
+    "exploration_check": "- `exploration_check`: 优先从 DB/table/col/known neighbor 定向探索。",
     "rule_review": "- `rule_review`: 最终 SQL 会由独立 reviewer 按当前任务注入的 rule context 复审。",
 }
 

@@ -11,11 +11,8 @@
   q{id}.reflection.log  题后复盘结果
 
 常用命令：
-    # dev 全量，本地直接跑。注意：如果 Neo4j 在 Slurm 节点上，应优先用 bird_benchmark_slurm。
+    # dev 全量，本地直接跑。注意：如果 Neo4j 在 Slurm 节点上，应优先用 bird_slurm。
     python -m scripts.BIRD.run_bird_benchmark
-
-    # dev 全量，只跑 benchmark，不重新 extract。
-    python -m scripts.BIRD.run_bird_benchmark --skip-extract
 
     # train 全量。
     python -m scripts.BIRD.run_bird_benchmark --train
@@ -26,20 +23,20 @@
     python -m scripts.BIRD.run_bird_benchmark --db toxicology --limit 10
 
     # 开错题 reflection。只对错题生成 q{id}.reflection.log。
-    python -m scripts.BIRD.run_bird_benchmark --skip-extract --reflection
+    python -m scripts.BIRD.run_bird_benchmark --reflection
 
     # 关闭 BIRD 数据集级 README 注入，用于 ablation。
-    python -m scripts.BIRD.run_bird_benchmark --skip-extract --no-bird-readme
+    python -m scripts.BIRD.run_bird_benchmark --no-bird-readme
 
     # 默认不使用 bird 全局经验库，只用当前数据库项目。
-    python -m scripts.BIRD.run_bird_benchmark --skip-extract
+    python -m scripts.BIRD.run_bird_benchmark
 
     # 推荐 Slurm 入口：固定到 Neo4j 所在节点，避免 localhost:768x 连错机器。
-    python -m scripts.BIRD.bird_benchmark_slurm submit \
+    python -m scripts.BIRD.bird_slurm benchmark submit \
       --job-name bird-benchmark-dev \
       --cpus-per-task 24 --mem 128G --time 2-00:00:00 \
       -- \
-      --skip-extract --db-workers 6 --workers 20 \
+      --db-workers 6 --workers 20 \
       --reflection \
       --run-id bird_dev_full_benchmark_YYYYmmdd
 
@@ -49,11 +46,6 @@
       --db A[,B]              只跑指定数据库，可逗号分隔。
       --qids 1,2,3            只跑指定 question_id。
       --limit N               每个数据库最多取前 N 题。
-
-    Extract 控制：
-      --skip-extract          跳过 extract，直接 benchmark。
-      --force-extract         重新 extract 并覆盖 preprocess 输出。
-      --extract-only          只 extract，不 benchmark。
 
     并发：
       --db-workers N          并行数据库数。全 dev 常用 4-6。
@@ -132,7 +124,6 @@ from scripts.BIRD.common import (
     get_benchmark_dir,
     get_data_dir,
     get_db_base,
-    get_preprocess_dir,
     get_progress_path,
     get_results_dir,
     get_run_id,
@@ -154,7 +145,8 @@ BIRD_BENCHMARK_PROMPTS = [
 ]
 BIRD_BENCHMARK_GUARDRAILS = [
     "round_limit", "exploration_check",
-    "sql_check", "bridge_check", "disambig_check", "value_grounding_check",
+    "sql_check", "bridge_check", "disambig_check", "meta_disambig_prefetch",
+    "value_grounding_check",
 ]
 
 # ═══════════════════════════════════════════════════════════
@@ -538,8 +530,17 @@ class TraceCollector:
                 "args": event.get("arguments", {}),
             })
             self._next_round += 1
-        elif etype == "warning":
-            pass
+        elif etype in {"warning", "sidechain", "append", "trace"}:
+            self._entries.append({
+                "type": etype,
+                "round": self._next_round,
+                "source": event.get("guardrail", ""),
+                "msg": event.get("content", ""),
+                "name": event.get("name"),
+                "args": event.get("arguments", {}),
+                "call_index": event.get("call_index"),
+                "trace_only": bool(event.get("trace_only")),
+            })
         elif etype == "done":
             self._pending_by_id.clear()
 
@@ -576,8 +577,8 @@ class TraceCollector:
                 result = entry["result"] or "(no result)"
                 detail_lines.append(f"  {result}")
             else:
-                detail_lines.append(self._format_block_header(entry))
-                detail_lines.append(f"  {_normalize_block_message(entry['msg'])}")
+                detail_lines.append(self._format_event_header(entry))
+                detail_lines.append(f"  {_format_event_message(entry)}")
             detail_lines.append("---")
 
         if response:
@@ -613,17 +614,29 @@ class TraceCollector:
                 result = entry["result"] or "(no result)"
                 lines.append(f"  {result}")
             else:
-                lines.append(self._format_block_header(entry))
-                lines.append(f"  {_normalize_block_message(entry['msg'])}")
+                lines.append(self._format_event_header(entry))
+                lines.append(f"  {_format_event_message(entry)}")
             lines.append("---")
         return "\n".join(lines) if lines else "(empty trace)"
 
     @staticmethod
-    def _format_block_header(entry: dict) -> str:
+    def _format_event_header(entry: dict) -> str:
+        kind_by_type = {
+            "block": "BLOCKED",
+            "warning": "WARNING",
+            "sidechain": "SIDECHAIN",
+            "append": "APPEND",
+            "trace": "TRACE",
+        }
+        kind = kind_by_type.get(entry.get("type"), entry.get("type", "EVENT").upper())
+        source = entry.get("source", "")
+        suffix = " trace-only" if entry.get("trace_only") else ""
         if entry.get("name"):
             args_full = json.dumps(entry["args"], ensure_ascii=False) if entry["args"] else "{}"
-            return f"Round {entry['round']} | [BLOCKED by {entry['source']}] {entry['name']}({args_full})"
-        return f"Round {entry['round']} | [BLOCKED by {entry['source']}] text response"
+            return f"Round {entry['round']} | [{kind} by {source}{suffix}] {entry['name']}({args_full})"
+        call_index = entry.get("call_index")
+        label = f"call#{call_index}" if call_index is not None else "agent event"
+        return f"Round {entry['round']} | [{kind} by {source}{suffix}] {label}"
 
 
 def _args_brief(args: dict) -> str:
@@ -641,6 +654,13 @@ def _args_brief(args: dict) -> str:
 
 def _normalize_block_message(msg: str) -> str:
     return " ".join((msg or "").split())
+
+
+def _format_event_message(entry: dict) -> str:
+    msg = entry.get("msg", "")
+    if entry.get("type") != "block":
+        return msg or "(empty event)"
+    return _normalize_block_message(msg)
 
 
 EFFICIENCY_FIELDS = (
@@ -1108,15 +1128,11 @@ class ProgressTracker:
         }
         self._write()
 
-    def start_extract(self, db_id: str):
-        with self._lock:
-            self._states[db_id]["status"] = "extracting"
-            self._states[db_id]["started_at"] = time.time()
-            self._write()
-
     def start_test(self, db_id: str):
         with self._lock:
             self._states[db_id]["status"] = "testing"
+            if self._states[db_id]["started_at"] is None:
+                self._states[db_id]["started_at"] = time.time()
             self._write()
 
     def update(self, db_id: str, done: int, correct: int):
@@ -1158,11 +1174,10 @@ class ProgressTracker:
         self._path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def cleanup_all(db_base: Path, db_map: dict[str, list], *, train: bool, force_extract: bool = False):
+def cleanup_all(db_base: Path, db_map: dict[str, list], *, train: bool):
     print("=== Cleanup ===")
     for db_id in sorted(db_map.keys()):
         db_dir = db_base / db_id
-        preprocess_dir = get_preprocess_dir(db_id, train)
         bench_dir = get_benchmark_dir(db_id, train)
 
         if bench_dir.exists():
@@ -1173,19 +1188,9 @@ def cleanup_all(db_base: Path, db_map: dict[str, list], *, train: bool, force_ex
             if count:
                 print(f"  [{db_id}] Cleared {count} logs")
 
-        if force_extract and preprocess_dir.exists():
-            import shutil
-            shutil.rmtree(preprocess_dir, ignore_errors=True)
-            print(f"  [{db_id}] Removed preprocess output for re-extract")
-
         legacy_pontis_dir = db_dir / ".pontis"
         if legacy_pontis_dir.exists():
             import shutil
-            if not force_extract:
-                legacy_extract_log = legacy_pontis_dir / "extract.log"
-                if legacy_extract_log.exists():
-                    preprocess_dir.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(legacy_extract_log), str(preprocess_dir / "extract.log"))
             shutil.rmtree(legacy_pontis_dir, ignore_errors=True)
             print(f"  [{db_id}] Removed legacy data .pontis")
     print("Cleanup done\n")
@@ -1274,35 +1279,13 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         print(f"[{db_id}] Error: directory not found, skipping")
         return []
 
-    # Phase 1: 提取
-    if not args.skip_extract:
-        tracker.start_extract(db_id)
-        from scripts.BIRD.extract import extract_one
-        t0 = time.time()
-        r = extract_one(
-            str(db_dir),
-            preprocess_dir=get_preprocess_dir(db_id, args.train),
-            force=args.force_extract,
-            train=args.train,
-        )
-        parts = []
-        if r["static"]: parts.append(f"Static {r['static']:.0f}s")
-        if r["ai_columns"]: parts.append(f"AI Cols {r['ai_columns']:.0f}s")
-        if r["agent"]: parts.append(f"Agent {r['agent']:.0f}s")
-        if r.get("query_overview"): parts.append(f"Query Overview {r['query_overview']:.0f}s")
-        if r.get("embedding"): parts.append(f"Embedding {r['embedding']:.0f}s")
-        print(f"[{db_id}] Extract done: {', '.join(parts)}")
-
-    if args.extract_only:
-        return []
-
-    # Phase 2: 找数据库文件
+    # Phase 1: 找数据库文件
     db_path = find_db_file(db_dir)
     if not db_path:
         print(f"[{db_id}] Error: no database file found")
         return []
 
-    # Phase 3: 测试
+    # Phase 2: 测试
     bench_dir = get_benchmark_dir(db_id, args.train)
     bench_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1452,9 +1435,7 @@ def main():
     parser = argparse.ArgumentParser(description="BIRD Text-to-SQL Benchmark")
     parser.add_argument("--train", action="store_true", help="跑 train 集（默认跑 dev）")
     parser.add_argument("--db", help="只测试指定数据库；多个库用逗号分隔")
-    parser.add_argument("--skip-extract", action="store_true", help="跳过提取")
-    parser.add_argument("--force-extract", action="store_true", help="强制重新提取")
-    parser.add_argument("--extract-only", action="store_true", help="只提取不测试")
+    parser.add_argument("--skip-extract", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--workers", type=int, default=1, help="每库并行 worker（默认 1）")
     parser.add_argument("--db-workers", type=int, default=1, help="并行数据库数（默认 1）")
     parser.add_argument("--qids", help="只测试指定 question_id，逗号分隔")
@@ -1593,7 +1574,7 @@ def main():
         args.output_dir = get_results_dir(args.train)
     print(f"Results: {args.output_dir}\n")
 
-    cleanup_all(db_base, by_db, train=args.train, force_extract=args.force_extract)
+    cleanup_all(db_base, by_db, train=args.train)
     if args.clear_bird_knowledge and not args.use_bird_global:
         print("Skip --clear-bird-knowledge because --no-bird-global is set\n")
     else:
@@ -1617,7 +1598,7 @@ def main():
             except Exception as e:
                 print(f"[{db_id}] FATAL: {e}")
 
-    if all_results and not args.extract_only:
+    if all_results:
         all_results.sort(key=lambda r: (r['db_id'], r['question_id']))
         write_total_summary(args.output_dir / "evaluation", all_results)
         write_structured_outputs(args.output_dir, all_results)

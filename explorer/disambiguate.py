@@ -13,70 +13,58 @@ from storage.workspace import Workspace
 logger = logging.getLogger(__name__)
 
 PROMPT = """\
-你的任务是深入分析项目中数据库的语义歧义问题，发现并记录名称相同或相近但含义不同的实体。
+你的任务是分析项目中数据库实体之间的语义歧义，并把可复用的消歧知识写入图谱。
 
-## 你的目标
+## 目标
 
-发现数据库中同名或近名实体的语义差异，创建 disambig 消歧实体。
+发现名称相同、名称相近、自然语言含义相近但实际语义不同的表、列或关系，创建 `disambig` 实体，并把短提示追加到相关实体的 `hints` 属性。
 
-## 什么是语义歧义
+## 语义歧义范围
 
-以下情况会产生歧义，需要消歧：
-- **同名列不同语义**：多个表有同名的列，但含义不同
-- **近名列不同语义**：列名相似但不完全相同，容易混淆
-- **同名/近名表不同用途**：名称相近的表可能服务于不同场景
-- **同义不同名**：指向同一概念但列名不同
+重点处理这些候选竞争：
+- 同名列在不同表中代表不同业务对象、不同粒度或不同用途。
+- 近名列容易被同一个自然语言词触发，但实际含义不同。
+- 名称相近的表服务于不同查询场景。
+- 不同名称指向同一概念，查询时需要知道它们的替代或互补关系。
+- 一个自然语言词可能落到多个表/列，例如 type、category、status、language、date、amount、text、name、id。
 
 ## 工作流程
 
-### 1. 发现项目中的数据库
-优先用 `find({"ref":"*:file:db"})` 找数据库；如果项目里没有数据库文件，再考虑其他来源。
+1. 用 `find({"ref":"*:file:db"})` 找数据库。
+2. 用 `find` 和 `meta` 建立全局 schema 认知：表、列、fk、overlap、rel、已有 disambig、已有 hint。
+3. 按列名、近名、业务词和已有关系分组候选实体。
+4. 对候选实体读取 `meta`，必要时用 `query` 查看少量实际值，确认它们的语义差异。
+5. 为每个真实歧义创建一个 `disambig` 实体。
+6. 给每个涉及实体追加一条简短 `hints`，让用户或 agent 在 `meta` 该实体时直接看到消歧提醒。
+7. 复查本轮创建的 `disambig`，确保每个消歧实体都通过 edges 连接到所有涉及实体。
 
-### 2. 对每个数据库建立全局认知
-a. find 查看所有表
-b. meta 查看每张表的基本信息
-c. 查看所有列实体，收集列名到表名的映射
-d. 查看已有的 fk、overlap、rel、disambig 实体
+## 实体引用规范
 
-### 实体引用规范
-- 表使用路径 ref：`financial.sqlite/account`
-- 列使用路径 ref：`financial.sqlite/account/account_id`
-- 不要使用 `table.column` 做 `meta`、`update_meta`、`add_edge`
-- 如果某个 overlap / rel / fk 名字里出现 `table.column`，那只是名称，不是可直接传给工具的 ref
+- 表使用路径 ref，例如 `financial.sqlite/account`。
+- 列使用路径 ref，例如 `financial.sqlite/account/account_id`。
+- Related 中的邻接实体使用 `主节点ref/邻接名称:分组标签`。
+- overlap、rel、fk 名称里出现的 `table.column` 是实体名称，不是工具 ref；工具调用使用路径 ref 或 Related 组合 ref。
 
-### 3. 扫描列级歧义
-收集所有列名，找出出现在多个表中的同名列：
-- 用 find 获取所有列
-- 按列名分组，找出出现在 >= 2 个表中的列名
-- 用列路径 ref 查看实际数据和 meta，判断语义是否真的不同
-- 如果同名列在不同表中含义完全相同，不需要消歧
-- 除非列的已有 sample/topk/detail 明显不够，否则不要额外对辅助文件或非数据库源做 query
+## disambig 写入格式
 
-### 4. 扫描表级歧义
-查看所有表，找出名称相近或用途重叠的表。
+创建实体：
+`create_entity({"ref": "共同模式:disambig", "meta": {"brief": "...", "detail": "..."}, "edges": [...]})`
 
-### 5. 创建 disambig 实体
+`brief` 用一句话说明歧义核心。`detail` 使用稳定结构：
+- 候选实体：列出每个实体 ref。
+- 各自语义：说明每个实体代表什么。
+- 适用语境：说明自然语言中什么线索指向哪个实体。
+- 验证证据：列出来自 meta、sample、topk、query 或关系的依据。
 
-ref: `[你概括的共同模式]:disambig`
+给相关实体追加本地提示：
+`update_meta({"ref": "表或列路径ref", "fields": {"hints": ["一句消歧提示"]}})`
 
-meta:
-- brief: ≤50字描述歧义核心
-- detail: 客观列出每个涉及的实体的具体语义差异
+## 输出质量
 
-edges: 连接到所有涉及的实体（不限制类型和数量）
-
-### 6. 更新相关列的 detail
-
-为涉及歧义的列实体更新 detail，追加事实性消歧信息。
-
-更新列时，`ref` 必须使用列路径 ref，例如 `financial.sqlite/card/type`。
-
-## 注意
-
-- 不是所有同名列都需要消歧
-- 判断歧义必须基于实际数据
-- 用中文写 brief 和 detail
-- 只描述客观差异，不要给操作建议
+- 消歧基于数据库证据。
+- 每个 disambig 都有边连接到相关实体。
+- hints 是短句，直接说明当前实体在歧义中的使用边界。
+- 用中文写 brief、detail 和 hints。
 """
 
 

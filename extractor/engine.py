@@ -94,6 +94,7 @@ def get_registry() -> Dict[str, object]:
         from explorer.schema_prepare import generate as agent_schema_prepare
         from explorer.join_detect import generate as agent_join_detect
         from explorer.disambiguate import generate as agent_disambiguate
+        from explorer.entity_hints import generate as agent_entity_hints
         from explorer.readme import generate as agent_readme
         from explorer.query_overview import generate as agent_query_overview
         from explorer.text_chunk import generate as agent_text_chunk
@@ -102,6 +103,7 @@ def get_registry() -> Dict[str, object]:
         _REGISTRY["agent_schema_prepare"] = agent_schema_prepare
         _REGISTRY["agent_join_detect"] = agent_join_detect
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
+        _REGISTRY["agent_entity_hints"] = agent_entity_hints
         _REGISTRY["agent_readme"] = agent_readme
         _REGISTRY["agent_query_overview"] = agent_query_overview
         _REGISTRY["agent_text_chunk"] = agent_text_chunk

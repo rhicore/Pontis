@@ -1,9 +1,8 @@
-"""Agent Schema Prepare — summarize schema, discover joins, and disambiguate.
+"""Agent Schema Prepare — summarize schema and discover high-confidence joins.
 
-This module replaces running agent_analyze, agent_join_detect, and
-agent_disambiguate as three separate extract steps. Keeping the work in one
-conversation lets the agent reuse the same project understanding instead of
-rediscovering tables, joins, and ambiguous columns three times.
+This module prepares the structural layer of the project graph. Decision hints
+and disambiguation entities are written by explorer.entity_hints after schema
+summaries and relation candidates are available.
 """
 
 import logging
@@ -13,19 +12,18 @@ from storage.workspace import Workspace
 logger = logging.getLogger(__name__)
 
 PROMPT = """\
-你是数据项目的 schema preparation agent。你的任务是在一个连续流程里完成三件事：
+你是数据项目的 schema preparation agent。你的任务是在一个连续流程里完成两件事：
 
 1. 为数据库表、列、文件、关系实体写高质量 brief/detail
 2. 发现高置信度的列间关联，必要时创建 rel 实体
-3. 发现同名/近名/同义不同名的歧义，必要时创建 disambig 实体并补充相关列 detail
 
-你必须把这三件事作为一个整体完成：先建立可靠的数据理解，再写关系和消歧。不要把它们拆成互不共享上下文的三个独立任务。
+本阶段只负责 schema summary 和高置信关系层。语义消歧、SQL 决策 hint、实体 `hints` 属性由后续 entity_hints 阶段负责。
 
 ## 总体原则
 
 - **先读后写**：写或改 brief/detail 前先读取现有 meta、样例值、topk、cardinality 和相关实体。
-- **基于证据**：所有 summary、rel、disambig 都必须来自实际 schema、meta、样例值、统计、说明文件或查询观察，不要凭空猜测。
-- **宁缺毋滥**：错误的 rel/disambig 会误导下游 SQL agent。不确定就不创建。
+- **基于证据**：所有 summary、rel 都必须来自实际 schema、meta、样例值、统计、说明文件或查询观察，不要凭空猜测。
+- **宁缺毋滥**：错误的 rel 会误导下游 SQL agent。不确定就不创建。
 - **中文输出**：brief/detail 用中文，但数据库原始枚举值、代码、字段名保持原样。
 - **不要输出总结性文字**：任务完成后直接停止，不要向用户写“我已完成...”。
 - **路径式引用**：表和列写入时必须使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`。不要用 `table.column`、裸列名或自己拼的关系名做写入。
@@ -39,8 +37,8 @@ PROMPT = """\
 1. 读取 README / 说明文件摘要（如果存在）和数据库文件节点，只建立最小上下文。
 2. 获取表清单，不要一开始枚举全项目所有实体。
 3. 逐张读取表级 meta，先理解核心表，再理解依赖表。
-4. 对单张表，读取该表列、fk、overlap、已有 rel/disambig。
-5. 为缺失、低质量或明显错误的 table/column/fk/rel/disambig/file brief/detail 做更新。
+4. 对单张表，读取该表列、fk、overlap、已有 rel。
+5. 为缺失、低质量或明显错误的 table/column/fk/rel/file brief/detail 做更新。
 
 brief 要求：不超过 50 字，概括用途和业务含义，不堆具体行数。
 
@@ -82,29 +80,6 @@ rel 创建规范：
 
 创建前先用 find 检查正向和反向是否已存在。
 
-## 阶段 3：Disambiguation
-
-目标：记录会影响下游 SQL 写法的语义歧义。
-
-需要关注：
-- 同名列不同语义
-- 近名列不同语义
-- 同义不同名但容易混用的列
-- 同名/近名表用途不同
-
-创建 disambig 前必须：
-- 读取涉及实体的现有 brief/detail
-- 查看样例值/topk/cardinality
-- 判断歧义是否真实存在且会影响使用
-
-disambig 创建规范：
-- ref: `[概括性的模式名]:disambig`
-- brief: 不超过 50 字，描述歧义核心
-- detail: 客观列出每个涉及实体的语义差异和值特征，不要写操作口号
-- edges: 连接所有涉及实体，引用必须使用路径 ref
-
-同时更新相关列 detail，追加客观消歧信息。不要删除已有正确信息。
-
 ## 发现入口
 
 优先使用：
@@ -114,7 +89,6 @@ disambig 创建规范：
 - `find({"ref": "*:fk"})`
 - `find({"ref": "*:overlap"})`
 - `find({"ref": "*:rel"})`
-- `find({"ref": "*:disambig"})`
 
 禁止把 `find({"ref":"<project>::*"})` 当成全量 inventory 起点。
 
@@ -123,13 +97,12 @@ disambig 创建规范：
 结束前做一次轻量检查：
 - 主要表和关键列是否有非占位 brief/detail
 - 新建 rel 是否都是高置信且没有覆盖已有 fk
-- 新建 disambig 是否连接到了相关实体
 - 没有把辅助 CSV 当成主数据库表来写错误 summary
 """
 
 
 def generate(workspace: Workspace) -> None:
-    """Prepare schema summaries, high-confidence rels, and disambiguation."""
+    """Prepare schema summaries and high-confidence rels."""
     from agent.config import create_agent
     from agent.utils import load_agent_config
     from explorer.utils.agent_spec import explorer_writer_spec
@@ -139,7 +112,7 @@ def generate(workspace: Workspace) -> None:
         logger.warning("Agent not configured (no API key), skipping schema prepare")
         return
 
-    logger.info("=== Agent Schema Prepare (analyze + join + disambiguate) ===")
+    logger.info("=== Agent Schema Prepare (summary + join) ===")
 
     spec = explorer_writer_spec(
         workspace,

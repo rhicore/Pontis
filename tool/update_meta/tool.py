@@ -1,8 +1,43 @@
 """Update meta tool — 更新实体元数据。"""
 
+import json
+
 from tool.utils.resolve import resolve_entity_selector, selector_match_pattern, selector_params
 
-_ALLOWED_FIELDS = {"brief", "detail"}
+_ALLOWED_FIELDS = {"brief", "detail", "hints"}
+
+
+def _normalize_hints(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                return _normalize_hints(parsed)
+        lines = [line.strip() for line in text.splitlines()]
+        return [line for line in lines if line]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _merge_hints(existing, incoming) -> list[str]:
+    merged = []
+    seen = set()
+    for hint in _normalize_hints(existing) + _normalize_hints(incoming):
+        key = hint.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(hint)
+    return merged
 
 
 def _split_project_ref(ref: str) -> tuple[str | None, str]:
@@ -35,6 +70,15 @@ def update_meta_command(workspace, ref: str, fields: dict) -> str:
     if selector.get("project"):
         project = selector["project"]
     match = selector_match_pattern(selector, "n")
+    if "hints" in safe_fields:
+        current_rows = workspace.cypher(
+            f"MATCH {match} RETURN n",
+            params=selector_params(selector),
+            project=project,
+        )
+        existing_hints = (current_rows[0].get("n") or {}).get("hints") if current_rows else None
+        safe_fields["hints"] = _merge_hints(existing_hints, safe_fields.get("hints"))
+
     rows = workspace.cypher(
         f"MATCH {match} SET n += $props RETURN n",
         params=selector_params(selector, {"props": safe_fields}),

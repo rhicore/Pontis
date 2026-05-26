@@ -4,7 +4,7 @@ DESCRIPTION = "发现图谱实体。ref 必填；无 query 时列出 ref 匹配�
 
 DETAIL = """\
 参数：
-- ref (必填): 图谱 ref 模式，用于限定实体范围，例如 `*:db`, `db.sqlite:db/*:table`, `db.sqlite:db/table:table/*:col`, `*:knowledge`
+- ref (必填): 图谱 ref 模式，用于限定实体范围，例如 `*:db`, `db.sqlite:db/*:table`, `db.sqlite:db/yearmonth:table/*:col`, `*:knowledge`
 - query: 自然语言检索词，例如 `track number`, `creatinine normal range`
 - offset: 起始位置
 - limit: 每页最大条数
@@ -25,15 +25,15 @@ ref 是图谱路径表达式。未带 project 路由时在当前打开的全部 
 | 语法 | 含义 |
 |---|---|
 | `pattern` | 按实体 name 匹配；支持 `*` 通配 |
-| `pattern:label` | 同时匹配名称和标签 |
-| `pattern:label1:label2` | 同时具备多个标签 |
-| `pattern:label1|label2` | 具备任一标签 |
+| `entity_name:label` | 匹配指定 name 和标签，例如 `yearmonth:table` |
+| `entity_name:label1:label2` | 匹配指定 name 和多个标签 |
+| `entity_name:label1|label2` | 匹配指定 name 和任一标签 |
 | `seg1/seg2/seg3` | 沿图边逐段匹配相邻实体 |
 | `db.sqlite:db/*:table` | 匹配某个数据库下的表 |
-| `db.sqlite:db/table:table/*:col` | 匹配某个表下的列 |
+| `db.sqlite:db/yearmonth:table/*:col` | 匹配 `yearmonth` 表下的列 |
 
 `ref + query` 先用 ref 限定候选实体，再按 query 在候选实体的 name / brief / detail 中排序。
-返回结果第一列与输入 ref 使用同一套路径逻辑，可直接给 `meta`。列路径直接扩展表 ref：`table_ref/column:col`。
+返回结果第一列与输入 ref 使用同一套路径逻辑，可直接给 `meta`。列路径直接扩展表 ref：`db.sqlite:db/yearmonth:table/Consumption:col`。
 """
 
 

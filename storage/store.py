@@ -89,6 +89,12 @@ class Store:
     def execute_cypher(self, query: str, params: dict = None) -> list:
         return self._graph.execute_cypher(query, params=params)
 
+    def clear_graph(self) -> None:
+        """Remove all nodes and relationships for this project graph."""
+        with self.execution_lock:
+            self.execute_cypher("MATCH (n) DETACH DELETE n")
+            self.invalidate_modules()
+
     def publish_modules(self, modules: list, *, force: bool = False) -> None:
         """Execute selected source-module Cypher submissions."""
         for mod in modules:

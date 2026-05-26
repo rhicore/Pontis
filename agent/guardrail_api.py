@@ -10,7 +10,7 @@
   - 全 allow → 正常执行
 """
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
 
@@ -28,17 +28,45 @@ class CallVerdict:
     modified_args: Optional[dict] = None
 
 
+@dataclass
+class PostToolAction:
+    """工具执行后的同步动作。
+
+    replace_result:
+      显式替换当前 tool_result。默认不替换。
+
+    append_messages:
+      追加给主 agent 的独立消息。适合 nudge、attachment、同步 hook 结果。
+
+    trace_messages:
+      仅写入事件流/日志，不追加给主 agent。适合记录异步 fork 启动等
+      不应改变模型行为的框架事件。
+    """
+    replace_result: Optional[str] = None
+    append_messages: List[str] = field(default_factory=list)
+    trace_messages: List[str] = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return (
+            self.replace_result is None
+            and not self.append_messages
+            and not self.trace_messages
+        )
+
+
 class GuardrailContext:
     """Guardrail 最小 API — 框架级，无业务逻辑。"""
 
     def __init__(self, *, messages: list, tool_history: list,
                  workspace, rounds: int,
-                 pending_calls: List[Tuple[str, dict]]):
+                 pending_calls: List[Tuple[str, dict]],
+                 agent=None):
         self._messages = messages
         self._tool_history = tool_history
         self._workspace = workspace
         self.rounds = rounds
         self.pending_calls = pending_calls
+        self.agent = agent
 
     # ── 类型判断 ──
 
@@ -94,8 +122,16 @@ class Guardrail(ABC):
         """检查当前 LLM 响应，返回 per-call 裁决。"""
         return {}
 
-    def post_check(self, ctx: GuardrailContext,
-                   call_index: int, name: str, args: dict,
-                   result: str) -> Optional[str]:
-        """执行后：观察或修改工具返回结果。返回修改后的字符串或 None。"""
+    def post_tool(self, ctx: GuardrailContext,
+                  call_index: int, name: str, args: dict,
+                  result: str) -> Optional[PostToolAction]:
+        """工具执行后：观察结果、追加消息、显式替换结果或启动后台任务。"""
         return None
+
+    def drain_ready(self, ctx: GuardrailContext) -> List[str]:
+        """返回已准备好的异步补充消息。
+
+        该 hook 用于非阻塞 sidechain/prefetch：post_tool 可以启动后台任务，
+        drain_ready 只消费已经完成的结果，不应阻塞主 agent。
+        """
+        return []

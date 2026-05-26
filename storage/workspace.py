@@ -136,6 +136,13 @@ class Workspace:
             store.invalidate_modules(modules)
             store.publish_modules(selected, force=True)
 
+    def clear_graph(self, project: str = None) -> None:
+        """Remove all nodes and relationships from the selected project graph."""
+        store = self._get_store(project)
+        if not store:
+            return
+        store.clear_graph()
+
     def _modules_for_query(self, modules: list, parsed, raw_query: str = "") -> list:
         event = TriggerEvent(type="query", project="", query=raw_query, parsed_query=parsed)
         return self._modules_for_event(modules, event)

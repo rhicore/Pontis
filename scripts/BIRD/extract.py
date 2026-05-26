@@ -37,6 +37,7 @@ AI_PIPELINE = [
 
 AGENT_PIPELINE = [
     "agent_schema_prepare",
+    "agent_entity_hints",
     "agent_readme",
 ]
 
@@ -79,6 +80,9 @@ def extract_one(
         logger.info(f"  已删除旧 preprocess 输出: {name}")
 
     workspace, config = init_workspace(str(db_dir), verbose=debug)
+    if force:
+        workspace.clear_graph()
+        logger.info(f"  已清空 Neo4j 图谱: {name}")
     pontis_dir.mkdir(parents=True, exist_ok=True)
 
     result = {
@@ -91,6 +95,7 @@ def extract_one(
         "schema_prepare": 0.0,
         "join_detect": 0.0,
         "disambiguate": 0.0,
+        "entity_hints": 0.0,
         "readme": 0.0,
         "query_overview": 0.0,
         "embedding": 0.0,
@@ -151,6 +156,7 @@ def extract_one(
             result["agent"] = result["schema_prepare"]
             result["join_detect"] = agent_timings.get("agent_join_detect", 0.0)
             result["disambiguate"] = agent_timings.get("agent_disambiguate", 0.0)
+            result["entity_hints"] = agent_timings.get("agent_entity_hints", 0.0)
             result["readme"] = agent_timings.get("agent_readme", 0.0)
 
             if result["ai_columns"]:
@@ -165,6 +171,8 @@ def extract_one(
                 logger.info(f"Join detect phase done: {result['join_detect']:.1f}s")
             if result["disambiguate"]:
                 logger.info(f"Disambiguate phase done: {result['disambiguate']:.1f}s")
+            if result["entity_hints"]:
+                logger.info(f"Entity hints phase done: {result['entity_hints']:.1f}s")
             if result["readme"]:
                 logger.info(f"README phase done: {result['readme']:.1f}s")
 
@@ -223,13 +231,22 @@ def _parse_column_workers(argv: list[str]) -> int | None:
     return None
 
 
+def _parse_modules(argv: list[str]) -> list[str] | None:
+    for i, arg in enumerate(argv):
+        if arg == "--modules" and i + 1 < len(argv):
+            return [name.strip() for name in argv[i + 1].split(",") if name.strip()]
+        if arg.startswith("--modules="):
+            return [name.strip() for name in arg.split("=", 1)[1].split(",") if name.strip()]
+    return None
+
+
 def _parse_db_filter(argv: list[str]) -> str | None:
     skip_next = False
     for arg in argv:
         if skip_next:
             skip_next = False
             continue
-        if arg in {"--run-id", "--workers", "--column-workers"}:
+        if arg in {"--run-id", "--workers", "--column-workers", "--modules"}:
             skip_next = True
             continue
         if arg.startswith("--"):
@@ -247,6 +264,7 @@ def main() -> None:
     args = set(argv)
     workers = _parse_workers(argv)
     column_workers = _parse_column_workers(argv)
+    selected_modules = _parse_modules(argv)
     db_filter = _parse_db_filter(argv)
 
     no_ai = "--no-ai" in args or "--static-only" in args
@@ -271,7 +289,9 @@ def main() -> None:
             print(f"Error: database '{db_filter}' not found")
             sys.exit(1)
 
-    if no_ai:
+    if selected_modules:
+        mode = f"selected modules: {','.join(selected_modules)}"
+    elif no_ai:
         mode = "static only"
     elif agent_only:
         mode = "static + agent only" if not ai_only else "agent only"
@@ -285,16 +305,73 @@ def main() -> None:
     print(f"Run id: {get_run_id()}")
     print(f"Preprocess logs: {PONTIS_WORKSPACE_ROOT / 'preprocess_logs' / get_run_name(train)}\n")
 
+    registry = get_registry()
+    if selected_modules:
+        unknown_modules = [name for name in selected_modules if name not in registry]
+        if unknown_modules:
+            print(f"Error: unknown module(s): {', '.join(unknown_modules)}")
+            sys.exit(1)
+
     success, failed = [], []
     all_results = []
     total_static = total_ai_col = total_ai_tbl = total_ai_db = 0.0
-    total_agent = total_join = total_disambig = total_readme = 0.0
+    total_agent = total_join = total_disambig = total_entity_hints = total_readme = 0.0
     total_preprocess_llm_tokens = 0
     total_preprocess_embedding_tokens = 0
     total_preprocess_tokens = 0
 
     def run_db(db_dir: Path) -> dict:
         name = db_dir.name
+        if selected_modules:
+            from extractor.engine import RunOptions, init_workspace, run_modules
+
+            workspace, config = init_workspace(str(db_dir), verbose=debug)
+            pontis_dir = get_preprocess_dir(name, train)
+            if force:
+                workspace.clear_graph()
+                logger.info(f"  已清空 Neo4j 图谱: {name}")
+            pontis_dir.mkdir(parents=True, exist_ok=True)
+            result = {
+                "name": name,
+                "static": 0.0,
+                "ai_columns": 0.0,
+                "ai_tables": 0.0,
+                "ai_db": 0.0,
+                "agent": 0.0,
+                "schema_prepare": 0.0,
+                "join_detect": 0.0,
+                "disambiguate": 0.0,
+                "entity_hints": 0.0,
+                "readme": 0.0,
+                "query_overview": 0.0,
+                "embedding": 0.0,
+                "preprocess_llm_calls": 0,
+                "preprocess_llm_input_tokens": 0,
+                "preprocess_llm_output_tokens": 0,
+                "preprocess_llm_total_tokens": 0,
+                "preprocess_embedding_calls": 0,
+                "preprocess_embedding_input_tokens": 0,
+                "preprocess_embedding_total_tokens": 0,
+                "preprocess_total_tokens": 0,
+            }
+            with file_log_handler(str(pontis_dir / "extract.log")):
+                logger.info(f"=== {name} selected modules ===")
+                timings = run_modules(
+                    selected_modules,
+                    workspace,
+                    config=config,
+                    options=RunOptions(continue_on_error=True, collect_timing=True),
+                )
+                result["schema_prepare"] = timings.get("agent_schema_prepare", 0.0)
+                result["agent"] = result["schema_prepare"]
+                result["join_detect"] = timings.get("agent_join_detect", 0.0)
+                result["disambiguate"] = timings.get("agent_disambiguate", 0.0)
+                result["entity_hints"] = timings.get("agent_entity_hints", 0.0)
+                result["readme"] = timings.get("agent_readme", 0.0)
+                if hasattr(config, "get_preprocess_token_metrics"):
+                    result.update(config.get_preprocess_token_metrics())
+                logger.info(f"=== {name} selected modules done ===")
+            return result
         return extract_one(
             str(db_dir),
             preprocess_dir=get_preprocess_dir(name, train),
@@ -309,7 +386,7 @@ def main() -> None:
 
     def record_result(result: dict) -> None:
         nonlocal total_static, total_ai_col, total_ai_tbl, total_ai_db
-        nonlocal total_agent, total_join, total_disambig, total_readme
+        nonlocal total_agent, total_join, total_disambig, total_entity_hints, total_readme
         nonlocal total_preprocess_llm_tokens, total_preprocess_embedding_tokens
         nonlocal total_preprocess_tokens
         total_static += result["static"]
@@ -319,6 +396,7 @@ def main() -> None:
         total_agent += result["agent"]
         total_join += result["join_detect"]
         total_disambig += result["disambiguate"]
+        total_entity_hints += result.get("entity_hints", 0.0)
         total_readme += result["readme"]
         total_preprocess_llm_tokens += int(result.get("preprocess_llm_total_tokens", 0) or 0)
         total_preprocess_embedding_tokens += int(result.get("preprocess_embedding_total_tokens", 0) or 0)
@@ -341,6 +419,8 @@ def main() -> None:
             parts.append(f"Join: {result['join_detect']:.1f}s")
         if result["disambiguate"]:
             parts.append(f"Disambig: {result['disambiguate']:.1f}s")
+        if result.get("entity_hints"):
+            parts.append(f"Hints: {result['entity_hints']:.1f}s")
         if result["readme"]:
             parts.append(f"README: {result['readme']:.1f}s")
         if result["embedding"]:
@@ -393,13 +473,14 @@ def main() -> None:
     print(f"Done: {len(success)} ok, {len(failed)} failed")
     total_all = (
         total_static + total_ai_col + total_ai_tbl + total_ai_db +
-        total_agent + total_join + total_disambig + total_readme
+        total_agent + total_join + total_disambig + total_entity_hints + total_readme
     )
     print(
         f"Time: static {total_static:.1f}s, AI cols {total_ai_col:.1f}s, "
         f"AI tables {total_ai_tbl:.1f}s, AI db {total_ai_db:.1f}s, "
         f"schema {total_agent:.1f}s, join {total_join:.1f}s, "
-        f"disambig {total_disambig:.1f}s, readme {total_readme:.1f}s, "
+        f"disambig {total_disambig:.1f}s, hints {total_entity_hints:.1f}s, "
+        f"readme {total_readme:.1f}s, "
         f"total {total_all:.1f}s"
     )
     print(
@@ -422,6 +503,7 @@ def main() -> None:
             "schema": total_agent,
             "join": total_join,
             "disambiguate": total_disambig,
+            "entity_hints": total_entity_hints,
             "readme": total_readme,
             "total": total_all,
         },

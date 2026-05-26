@@ -14,7 +14,8 @@ DETAIL = """\
 - ref 使用精确名称；通配匹配属于 find
 - 来源关系通过 edges 表达
 - 派生实体的 meta 写实体自身语义；来源文件、路径、父节点由边表达
-- edges 两端 ref 使用图谱路径；可来自 `find` 第一列，或由主节点 ref 追加 `meta` Related 邻接名称得到
+- edges 两端 ref 使用图谱路径；可来自 `find` 第一列，或由 Related 组合为 `主节点ref/邻接名称:分组标签`
+- 多实体决策知识统一创建为 `name:hint`，并通过 edges 连接所有相关实体
 """
 
 

@@ -1,12 +1,13 @@
-"""Submit BIRD benchmark on the node that hosts the long-running Neo4j job.
+"""Unified Slurm entrypoint for BIRD extract and benchmark jobs.
 
-Neo4j listens on localhost ports, so the benchmark must run on the same Slurm
-node as the persistent Pontis Neo4j job. This wrapper ensures that the required
-Neo4j projects are running first: it reuses the saved Neo4j job when available,
-or submits a long-running Neo4j job and waits for it to become ready. It then
-submits a shorter benchmark job with larger resources to the same node.
+Pontis local Neo4j instances listen on localhost ports, so BIRD jobs must run
+on the same Slurm node as the persistent Neo4j job. This wrapper reuses or
+starts that Neo4j job, waits until selected projects are ready, then submits
+the requested extract/benchmark job pinned to the same node.
 
-Benchmark arguments are passed after ``--``.
+Examples:
+    python -m scripts.BIRD.bird_slurm extract submit -- --workers 6
+    python -m scripts.BIRD.bird_slurm benchmark submit -- --workers 20 --db-workers 6
 """
 
 from __future__ import annotations
@@ -26,12 +27,36 @@ from scripts.neo4j_instances import DEFAULT_BASE_DIR, DEFAULT_ENV_FILE
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SLURM_DIR = DEFAULT_BASE_DIR.parent / "slurm"
-DEFAULT_JOB_NAME = "bird-benchmark"
 DEFAULT_NEO4J_JOB_NAME = "pontis-neo4j"
 
+TASKS = {
+    "benchmark": {
+        "module": "scripts.BIRD.run_bird_benchmark",
+        "default_job_name": "bird-benchmark",
+        "args_name": "benchmark_args",
+        "label": "BIRD benchmark",
+        "cpus": 16,
+        "mem": "64G",
+        "time": "1-00:00:00",
+    },
+    "extract": {
+        "module": "scripts.BIRD.extract",
+        "default_job_name": "bird-extract",
+        "args_name": "extract_args",
+        "label": "BIRD extract",
+        "cpus": 48,
+        "mem": "192G",
+        "time": "24:00:00",
+    },
+}
 
-def _safe_name(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or DEFAULT_JOB_NAME
+
+def _task_config(args: argparse.Namespace) -> dict:
+    return TASKS[args.task]
+
+
+def _safe_name(name: str, default: str = "bird-job") -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or default
 
 
 def _quote(parts: list[str | Path]) -> str:
@@ -44,9 +69,16 @@ def _split_csv(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def _benchmark_uses_bird_global(benchmark_args: list[str]) -> bool:
+def _task_args(args: argparse.Namespace) -> list[str]:
+    values = list(getattr(args, _task_config(args)["args_name"], []))
+    if values and values[0] == "--":
+        values = values[1:]
+    return values
+
+
+def _benchmark_uses_bird_global(task_args: list[str]) -> bool:
     use_bird = False
-    for arg in benchmark_args:
+    for arg in task_args:
         if arg == "--no-bird-global":
             use_bird = False
         elif arg == "--use-bird-global":
@@ -54,18 +86,38 @@ def _benchmark_uses_bird_global(benchmark_args: list[str]) -> bool:
     return use_bird
 
 
-def _benchmark_db_filter(benchmark_args: list[str]) -> list[str]:
+def _benchmark_db_filter(task_args: list[str]) -> list[str]:
     dbs: list[str] = []
     index = 0
-    while index < len(benchmark_args):
-        arg = benchmark_args[index]
-        if arg == "--db" and index + 1 < len(benchmark_args):
-            dbs.extend(_split_csv(benchmark_args[index + 1]))
+    while index < len(task_args):
+        arg = task_args[index]
+        if arg == "--db" and index + 1 < len(task_args):
+            dbs.extend(_split_csv(task_args[index + 1]))
             index += 2
             continue
         if arg.startswith("--db="):
             dbs.extend(_split_csv(arg.split("=", 1)[1]))
         index += 1
+    return dbs
+
+
+def _extract_db_filter(task_args: list[str]) -> list[str]:
+    dbs: list[str] = []
+    index = 0
+    skip_value_for = {"--run-id", "--workers", "--column-workers", "--modules"}
+    while index < len(task_args):
+        arg = task_args[index]
+        if arg in skip_value_for:
+            index += 2
+            continue
+        if arg.startswith("--run-id="):
+            index += 1
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        dbs.extend(_split_csv(arg))
+        break
     return dbs
 
 
@@ -85,10 +137,15 @@ def _selected_projects(args: argparse.Namespace) -> list[str]:
         return explicit
 
     config_path = Path(args.config).expanduser()
-    selected = _benchmark_db_filter(args.benchmark_args)
-    projects = selected or _configured_bird_dev_projects(config_path)
-    if _benchmark_uses_bird_global(args.benchmark_args):
-        projects = ["bird", *projects]
+    task_args = _task_args(args)
+    if args.task == "benchmark":
+        selected = _benchmark_db_filter(task_args)
+        projects = selected or _configured_bird_dev_projects(config_path)
+        if _benchmark_uses_bird_global(task_args):
+            projects = ["bird", *projects]
+    else:
+        selected = _extract_db_filter(task_args)
+        projects = selected or _configured_bird_dev_projects(config_path)
 
     deduped: list[str] = []
     for project in projects:
@@ -133,24 +190,25 @@ def _instance_status_command(args: argparse.Namespace, projects: list[str]) -> s
     )
 
 
-def _benchmark_command(args: argparse.Namespace) -> str:
+def _job_command(args: argparse.Namespace) -> str:
     return _quote(
         [
             *_python(args),
             "-m",
-            "scripts.BIRD.run_bird_benchmark",
-            *args.benchmark_args,
+            _task_config(args)["module"],
+            *_task_args(args),
         ]
     )
 
 
 def _node_file(args: argparse.Namespace) -> Path:
-    name = _safe_name(args.neo4j_job_name)
+    name = _safe_name(args.neo4j_job_name, DEFAULT_NEO4J_JOB_NAME)
     return Path(args.neo4j_slurm_dir).expanduser() / f"{name}.node"
 
 
 def _job_id_file(args: argparse.Namespace) -> Path:
-    return Path(args.slurm_dir).expanduser() / f"{_safe_name(args.job_name)}.jobid"
+    default = _task_config(args)["default_job_name"]
+    return Path(args.slurm_dir).expanduser() / f"{_safe_name(args.job_name, default)}.jobid"
 
 
 def _read_saved_neo4j_job(args: argparse.Namespace) -> tuple[str, str]:
@@ -347,17 +405,19 @@ def _ensure_neo4j_ready(args: argparse.Namespace, projects: list[str]) -> tuple[
 
 
 def _write_batch_script(args: argparse.Namespace, projects: list[str], neo4j_job: str, node: str) -> Path:
+    config = _task_config(args)
     slurm_dir = Path(args.slurm_dir).expanduser()
     slurm_dir.mkdir(parents=True, exist_ok=True)
 
-    job_name = _safe_name(args.job_name)
+    job_name = _safe_name(args.job_name, config["default_job_name"])
     script_path = slurm_dir / f"{job_name}.sbatch"
     node_file = slurm_dir / f"{job_name}.node"
     projects_file = slurm_dir / f"{job_name}.projects.json"
     projects_file.write_text(json.dumps(projects, indent=2) + "\n", encoding="utf-8")
 
     status_cmd = _instance_status_command(args, projects)
-    benchmark_cmd = _benchmark_command(args)
+    job_cmd = _job_command(args)
+    label = config["label"]
 
     script_path.write_text(
         "\n".join(
@@ -382,13 +442,13 @@ def _write_batch_script(args: argparse.Namespace, projects: list[str], neo4j_job
                 "echo \"Checking Pontis Neo4j status at $(date)\"",
                 f"{status_cmd}",
                 "",
-                "echo \"Running BIRD benchmark at $(date)\"",
+                f"echo \"Running {label} at $(date)\"",
                 "set +e",
-                f"{benchmark_cmd}",
-                "benchmark_status=$?",
+                f"{job_cmd}",
+                "job_status=$?",
                 "set -e",
-                "echo \"BIRD benchmark exited with ${benchmark_status} at $(date)\"",
-                "exit ${benchmark_status}",
+                f"echo \"{label} exited with ${{job_status}} at $(date)\"",
+                "exit ${job_status}",
                 "",
             ]
         ),
@@ -452,7 +512,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(result.stderr.rstrip(), file=sys.stderr)
 
     slurm_dir = Path(args.slurm_dir).expanduser()
-    job_name = _safe_name(args.job_name)
+    job_name = _safe_name(args.job_name, _task_config(args)["default_job_name"])
     for suffix in ("node", "projects.json"):
         path = slurm_dir / f"{job_name}.{suffix}"
         if path.exists():
@@ -465,76 +525,82 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     return subprocess.run(["scancel", job_id], text=True, check=False).returncode
 
 
+def _add_job_args(subparser: argparse.ArgumentParser, default_job_name: str):
+    subparser.add_argument("--job-name", default=default_job_name)
+    subparser.add_argument("--slurm-dir", default=str(DEFAULT_SLURM_DIR))
+
+
+def _add_submit_args(subparser: argparse.ArgumentParser, task: str):
+    config = TASKS[task]
+    _add_job_args(subparser, config["default_job_name"])
+    subparser.add_argument("--partition", "-p", default="small")
+    subparser.add_argument("--cpus-per-task", type=int, default=config["cpus"])
+    subparser.add_argument("--mem", default=config["mem"])
+    subparser.add_argument("--time", default=config["time"])
+    subparser.add_argument("--config", default=str(ROOT / "pontis.yml"))
+    subparser.add_argument("--env-file", default=str(DEFAULT_ENV_FILE))
+    subparser.add_argument("--base-dir", default=str(DEFAULT_BASE_DIR))
+    subparser.add_argument("--heap-initial", default="128m")
+    subparser.add_argument("--heap-max", default="256m")
+    subparser.add_argument("--pagecache", default="64m")
+    subparser.add_argument("--python-command", default="uv run python")
+    subparser.add_argument("--neo4j-job-name", default=DEFAULT_NEO4J_JOB_NAME)
+    subparser.add_argument("--neo4j-slurm-dir", default=str(DEFAULT_SLURM_DIR))
+    subparser.add_argument("--neo4j-job-id")
+    subparser.add_argument("--node", help="Override Neo4j node, e.g. GPU39")
+    subparser.add_argument("--no-auto-start-neo4j", action="store_true")
+    subparser.add_argument("--neo4j-partition", default="small")
+    subparser.add_argument("--neo4j-cpus-per-task", type=int, default=4)
+    subparser.add_argument("--neo4j-mem", default="24G")
+    subparser.add_argument("--neo4j-time", default="10-00:00:00")
+    subparser.add_argument("--neo4j-start-grace", type=float, default=4.0)
+    subparser.add_argument("--neo4j-stop-timeout", type=float, default=20.0)
+    subparser.add_argument("--neo4j-check-interval", type=int, default=60)
+    subparser.add_argument("--neo4j-ready-timeout", type=float, default=300.0)
+    subparser.add_argument("--neo4j-ready-poll", type=float, default=10.0)
+    subparser.add_argument("--dry-run", action="store_true", help="Write the sbatch script but do not submit it")
+    subparser.add_argument(
+        "--neo4j-projects",
+        help="Comma-separated Pontis projects to check. Default: selected BIRD dev projects.",
+    )
+    subparser.add_argument(
+        config["args_name"],
+        nargs=argparse.REMAINDER,
+        help=f"Arguments passed to {config['module']} after --",
+    )
+    subparser.set_defaults(func=cmd_submit, task=task)
+
+
+def _add_status_cancel_args(subparser: argparse.ArgumentParser, task: str, func):
+    _add_job_args(subparser, TASKS[task]["default_job_name"])
+    subparser.add_argument("--job-id")
+    subparser.set_defaults(func=func, task=task)
+
+
+def _add_task_parser(subparsers: argparse._SubParsersAction, task: str):
+    task_parser = subparsers.add_parser(task, help=f"Submit/status/cancel BIRD {task} jobs")
+    task_subparsers = task_parser.add_subparsers(dest="command", required=True)
+
+    submit = task_subparsers.add_parser("submit", help=f"Submit {TASKS[task]['module']} on the Neo4j node")
+    _add_submit_args(submit, task)
+
+    status = task_subparsers.add_parser("status", help=f"Show saved BIRD {task} Slurm job status")
+    _add_status_cancel_args(status, task, cmd_status)
+
+    cancel = task_subparsers.add_parser("cancel", help=f"Cancel saved BIRD {task} Slurm job")
+    _add_status_cancel_args(cancel, task, cmd_cancel)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    def add_job_args(subparser: argparse.ArgumentParser):
-        subparser.add_argument("--job-name", default=DEFAULT_JOB_NAME)
-        subparser.add_argument("--slurm-dir", default=str(DEFAULT_SLURM_DIR))
-
-    submit = subparsers.add_parser(
-        "submit",
-        help="Submit scripts.BIRD.run_bird_benchmark on the persistent Neo4j node",
-    )
-    add_job_args(submit)
-    submit.add_argument("--partition", "-p", default="small")
-    submit.add_argument("--cpus-per-task", type=int, default=16)
-    submit.add_argument("--mem", default="64G")
-    submit.add_argument("--time", default="1-00:00:00")
-    submit.add_argument("--config", default=str(ROOT / "pontis.yml"))
-    submit.add_argument("--env-file", default=str(DEFAULT_ENV_FILE))
-    submit.add_argument("--base-dir", default=str(DEFAULT_BASE_DIR))
-    submit.add_argument("--heap-initial", default="128m")
-    submit.add_argument("--heap-max", default="256m")
-    submit.add_argument("--pagecache", default="64m")
-    submit.add_argument("--python-command", default="uv run python")
-    submit.add_argument("--neo4j-job-name", default=DEFAULT_NEO4J_JOB_NAME)
-    submit.add_argument("--neo4j-slurm-dir", default=str(DEFAULT_SLURM_DIR))
-    submit.add_argument("--neo4j-job-id")
-    submit.add_argument("--node", help="Override Neo4j node, e.g. GPU39")
-    submit.add_argument("--no-auto-start-neo4j", action="store_true")
-    submit.add_argument("--neo4j-partition", default="small")
-    submit.add_argument("--neo4j-cpus-per-task", type=int, default=4)
-    submit.add_argument("--neo4j-mem", default="24G")
-    submit.add_argument("--neo4j-time", default="10-00:00:00")
-    submit.add_argument("--neo4j-start-grace", type=float, default=4.0)
-    submit.add_argument("--neo4j-stop-timeout", type=float, default=20.0)
-    submit.add_argument("--neo4j-check-interval", type=int, default=60)
-    submit.add_argument("--neo4j-ready-timeout", type=float, default=300.0)
-    submit.add_argument("--neo4j-ready-poll", type=float, default=10.0)
-    submit.add_argument("--dry-run", action="store_true", help="Write the sbatch script but do not submit it")
-    submit.add_argument(
-        "--neo4j-projects",
-        help=(
-            "Comma-separated Pontis projects to check. Default: bird plus "
-            "configured BIRD dev projects, narrowed by benchmark --db when present."
-        ),
-    )
-    submit.add_argument(
-        "benchmark_args",
-        nargs=argparse.REMAINDER,
-        help="Arguments passed to scripts.BIRD.run_bird_benchmark after --",
-    )
-    submit.set_defaults(func=cmd_submit)
-
-    status = subparsers.add_parser("status", help="Show saved benchmark Slurm job status")
-    add_job_args(status)
-    status.add_argument("--job-id")
-    status.set_defaults(func=cmd_status)
-
-    cancel = subparsers.add_parser("cancel", help="Cancel saved benchmark Slurm job")
-    add_job_args(cancel)
-    cancel.add_argument("--job-id")
-    cancel.set_defaults(func=cmd_cancel)
-
+    subparsers = parser.add_subparsers(dest="task", required=True)
+    for task in TASKS:
+        _add_task_parser(subparsers, task)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if hasattr(args, "benchmark_args") and args.benchmark_args and args.benchmark_args[0] == "--":
-        args.benchmark_args = args.benchmark_args[1:]
     try:
         return args.func(args)
     except Exception as exc:

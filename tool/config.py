@@ -44,6 +44,9 @@ class MetaTypeConfig:
     adjacency_keys: Set[str] = field(default_factory=set)  # 默认显示的邻接类型
 
 
+ALWAYS_VISIBLE_ADJACENCY_KEYS: Set[str] = {"disambig", "hint"}
+
+
 # ========== 辅助函数 ==========
 
 def _v(d, key, default="-"):
@@ -115,20 +118,21 @@ INFO_TYPE_CONFIG = {
     # 结构段
     "table":    InfoTypeConfig(info_fn=lambda m: {
                     "stats": _count_stats(m, ("row_count", "rows"), ("column_count", "cols")),
-                    "links": ", ".join(filter(None, [_c(m,'fk'), _c(m,'rel')])),
+                    "links": ", ".join(filter(None, [_c(m,'fk'), _c(m,'rel'), _c(m,'hint')])),
                 }),
     "view":     InfoTypeConfig(info_fn=lambda m: {
                     "stats": f"{_v(m,'column_count')} cols",
-                    "links": ", ".join(filter(None, [_c(m,'fk'), _c(m,'disambig')])),
+                    "links": ", ".join(filter(None, [_c(m,'fk'), _c(m,'disambig'), _c(m,'hint')])),
                 }),
     "col":      InfoTypeConfig(info_fn=lambda m: {
-                    "links": ", ".join(filter(None, [_c(m,'rel'), _c(m,'fk'), _c(m,'disambig')])) or "-",
+                    "links": ", ".join(filter(None, [_c(m,'rel'), _c(m,'fk'), _c(m,'disambig'), _c(m,'hint')])) or "-",
                 }),
     # 关系段
     "fk":       InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     "rel":      InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     "overlap":  InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     "disambig": InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
+    "hint":     InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
     # 知识段
     "knowledge":    InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
     "pattern":     InfoTypeConfig(info_fn=lambda m: {
@@ -244,6 +248,10 @@ META_TYPE_CONFIG = {
     "disambig": MetaTypeConfig(
         default_keys=["level", "brief", "detail"],
     ),
+    "hint": MetaTypeConfig(
+        default_keys=["brief", "detail"],
+        max_detail_lines=None,
+    ),
     # 知识段
     "knowledge": MetaTypeConfig(
         default_keys=["brief", "detail"],
@@ -320,7 +328,7 @@ def resolve_meta_config(entity_labels: List[str]) -> MetaTypeConfig:
         "cardinality_lower_bound",
         "cardinality_upper_bound",
     }
-    merged_adjacency: Set[str] = set()
+    merged_adjacency: Set[str] = set(ALWAYS_VISIBLE_ADJACENCY_KEYS)
     seen_keys: Set[str] = set()
     merged_max_value_len: Optional[int] = 100
     merged_max_detail_lines: Optional[int] = 15
@@ -373,6 +381,7 @@ ENTITY_DEPENDENCY_RANK = {
     "fk": 3, "rel": 3, "overlap": 3,
     # Rank 4: 语义消歧
     "disambig": 4,
+    "hint": 4,
 }
 
 

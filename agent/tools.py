@@ -70,7 +70,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "Graph ref pattern, e.g. '*:file', '*:col', 'results.db:db/*:table', 'bird::*:example'",
+                            "description": "Graph ref pattern with entity_name:label path segments, e.g. '*:file', '*:col', 'results.db:db/*:table', 'results.db:db/yearmonth:table/*:col', 'bird::*:example'",
                         },
                         "query": {
                             "type": "string",
@@ -195,7 +195,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "Graph ref, often from find output or parent_ref/neighbor_name from meta Related",
+                            "description": "Graph ref copied from find output or composed from meta Related as parent_ref/neighbor_name:neighbor_label",
                         },
                         "all": {
                             "type": "boolean",
@@ -341,7 +341,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                         },
                         "fields": {
                             "type": "object",
-                            "description": "要更新的字段，允许 brief 和 detail",
+                            "description": "要更新的字段，允许 brief、detail 和 hints；hints 会追加去重",
                         },
                     },
                     "required": ["ref", "fields"],

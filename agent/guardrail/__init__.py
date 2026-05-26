@@ -2,7 +2,7 @@
 
 API 类型定义在 agent.guardrail_api，此处仅 re-export + 构建。
 """
-from agent.guardrail_api import CallVerdict, GuardrailContext, Guardrail  # noqa: F401
+from agent.guardrail_api import CallVerdict, GuardrailContext, Guardrail, PostToolAction  # noqa: F401
 
 
 def build_guardrails(spec, builder_names: list = None) -> list:
@@ -13,6 +13,7 @@ def build_guardrails(spec, builder_names: list = None) -> list:
     from agent.guardrail.sql_check import SQLEntityCheck
     from agent.guardrail.sql_join_check import BridgeTableCheck
     from agent.guardrail.sql_disambig_check import SQLDisambigCheck
+    from agent.guardrail.meta_disambig_prefetch import MetaDisambigPrefetch
     from agent.guardrail.sql_value_grounding_check import SQLValueGroundingCheck
     from agent.prompt._effort import get_effort_max_rounds
 
@@ -25,6 +26,7 @@ def build_guardrails(spec, builder_names: list = None) -> list:
         "sql_check": lambda: SQLEntityCheck(),
         "bridge_check": lambda: BridgeTableCheck(),
         "disambig_check": lambda: SQLDisambigCheck(),
+        "meta_disambig_prefetch": lambda: MetaDisambigPrefetch(),
         "value_grounding_check": lambda: SQLValueGroundingCheck(),
     }
 

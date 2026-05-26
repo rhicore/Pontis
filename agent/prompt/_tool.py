@@ -32,10 +32,11 @@ def get_tool_prompt(spec=None) -> str:
 
 - `find` 定位实体，`meta` 读取实体语义和邻接，`query` 验证原始数据和候选 SQL。
 - ref 中 `/` 表示图边路径，`:` 表示当前路径段标签，`*` 表示名称通配，`project::ref` 限定项目。
+- 路径段采用 `实体名:标签` 顺序，例如 `yearmonth:table`、`Consumption:col`、`README:file`。
 - `find` 接受通配 ref，用来列实体和搜索；`meta` 接受单个实体 ref，用来读取该实体。
 - `table` 只表示数据库表；CSV/TSV 表状摘要使用 `csv_table`。
-- `find` 返回的第一列可直接给 `meta`；`meta` 的 Related 只显示邻接名称，访问时用 `主节点ref/邻接名称`。
-- 列实体从表实体访问，形如 `db.sqlite:db/table:table/column:col`；关系列实体和知识实体也遵循同一套图路径。
+- `find` 返回的第一列可直接给 `meta`；`meta` 的 Related 按标签分组，访问时用 `主节点ref/邻接名称:分组标签`。
+- 列实体从表实体访问，形如 `db.sqlite:db/yearmonth:table/Consumption:col`；关系列实体和知识实体也遵循同一套图路径。
 - 复用已有工具事实；新查询应验证新信息或排除具体疑点。
 
 ### 探索主线
@@ -51,7 +52,7 @@ def get_tool_prompt(spec=None) -> str:
 |---|---|
 | `find({{"ref":"*:db"}})` | 列出数据库入口 |
 | `find({{"ref":"db.sqlite:db/*:table"}})` | 列出数据库表 |
-| `find({{"ref":"db.sqlite:db/table:table/*:col"}})` | 列出表列 |
+| `find({{"ref":"db.sqlite:db/yearmonth:table/*:col"}})` | 列出表列 |
 | `find({{"ref":"db.sqlite:db/*:fk"}})` | 列出结构关系 |
 | `find({{"ref":"db.sqlite:db/*:rel"}})` | 列出语义关系 |
 | `find({{"ref":"*:knowledge", "query":"term or rule"}})` | 搜索项目知识 |

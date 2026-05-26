@@ -3,6 +3,7 @@
 模式1：meta(ref) → 自身 meta + related 分组
 模式2：meta(ref, neighbor_label) → 只看匹配 neighbor_label 的邻居
 """
+import json
 from typing import Any, List, Optional, Union
 
 from tool.config import resolve_meta_config
@@ -10,7 +11,7 @@ from tool.utils.display_ref import display_ref_for_node, node_selector
 from tool.utils.formatters import format_entity_name, format_meta_output, get_display_property_value, get_info
 from tool.utils.resolve import resolve_entity_selector, selector_match_pattern, selector_params
 
-_ADJACENCY_KEYS = {"fk", "rel", "disambig", "col", "overlap", "table", "view"}
+_ADJACENCY_KEYS = {"fk", "rel", "disambig", "hint", "hints", "col", "overlap", "table", "view"}
 
 
 def _get_project_name(workspace) -> str:
@@ -40,6 +41,38 @@ def _trim_value(value: Any, max_len: int = 120) -> Any:
     if isinstance(value, str) and len(value) > max_len:
         return value[:max_len] + "..."
     return value
+
+
+def _normalize_hint_items(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                return _normalize_hint_items(parsed)
+        return [line.strip() for line in text.splitlines() if line.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _hint_node_line(workspace, project: str | None, meta: dict) -> str:
+    name = display_ref_for_node(workspace, project, meta)
+    brief = meta.get("brief") or get_info(meta.get("labels", []), meta)
+    detail = meta.get("detail")
+    if brief and str(brief).strip() not in ("", "-"):
+        return f"  - {name}: {str(brief).strip()}"
+    if detail and str(detail).strip() not in ("", "-"):
+        first_line = str(detail).strip().splitlines()[0]
+        return f"  - {name}: {first_line}"
+    return f"  - {name}"
 
 
 def _compute_column_properties(meta: dict, labels: List[str], props: List[str]) -> dict:
@@ -181,8 +214,10 @@ def meta_command(
         filtered = [m for m in neighbors if _label_matches(m.get("labels", []), neighbor_label)]
         return _format_neighbor_list(workspace, project_name, project, filtered)
 
-    adjacency = {}
     raw_meta = dict(meta)
+    adjacency = {}
+    own_hint_lines = [f"  - {hint}" for hint in _normalize_hint_items(raw_meta.get("hints"))]
+    neighbor_hint_lines: List[str] = []
     plain_meta = dict(meta)
     hidden_keys = set(getattr(resolve_meta_config(labels), "hidden_keys", set()))
     for key in hidden_keys:
@@ -203,6 +238,17 @@ def meta_command(
         name = adj_meta.get("name") or display_ref_for_node(workspace, project, adj_meta)
         info = get_info(adj_labels, adj_meta)
         adjacency.setdefault(group_key, []).append(f"  {name}\t{info}")
+        if group_key == "hint":
+            neighbor_hint_lines.append(_hint_node_line(workspace, project, adj_meta))
+
+    hint_lines: List[str] = []
+    seen_hints = set()
+    for line in own_hint_lines + neighbor_hint_lines:
+        key = line.strip().casefold()
+        if key in seen_hints:
+            continue
+        seen_hints.add(key)
+        hint_lines.append(line)
 
     if props:
         from tool.utils.formatters import _format_meta_value
@@ -210,7 +256,10 @@ def meta_command(
         missing = []
         computed = _compute_column_properties(raw_meta, labels, props)
         for p in props:
-            value = get_display_property_value(raw_meta, labels, p)
+            if p == "hints":
+                value = "\n".join(hint_lines) if hint_lines else None
+            else:
+                value = get_display_property_value(raw_meta, labels, p)
             if value is None and p in computed:
                 value = computed[p]
             if value is None and p in adjacency:
@@ -240,9 +289,12 @@ def meta_command(
     else:
         result = header_line + "\n\n" + result
 
+    if hint_lines:
+        result += "\n\nHints\n" + "\n".join(hint_lines)
+
     if adjacency:
         visible_adj = {k: v for k, v in adjacency.items()
-                       if not config.adjacency_keys or k in config.adjacency_keys}
+                       if k != "hint" and (not config.adjacency_keys or k in config.adjacency_keys)}
         if visible_adj:
             summary_parts = [f"{k}: {len(v)}" for k, v in sorted(visible_adj.items())]
             result += f"\n\nRelated ({', '.join(summary_parts)})\n"
