@@ -28,18 +28,6 @@ def _normalize_hints(value) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
-def _merge_hints(existing, incoming) -> list[str]:
-    merged = []
-    seen = set()
-    for hint in _normalize_hints(existing) + _normalize_hints(incoming):
-        key = hint.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(hint)
-    return merged
-
-
 def _split_project_ref(ref: str) -> tuple[str | None, str]:
     if "::" not in ref:
         return None, ref
@@ -71,13 +59,7 @@ def update_meta_command(workspace, ref: str, fields: dict) -> str:
         project = selector["project"]
     match = selector_match_pattern(selector, "n")
     if "hints" in safe_fields:
-        current_rows = workspace.cypher(
-            f"MATCH {match} RETURN n",
-            params=selector_params(selector),
-            project=project,
-        )
-        existing_hints = (current_rows[0].get("n") or {}).get("hints") if current_rows else None
-        safe_fields["hints"] = _merge_hints(existing_hints, safe_fields.get("hints"))
+        safe_fields["hints"] = _normalize_hints(safe_fields.get("hints"))
 
     rows = workspace.cypher(
         f"MATCH {match} SET n += $props RETURN n",

@@ -145,7 +145,7 @@ BIRD_BENCHMARK_PROMPTS = [
 ]
 BIRD_BENCHMARK_GUARDRAILS = [
     "round_limit", "exploration_check",
-    "sql_check", "bridge_check", "disambig_check", "meta_disambig_prefetch",
+    "sql_check", "bridge_check", "disambig_check",
     "value_grounding_check",
 ]
 

@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 
 from tool.utils.workspace_access import resolve_file_sources, workspace_allows_direct_fs
 
@@ -19,6 +20,7 @@ _WRITE_PATTERN = re.compile(
 )
 
 _DEFAULT_LIMIT = 20
+_DEFAULT_QUERY_TIMEOUT_SECONDS = 30.0
 _MAX_RESULT_CHARS = 8000
 _JSON_RECORD_KEYS = ("records", "data", "items", "rows", "results")
 _TYPE_SAMPLE_ROWS = 5000
@@ -270,13 +272,31 @@ def _available_tables_text(ref: str, tables: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _fetch_rows(conn: sqlite3.Connection, sql: str, limit: int) -> tuple[list[str], list[tuple], bool]:
+def _fetch_rows(
+    conn: sqlite3.Connection,
+    sql: str,
+    limit: int,
+    timeout_seconds: float = _DEFAULT_QUERY_TIMEOUT_SECONDS,
+) -> tuple[list[str], list[tuple], bool]:
+    deadline = time.monotonic() + max(0.1, timeout_seconds)
+
+    def check_timeout() -> int:
+        return 1 if time.monotonic() > deadline else 0
+
+    conn.set_progress_handler(check_timeout, 10_000)
     cursor = conn.cursor()
-    cursor.execute(sql)
-    columns = [desc[0] for desc in cursor.description] if cursor.description else []
-    rows = cursor.fetchmany(max(0, limit) + 1)
-    has_more = len(rows) > limit
-    return columns, rows[:limit], has_more
+    try:
+        cursor.execute(sql)
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        rows = cursor.fetchmany(max(0, limit) + 1)
+        has_more = len(rows) > limit
+        return columns, rows[:limit], has_more
+    except sqlite3.OperationalError as exc:
+        if time.monotonic() > deadline and "interrupted" in str(exc).lower():
+            raise TimeoutError(f"SQL query timed out after {timeout_seconds:.0f}s") from exc
+        raise
+    finally:
+        conn.set_progress_handler(None, 0)
 
 
 def _resolve_csv_source(workspace, selector: str):

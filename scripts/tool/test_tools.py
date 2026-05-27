@@ -377,6 +377,16 @@ def main():
         {"brief": "Customer address status foreign key"},
     )
     ok("update_meta accepts internal db--table--col ref", "Error:" not in internal_ref_out, internal_ref_out)
+    update_meta_command(
+        ws,
+        "books.sqlite/order_status/status_id",
+        {"hints": ["old hint", "keep this"]},
+    )
+    update_meta_command(
+        ws,
+        "books.sqlite/order_status/status_id",
+        {"hints": ["replacement hint"]},
+    )
 
     address_meta = get_entity_meta(ws, "books.sqlite--address_status--status_id") or {}
     order_meta = get_entity_meta(ws, "books.sqlite--order_status--status_id") or {}
@@ -384,6 +394,7 @@ def main():
 
     ok("address_status.status_id stores its own detail", address_meta.get("detail") == detail_text, str(address_meta.get("detail")))
     ok("order_status.status_id stores independent detail", order_meta.get("detail") == other_detail, str(order_meta.get("detail")))
+    ok("update_meta replaces hints", order_meta.get("hints") == ["replacement hint"], str(order_meta.get("hints")))
     ok("internal ref update writes target metadata", customer_meta.get("brief") == "Customer address status foreign key", str(customer_meta.get("brief")))
     ok("customer_address.status_id remains untouched", customer_meta.get("detail") in (None, ""), str(customer_meta.get("detail")))
 

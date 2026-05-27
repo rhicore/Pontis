@@ -206,7 +206,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                                 {"type": "string"},
                                 {"type": "array", "items": {"type": "string"}}
                             ],
-                            "description": "Show specific property or list of properties, e.g. 'brief' or ['brief','detail']",
+                            "description": "Show specific property or list of properties when explicitly needed",
                         },
                     },
                     "required": ["ref"],
@@ -341,7 +341,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                         },
                         "fields": {
                             "type": "object",
-                            "description": "要更新的字段，允许 brief、detail 和 hints；hints 会追加去重",
+                            "description": "要覆盖写入的字段和值",
                         },
                     },
                     "required": ["ref", "fields"],

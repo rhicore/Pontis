@@ -42,7 +42,7 @@ def get_tool_prompt(spec=None) -> str:
 ### 探索主线
 
 - 结构入口：`find` 找 db/table/col/fk/rel/knowledge/disambig，`meta` 读目标实体。
-- 值验证：`meta(property="sample"|"topk"|"cardinality")` 查看列值分布，`query` 验证候选过滤、JOIN 和聚合。
+- 值验证：先用 `meta` 查看列语义、统计、样例和提示，再用 `query` 验证候选过滤、JOIN 和聚合。
 - 文本证据：`grep` 定位，`read` 回读上下文；JSON 层级用 `jd` 展开。
 - 图关系：复杂多跳关系用 `cypher`；常规 schema linking 优先用 `find`/`meta`。
 

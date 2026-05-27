@@ -368,6 +368,7 @@ def main() -> None:
                 result["disambiguate"] = timings.get("agent_disambiguate", 0.0)
                 result["entity_hints"] = timings.get("agent_entity_hints", 0.0)
                 result["readme"] = timings.get("agent_readme", 0.0)
+                result["embedding"] = timings.get("semantic_embedding", 0.0)
                 if hasattr(config, "get_preprocess_token_metrics"):
                     result.update(config.get_preprocess_token_metrics())
                 logger.info(f"=== {name} selected modules done ===")

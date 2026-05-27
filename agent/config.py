@@ -14,7 +14,7 @@ DEFAULT_READONLY_PROMPTS = [
 ]
 DEFAULT_READONLY_GUARDRAILS = [
     "round_limit", "exploration_check", "query_abuse",
-    "sql_check", "bridge_check", "disambig_check", "meta_disambig_prefetch",
+    "sql_check", "bridge_check", "disambig_check",
 ]
 
 
