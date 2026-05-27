@@ -60,6 +60,8 @@
                               predicted/golden execution result，并可继续调用工具核验数据库证据。
                               输出三分类：DB_EXPLORATION_FIXABLE、
                               DATASET_PRIOR_REQUIRED 或 GOLDEN_SQL_STYLE。
+                              开启 --bird-readme 时，GOLDEN_SQL_STYLE 额外输出
+                              README 覆盖性子类。
 
     bird 全局经验库：
       --use-bird-global       显式开启。会额外连接 `bird` project，检索 train example。
@@ -76,6 +78,7 @@
                               full 是默认完整 prompt；minimal 只保留最小输出协议。
       --prompt-file PATH      用自定义主求解 prompt 模板。
       --no-bird-readme        不把 Pontis/scripts/BIRD/bird_readme.py 注入系统提示词。
+                              同时关闭最终文本输出前的 BIRD README 复审 guardrail，
                               用于评估数据集级 SQL 写作逻辑的贡献。
 
     SQL 修复：
@@ -147,6 +150,7 @@ BIRD_BENCHMARK_GUARDRAILS = [
     "round_limit", "exploration_check",
     "sql_check", "bridge_check", "disambig_check",
     "value_grounding_check",
+    "bird_readme_final_recheck",
 ]
 
 # ═══════════════════════════════════════════════════════════
@@ -240,6 +244,27 @@ SQL_REPAIR_PROMPT_TEMPLATE = """\
 输出格式：一个 ```sql``` 代码块，代码块内只放修正后的 SELECT 语句。
 """
 
+REFLECTION_README_STYLE_REVIEW_SECTION = """\
+
+README 覆盖性复盘要求：
+- 本次运行启用了 BIRD README。若 `primary_error_category` 是 `GOLDEN_SQL_STYLE`，必须额外判断这个 style 失败与 README 的关系。
+- `golden_sql_style_readme_subcategory` 必须且只能从以下三类中选择：
+  - `README_STYLE_NOT_COVERED`：golden SQL 要求的风格/输出契约在 README 中没有提到，或者只有过于泛化的原则，无法指导模型稳定写中 golden。
+  - `README_RULE_WRONG_OR_UNCLEAR`：README 提到了相关主题，但规则错误、互相冲突、边界不清，或遵守 README 后仍会合理地产生 predicted SQL 而不是 golden SQL。
+  - `README_RULE_CLEAR_BUT_NOT_FOLLOWED`：README 已经清楚覆盖该风格要求，遵守它通常会写中 golden；错误主要是模型没有执行 README。
+- 若 `primary_error_category` 不是 `GOLDEN_SQL_STYLE`，`golden_sql_style_readme_subcategory` 写 `not_applicable`。
+- `readme_coverage_reason` 要引用 README 中是否覆盖相关风格，不要只重复 SQL 差异。
+- `readme_minimum_update` 只在 README 缺失、错误或不清楚时提出最小补充/改写方向；README 已清楚覆盖时写 none。
+"""
+
+REFLECTION_NO_README_STYLE_REVIEW_SECTION = """\
+
+README 覆盖性复盘要求：
+- 本次运行未启用 BIRD README。
+- `golden_sql_style_readme_subcategory` 固定写 `not_applicable`。
+- `readme_coverage_reason` 和 `readme_minimum_update` 固定写 none。
+"""
+
 # 题后反思 prompt。
 # 输入时机：
 # - 只有开启 `--reflection` 时才会使用
@@ -311,6 +336,7 @@ Golden execution result：
 - `DB_EXPLORATION_FIXABLE`：当前数据库信息足够；错误应该能通过更充分数据库探索或更好的 schema/value 标注修正。
 - `DATASET_PRIOR_REQUIRED`：当前数据库信息不足以唯一决定；错误需要 query-log 记忆、benchmark 约定、业务先验、命名先验或跨题经验修正。
 - `GOLDEN_SQL_STYLE`：数据库理解基本正确；错误在目标 SQL 风格或结果形状。
+{readme_style_review_section}
 
 硬边界：
 - 不要用“是否要改表/列/JOIN”区分前两类；`DB_EXPLORATION_FIXABLE` 和 `DATASET_PRIOR_REQUIRED` 都可能需要改表、列、值或连接。
@@ -326,6 +352,9 @@ missing_prior: 若是 DATASET_PRIOR_REQUIRED，说明需要哪类 query log / �
 mistake_summary: 一句话总结错误
 minimum_fix: 最小修正方向
 classification_reason: 为什么该错因属于上面的唯一类别
+golden_sql_style_readme_subcategory: README_STYLE_NOT_COVERED | README_RULE_WRONG_OR_UNCLEAR | README_RULE_CLEAR_BUT_NOT_FOLLOWED | not_applicable
+readme_coverage_reason: 若是 GOLDEN_SQL_STYLE 且启用 README，说明 README 是否覆盖该风格；否则写 none
+readme_minimum_update: 若 README 缺失、错误或不清楚，写最小更新方向；否则写 none
 """
 
 REFLECTION_CASE_NO_BIRD_PROMPT_TEMPLATE = """\
@@ -394,6 +423,7 @@ Golden execution result：
 - `DB_EXPLORATION_FIXABLE`：当前数据库信息足够；错误应该能通过更充分数据库探索或更好的 schema/value 标注修正。
 - `DATASET_PRIOR_REQUIRED`：当前数据库信息不足以唯一决定；错误需要 query-log 记忆、benchmark 约定、业务先验、命名先验或跨题经验修正。
 - `GOLDEN_SQL_STYLE`：数据库理解基本正确；错误在目标 SQL 风格或结果形状。
+{readme_style_review_section}
 
 硬边界：
 - 不要用“是否要改表/列/JOIN”区分前两类；`DB_EXPLORATION_FIXABLE` 和 `DATASET_PRIOR_REQUIRED` 都可能需要改表、列、值或连接。
@@ -409,6 +439,9 @@ missing_prior: 若是 DATASET_PRIOR_REQUIRED，说明需要哪类 query log / �
 mistake_summary: 一句话总结错误
 minimum_fix: 最小修正方向
 classification_reason: 为什么该错因属于上面的唯一类别
+golden_sql_style_readme_subcategory: README_STYLE_NOT_COVERED | README_RULE_WRONG_OR_UNCLEAR | README_RULE_CLEAR_BUT_NOT_FOLLOWED | not_applicable
+readme_coverage_reason: 若是 GOLDEN_SQL_STYLE 且启用 README，说明 README 是否覆盖该风格；否则写 none
+readme_minimum_update: 若 README 缺失、错误或不清楚，写最小更新方向；否则写 none
 """
 
 DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
@@ -774,6 +807,13 @@ def load_query_prompt_template(args) -> str:
     return QUERY_PROMPT_BASE_TEMPLATE
 
 
+def build_bird_benchmark_guardrails(args) -> list[str]:
+    guardrails = list(BIRD_BENCHMARK_GUARDRAILS)
+    if not getattr(args, "bird_readme", True):
+        guardrails = [g for g in guardrails if g != "bird_readme_final_recheck"]
+    return guardrails
+
+
 def build_query_prompt(q: dict, args) -> str:
     question = q["question"]
     evidence = q.get("evidence", "") or "(无额外提示)"
@@ -817,6 +857,7 @@ def build_query_prompt(q: dict, args) -> str:
 def build_reflection_case_prompt(db_id: str, q: dict, collector: TraceCollector,
                                  predicted_sql: str | None, result_str: str,
                                  elapsed: float, use_bird_global: bool,
+                                 include_bird_readme: bool,
                                  predicted_execution: set | str,
                                  golden_execution: set | str) -> str:
     template = (
@@ -839,7 +880,38 @@ def build_reflection_case_prompt(db_id: str, q: dict, collector: TraceCollector,
         predicted_execution=format_execution_result(predicted_execution),
         golden_execution=format_execution_result(golden_execution),
         trace_detail=collector.detailed_trace_text(),
+        readme_style_review_section=(
+            REFLECTION_README_STYLE_REVIEW_SECTION
+            if include_bird_readme
+            else REFLECTION_NO_README_STYLE_REVIEW_SECTION
+        ),
     )
+
+
+def parse_reflection_fields(response: str) -> dict:
+    """Extract structured reflection fields from the model's line-based response."""
+    wanted = {
+        "primary_error_category",
+        "database_only_oracle_verdict",
+        "decisive_db_evidence",
+        "plausible_alternatives",
+        "missing_prior",
+        "mistake_summary",
+        "minimum_fix",
+        "classification_reason",
+        "golden_sql_style_readme_subcategory",
+        "readme_coverage_reason",
+        "readme_minimum_update",
+    }
+    parsed = {}
+    for line in (response or "").splitlines():
+        match = re.match(r"^\s*([A-Za-z0-9_]+)\s*:\s*(.*)\s*$", line)
+        if not match:
+            continue
+        key, value = match.group(1), match.group(2).strip()
+        if key in wanted:
+            parsed[f"reflection_{key}"] = value
+    return parsed
 
 
 def run_reflection_for_case(db_id: str, q: dict,
@@ -849,7 +921,7 @@ def run_reflection_for_case(db_id: str, q: dict,
                             use_bird_global: bool,
                             include_bird_readme: bool,
                             predicted_execution: set | str,
-                            golden_execution: set | str) -> None:
+                            golden_execution: set | str) -> dict:
     from agent.config import AgentSpec, DEFAULT_READONLY_TOOLS, DEFAULT_READONLY_PROMPTS
     from agent.guardrail import build_guardrails
     from agent.tools import build_registry
@@ -888,6 +960,7 @@ def run_reflection_for_case(db_id: str, q: dict,
         result_str=result_str,
         elapsed=elapsed,
         use_bird_global=use_bird_global,
+        include_bird_readme=include_bird_readme,
         predicted_execution=predicted_execution,
         golden_execution=golden_execution,
     )
@@ -908,6 +981,7 @@ def run_reflection_for_case(db_id: str, q: dict,
         "",
     ]
     (bench_dir / f"q{qid}.reflection.log").write_text("\n".join(out), encoding="utf-8")
+    return parse_reflection_fields(response)
 
 
 def force_sql_response(agent, response: str) -> str:
@@ -1304,7 +1378,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             prompts=list(BIRD_BENCHMARK_PROMPTS),
         )
         spec.projects = build_agent_projects(db_id, args.use_bird_global)
-        spec.guardrails = build_guardrails(spec, BIRD_BENCHMARK_GUARDRAILS)
+        spec.guardrails = build_guardrails(spec, build_bird_benchmark_guardrails(args))
         agent = create_agent(
             str(db_dir),
             spec,
@@ -1368,9 +1442,10 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         efficiency = get_agent_efficiency_metrics(agent)
         collector.write_logs(bench_dir, qid, q, response, predicted_sql, result_str, elapsed, efficiency)
 
+        reflection_fields = {}
         if args.reflection and not correct:
             try:
-                run_reflection_for_case(
+                reflection_fields = run_reflection_for_case(
                     db_id=db_id,
                     agent=agent,
                     q=q,
@@ -1385,6 +1460,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                 )
             except Exception as e:
                 print(f"  Q{qid} reflection ERROR: {e}")
+                reflection_fields = {"reflection_error": f"{type(e).__name__}: {e}"}
 
         status = "OK" if correct else "FAIL"
         print(
@@ -1397,6 +1473,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                 'golden_sql': q.get('SQL'), 'predicted_sql': predicted_sql,
                 'correct': correct, 'result': result_str, 'elapsed': round(elapsed, 1),
                 **efficiency,
+                **reflection_fields,
                 'use_bird_global': args.use_bird_global,
                 'bird_readme': args.bird_readme,
                 'prompt_profile': args.prompt_profile,
@@ -1487,7 +1564,7 @@ def main():
         "--no-bird-readme",
         dest="bird_readme",
         action="store_false",
-        help="关闭 BIRD 数据集级 README 系统提示词注入，用于 ablation",
+        help="关闭 BIRD README 系统提示词注入和最终复审 guardrail，用于 ablation",
     )
     parser.add_argument(
         "--output-dir",
