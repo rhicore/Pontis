@@ -6,9 +6,17 @@ import os
 import threading
 import yaml
 import logging
+import sys
 from collections import Counter
+from pathlib import Path
 
 from utils.token_metrics import add_usage
+
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.append(str(_ROOT))
+
+from token_cache_accounting import normalize_cache_accounting, serialize_request  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -63,19 +71,21 @@ class LLMClient:
         else:
             kwargs["temperature"] = 0.3
         try:
+            prompt_text = serialize_request(messages)
             response = client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 timeout=120,
                 **kwargs,
             )
-            self._record_usage(response)
+            self._record_usage(response, prompt_text=prompt_text)
+            self._local.previous_prompt_text = prompt_text
             return response.choices[0].message.content or ""
         except Exception as e:
             logger.warning(f"LLM call failed: {e}")
             return ""
 
-    def _record_usage(self, response) -> None:
+    def _record_usage(self, response, *, prompt_text: str | None = None) -> None:
         usage = getattr(response, "usage", None)
         if not usage:
             return
@@ -93,16 +103,34 @@ class LLMClient:
         input_tokens = int(input_tokens or 0)
         output_tokens = int(output_tokens or 0)
         total_tokens = int(total_tokens) if total_tokens is not None else input_tokens + output_tokens
+        cache = normalize_cache_accounting(
+            usage=usage,
+            input_tokens=input_tokens,
+            current_prompt=prompt_text,
+            previous_prompt=getattr(self._local, "previous_prompt_text", None),
+        )
         with self._metrics_lock:
             self._metrics["preprocess_llm_calls"] += 1
             self._metrics["preprocess_llm_input_tokens"] += input_tokens
             self._metrics["preprocess_llm_output_tokens"] += output_tokens
             self._metrics["preprocess_llm_total_tokens"] += total_tokens
+            self._metrics["preprocess_llm_cached_input_tokens"] += cache["cached_input_tokens"]
+            self._metrics["preprocess_llm_uncached_input_tokens"] += cache["uncached_input_tokens"]
+            self._metrics["preprocess_llm_cache_hit_input_tokens"] += cache["cache_hit_input_tokens"]
+            self._metrics["preprocess_llm_cache_miss_input_tokens"] += cache["cache_miss_input_tokens"]
+            self._metrics["preprocess_llm_cache_unknown_input_tokens"] += cache["cache_unknown_input_tokens"]
+            self._metrics["preprocess_llm_fresh_input_tokens"] += cache["fresh_input_tokens"]
         add_usage(
             "preprocess_llm",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
+            cached_input_tokens=cache["cached_input_tokens"],
+            uncached_input_tokens=cache["uncached_input_tokens"],
+            cache_hit_input_tokens=cache["cache_hit_input_tokens"],
+            cache_miss_input_tokens=cache["cache_miss_input_tokens"],
+            cache_unknown_input_tokens=cache["cache_unknown_input_tokens"],
+            fresh_input_tokens=cache["fresh_input_tokens"],
         )
 
     def metrics(self) -> dict:

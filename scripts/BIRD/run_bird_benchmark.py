@@ -86,9 +86,10 @@
 
     输出：
       --run-id ID             输出目录 ID。dev 日志写到
-                              workspace/baselines/pontis/runtime_logs/bird_dev_<ID>/。
+                              workspace/baselines/pontis/runtime_logs/YYYYmmdd_HHMMSS_bird_dev_<ID>/。
+                              若 ID 已经以 YYYYmmdd_HHMMSS 开头，则直接使用该 ID。
       --output-dir PATH       结构化 results/evaluation 输出目录；默认在
-                              workspace/baselines/pontis/results/bird_dev_<ID>/。
+                              workspace/baselines/pontis/results/YYYYmmdd_HHMMSS_bird_dev_<ID>/。
 
 输出文件：
     progress.log              每库状态与总体进度。
@@ -102,8 +103,10 @@
 
 指标含义：
     Accuracy                  SQL 执行结果与 golden SQL 执行结果集合相等的比例。
-    Pre-input Tokens/Q        每题稳定上下文输入 token，可被 prompt cache 命中的部分。
-    Runtime Input Tokens/Q    每题运行中新增输入 token，包括历史工具结果等。
+    Pre-input Tokens/Q        旧口径: 每题静态系统提示词/工具定义输入 token。
+    Runtime Input Tokens/Q    旧口径: 每题非静态输入 token，包括历史工具结果等；不是商业 API cache miss。
+    Cached Input Tokens/Q     provider 优先的 cache-hit/read input token；没有 provider 字段时用前缀估算。
+    Uncached Input Tokens/Q   provider 优先的 cache-miss/write/regular input token；没有 provider 字段时用前缀估算。
     Runtime Output Tokens/Q   每题模型输出 token，包括工具调用参数、文本和最终 SQL。
     LLM Rounds/Q              每题串行 LLM 调用轮次。
     Total Tokens/Q            input + output 总 token，由 provider usage 汇总。
@@ -173,6 +176,8 @@ SELECT 输出列按问题文字顺序给出；题目列出多个地址字段时�
 
 请根据以下信息生成一条 SQLite SQL 查询。
 
+Question ID: {question_id}
+
 问题：{question}
 
 提示：{evidence}
@@ -206,6 +211,8 @@ QUERY_PROMPT_MINIMAL_TEMPLATE = """\
 
 输出格式：一个 ```sql``` 代码块，代码块内是一条 SQLite SELECT 语句。
 SELECT 输出列按问题文字顺序给出；题目列出多个地址字段时分别输出字段，不拼接成单个字符串。
+
+Question ID: {question_id}
 
 问题：{question}
 
@@ -255,6 +262,15 @@ README 覆盖性复盘要求：
 - 若 `primary_error_category` 不是 `GOLDEN_SQL_STYLE`，`golden_sql_style_readme_subcategory` 写 `not_applicable`。
 - `readme_coverage_reason` 要引用 README 中是否覆盖相关风格，不要只重复 SQL 差异。
 - `readme_minimum_update` 只在 README 缺失、错误或不清楚时提出最小补充/改写方向；README 已清楚覆盖时写 none。
+
+Final README recheck 介入复盘要求：
+- 主解题阶段可能启用了 `BirdReadmeFinalRecheck`。它不会调用额外审查流程，也不会读取示例；它会在最终 SQL 前通过 guardrail block 直接把完整 BIRD README 回灌给主 agent，要求主 agent 自查后只输出最终 SQL。
+- 以 `Guardrail / blocks` 和详细执行轨迹为准判断 recheck 是否真正介入；出现 `BirdReadmeFinalRecheck` 的 block 就说明完整 README 已回灌给主 agent。
+- 为兼容旧评测 schema，若 `primary_error_category` 是 `GOLDEN_SQL_STYLE`，必须额外输出 `style_reviewer_intervention`：
+  - `REVIEWER_INTERVENED_BUT_NOT_FOLLOWED`：final README recheck 已经 BLOCK，README/checklist 若被执行通常会更接近 golden，但主 agent 最终没有执行或只部分执行。
+  - `REVIEWER_INTERVENED_WITH_WRONG_ADVICE`：保留兼容字段；直接 README 模式下通常不要使用，除非 README/checklist 本身错误或明显误导了主 agent。
+  - `REVIEWER_NOT_INTERVENED`：没有 `BirdReadmeFinalRecheck` block，或 README 回灌没有覆盖关键 style 问题。
+- 若 `primary_error_category` 不是 `GOLDEN_SQL_STYLE`，`style_reviewer_intervention` 写 `not_applicable`。
 """
 
 REFLECTION_NO_README_STYLE_REVIEW_SECTION = """\
@@ -263,6 +279,15 @@ README 覆盖性复盘要求：
 - 本次运行未启用 BIRD README。
 - `golden_sql_style_readme_subcategory` 固定写 `not_applicable`。
 - `readme_coverage_reason` 和 `readme_minimum_update` 固定写 none。
+
+Final README recheck 介入复盘要求：
+- 主解题阶段可能启用了 `BirdReadmeFinalRecheck`。它不会调用额外审查流程，也不会读取示例；它会在最终 SQL 前通过 guardrail block 直接把完整 BIRD README 回灌给主 agent。
+- 以 `Guardrail / blocks` 和详细执行轨迹为准判断它是否真正介入；没有 `BirdReadmeFinalRecheck` block，或 README 回灌没有覆盖关键 style 问题，归为 `REVIEWER_NOT_INTERVENED`。
+- 若 `primary_error_category` 是 `GOLDEN_SQL_STYLE`，输出 `style_reviewer_intervention`：
+  - `REVIEWER_INTERVENED_BUT_NOT_FOLLOWED`
+  - `REVIEWER_INTERVENED_WITH_WRONG_ADVICE`
+  - `REVIEWER_NOT_INTERVENED`
+- 若 `primary_error_category` 不是 `GOLDEN_SQL_STYLE`，`style_reviewer_intervention` 写 `not_applicable`。
 """
 
 # 题后反思 prompt。
@@ -355,6 +380,7 @@ classification_reason: 为什么该错因属于上面的唯一类别
 golden_sql_style_readme_subcategory: README_STYLE_NOT_COVERED | README_RULE_WRONG_OR_UNCLEAR | README_RULE_CLEAR_BUT_NOT_FOLLOWED | not_applicable
 readme_coverage_reason: 若是 GOLDEN_SQL_STYLE 且启用 README，说明 README 是否覆盖该风格；否则写 none
 readme_minimum_update: 若 README 缺失、错误或不清楚，写最小更新方向；否则写 none
+style_reviewer_intervention: REVIEWER_INTERVENED_BUT_NOT_FOLLOWED | REVIEWER_INTERVENED_WITH_WRONG_ADVICE | REVIEWER_NOT_INTERVENED | not_applicable
 """
 
 REFLECTION_CASE_NO_BIRD_PROMPT_TEMPLATE = """\
@@ -442,6 +468,7 @@ classification_reason: 为什么该错因属于上面的唯一类别
 golden_sql_style_readme_subcategory: README_STYLE_NOT_COVERED | README_RULE_WRONG_OR_UNCLEAR | README_RULE_CLEAR_BUT_NOT_FOLLOWED | not_applicable
 readme_coverage_reason: 若是 GOLDEN_SQL_STYLE 且启用 README，说明 README 是否覆盖该风格；否则写 none
 readme_minimum_update: 若 README 缺失、错误或不清楚，写最小更新方向；否则写 none
+style_reviewer_intervention: REVIEWER_INTERVENED_BUT_NOT_FOLLOWED | REVIEWER_INTERVENED_WITH_WRONG_ADVICE | REVIEWER_NOT_INTERVENED | not_applicable
 """
 
 DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
@@ -593,10 +620,9 @@ class TraceCollector:
             (
                 "LLM Efficiency: "
                 f"rounds={efficiency.get('llm_rounds', 0)}, "
-                f"input_tokens={efficiency.get('input_tokens', 0)}, "
-                f"pre_input_tokens={efficiency.get('pre_input_tokens', 0)}, "
-                f"runtime_input_tokens={efficiency.get('runtime_input_tokens', 0)}, "
-                f"runtime_output_tokens={efficiency.get('runtime_output_tokens', efficiency.get('output_tokens', 0))}, "
+                f"cached_input_tokens={efficiency.get('cached_input_tokens', 0)}, "
+                f"uncached_input_tokens={efficiency.get('uncached_input_tokens', 0)}, "
+                f"output_tokens={efficiency.get('output_tokens', 0)}, "
                 f"total_tokens={efficiency.get('total_tokens', 0)}"
             ),
         ])
@@ -698,18 +724,19 @@ def _format_event_message(entry: dict) -> str:
 
 EFFICIENCY_FIELDS = (
     "llm_rounds",
-    "input_tokens",
-    "pre_input_tokens",
-    "runtime_input_tokens",
-    "runtime_output_tokens",
     "cached_input_tokens",
     "uncached_input_tokens",
-    "cache_hit_input_tokens",
-    "cache_miss_input_tokens",
-    "cache_unknown_input_tokens",
-    "fresh_input_tokens",
     "output_tokens",
     "total_tokens",
+    "embedding_calls",
+    "embedding_documents",
+    "embedding_tokens",
+    "preprocess_llm_input_tokens",
+    "preprocess_llm_cached_input_tokens",
+    "preprocess_llm_uncached_input_tokens",
+    "preprocess_llm_output_tokens",
+    "preprocess_llm_total_tokens",
+    "preprocess_embedding_tokens",
 )
 
 
@@ -724,10 +751,6 @@ def get_agent_efficiency_metrics(agent) -> dict:
         metrics = agent.llm_metrics()
         out = {field: int(metrics.get(field, 0) or 0) for field in EFFICIENCY_FIELDS}
         out["cache_accounting_source"] = str(metrics.get("cache_accounting_source") or "unknown")
-        if not out["runtime_output_tokens"] and out["output_tokens"]:
-            out["runtime_output_tokens"] = out["output_tokens"]
-        if not out["output_tokens"] and out["runtime_output_tokens"]:
-            out["output_tokens"] = out["runtime_output_tokens"]
         return out
     return empty_efficiency_metrics()
 
@@ -739,17 +762,64 @@ def aggregate_efficiency(rows: list[dict]) -> dict:
         for field in EFFICIENCY_FIELDS
     }
     averages = {
-        "llm_rounds_per_query": round(totals["llm_rounds"] / count, 3) if count else 0.0,
-        "input_tokens_per_query": round(totals["input_tokens"] / count, 3) if count else 0.0,
-        "pre_input_tokens_per_query": round(totals["pre_input_tokens"] / count, 3) if count else 0.0,
-        "runtime_input_tokens_per_query": round(totals["runtime_input_tokens"] / count, 3) if count else 0.0,
-        "runtime_output_tokens_per_query": round(totals["runtime_output_tokens"] / count, 3) if count else 0.0,
-        "cached_input_tokens_per_query": round(totals["cached_input_tokens"] / count, 3) if count else 0.0,
-        "uncached_input_tokens_per_query": round(totals["uncached_input_tokens"] / count, 3) if count else 0.0,
-        "output_tokens_per_query": round(totals["output_tokens"] / count, 3) if count else 0.0,
-        "total_tokens_per_query": round(totals["total_tokens"] / count, 3) if count else 0.0,
+        f"{field}_per_query": round(totals[field] / count, 3) if count else 0.0
+        for field in EFFICIENCY_FIELDS
     }
     return {"totals": totals, "averages": averages}
+
+
+def load_preprocess_metrics(summary_path: Path | None, total_queries: int) -> dict:
+    if summary_path is None:
+        return {}
+    if not summary_path.exists():
+        print(f"Warning: preprocess summary not found: {summary_path}")
+        return {}
+    data = json.loads(summary_path.read_text(encoding="utf-8"))
+    tokens = data.get("preprocess_tokens", {}) if isinstance(data.get("preprocess_tokens"), dict) else {}
+    llm_total = int(tokens.get("llm_total_tokens", 0) or 0)
+    embedding_total = int(tokens.get("embedding_total_tokens", 0) or 0)
+    per_db = data.get("per_database", []) if isinstance(data.get("per_database"), list) else []
+    llm_input = int(tokens.get("llm_input_tokens", 0) or 0)
+    llm_cached_input = int(tokens.get("llm_cached_input_tokens", 0) or 0)
+    llm_uncached_input = int(tokens.get("llm_uncached_input_tokens", 0) or 0)
+    llm_output = int(tokens.get("llm_output_tokens", 0) or 0)
+    if not llm_input:
+        llm_input = sum(int(row.get("preprocess_llm_input_tokens", 0) or 0) for row in per_db)
+    if not llm_cached_input:
+        llm_cached_input = sum(int(row.get("preprocess_llm_cached_input_tokens", 0) or 0) for row in per_db)
+    if not llm_uncached_input:
+        llm_uncached_input = sum(int(row.get("preprocess_llm_uncached_input_tokens", 0) or 0) for row in per_db)
+    if not llm_output:
+        llm_output = sum(int(row.get("preprocess_llm_output_tokens", 0) or 0) for row in per_db)
+    embedding_calls = sum(int(row.get("preprocess_embedding_calls", 0) or 0) for row in per_db)
+    embedding_documents = sum(int(row.get("preprocess_embedding_documents", 0) or 0) for row in per_db)
+    metrics = {
+        "preprocess_llm_input_tokens": llm_input,
+        "preprocess_llm_cached_input_tokens": llm_cached_input,
+        "preprocess_llm_uncached_input_tokens": llm_uncached_input,
+        "preprocess_llm_output_tokens": llm_output,
+        "preprocess_llm_total_tokens": llm_total,
+        "preprocess_embedding_tokens": embedding_total,
+        "embedding_calls": embedding_calls,
+        "embedding_documents": embedding_documents,
+        "embedding_tokens": 0,
+    }
+    return metrics
+
+
+def attach_preprocess_metrics(rows: list[dict], metrics: dict) -> None:
+    if not rows or not metrics:
+        return
+    count = len(rows)
+    for key, value in metrics.items():
+        if key not in EFFICIENCY_FIELDS:
+            continue
+        total = int(value or 0)
+        if total == 0:
+            continue
+        base, remainder = divmod(total, count)
+        for index, row in enumerate(rows):
+            row[key] = int(row.get(key, 0) or 0) + base + (1 if index < remainder else 0)
 
 
 def format_efficiency_line(rows: list[dict], indent: str = "") -> str:
@@ -792,7 +862,13 @@ def build_bird_benchmark_system_prompt(spec, include_bird_readme: bool = True) -
 
     messages = list(build_prompt_messages(spec))
     if include_bird_readme:
-        messages.append(build_bird_readme_system_prompt())
+        bird_readme = build_bird_readme_system_prompt()
+        insert_at = len(messages)
+        for idx, message in enumerate(messages):
+            if message.startswith("## 当前项目") or message.startswith("## 项目 README"):
+                insert_at = idx
+                break
+        messages.insert(insert_at, bird_readme)
     return messages
 
 
@@ -816,6 +892,7 @@ def build_bird_benchmark_guardrails(args) -> list[str]:
 
 def build_query_prompt(q: dict, args) -> str:
     question = q["question"]
+    question_id = str(q.get("question_id", ""))
     evidence = q.get("evidence", "") or "(无额外提示)"
     current_project = q.get("db_id") or "current_project"
     bird_global_note = (
@@ -838,6 +915,7 @@ def build_query_prompt(q: dict, args) -> str:
         return (
             template
             .replace("{question}", question)
+            .replace("{question_id}", question_id)
             .replace("{evidence}", evidence)
             .replace("{bird_global_note}", bird_global_note)
             .replace("{project_scope}", project_scope)
@@ -846,6 +924,7 @@ def build_query_prompt(q: dict, args) -> str:
         )
     return template.format(
         question=question,
+        question_id=question_id,
         evidence=evidence,
         current_project=current_project,
         bird_global_note=bird_global_note,
@@ -902,6 +981,7 @@ def parse_reflection_fields(response: str) -> dict:
         "golden_sql_style_readme_subcategory",
         "readme_coverage_reason",
         "readme_minimum_update",
+        "style_reviewer_intervention",
     }
     parsed = {}
     for line in (response or "").splitlines():
@@ -1053,8 +1133,9 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]):
         lines.append(
             f"  Q{r['question_id']} [{r.get('difficulty', '?')}] {status} {r['elapsed']:.1f}s "
             f"rounds={r.get('llm_rounds', 0)} "
-            f"pre_in={r.get('pre_input_tokens', 0)} runtime_in={r.get('runtime_input_tokens', 0)} "
-            f"runtime_out={r.get('runtime_output_tokens', r.get('output_tokens', 0))} "
+            f"cached_in={r.get('cached_input_tokens', 0)} "
+            f"uncached_in={r.get('uncached_input_tokens', 0)} "
+            f"out={r.get('output_tokens', 0)} "
             f"total={r.get('total_tokens', 0)}"
         )
     (bench_dir / "summary.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1127,17 +1208,20 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict]):
     for row in all_results:
         by_db[row.get("db_id", "unknown")].append(row)
         by_diff[row.get("difficulty") or "unknown"].append(row)
+    performance = aggregate_efficiency(all_results)
     summary = {
         "run_id": get_run_id(),
         "total": total,
         "correct": correct,
         "accuracy": correct / total if total else 0.0,
-        "efficiency": aggregate_efficiency(all_results),
+        "performance": performance,
+        "efficiency": performance,
         "by_database": {
             db_id: {
                 "total": len(rows),
                 "correct": sum(1 for row in rows if row.get("correct")),
                 "accuracy": sum(1 for row in rows if row.get("correct")) / len(rows) if rows else 0.0,
+                "performance": aggregate_efficiency(rows),
                 "efficiency": aggregate_efficiency(rows),
             }
             for db_id, rows in sorted(by_db.items())
@@ -1147,6 +1231,7 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict]):
                 "total": len(rows),
                 "correct": sum(1 for row in rows if row.get("correct")),
                 "accuracy": sum(1 for row in rows if row.get("correct")) / len(rows) if rows else 0.0,
+                "performance": aggregate_efficiency(rows),
                 "efficiency": aggregate_efficiency(rows),
             }
             for diff, rows in sorted(by_diff.items())
@@ -1156,8 +1241,8 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict]):
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    avg = summary["efficiency"]["averages"]
-    totals = summary["efficiency"]["totals"]
+    avg = summary["performance"]["averages"]
+    totals = summary["performance"]["totals"]
     lines = [
         "# Pontis BIRD Evaluation",
         "",
@@ -1173,6 +1258,17 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict]):
         f"- Total Tokens: {totals['total_tokens']}",
         "",
     ]
+    if totals["embedding_tokens"]:
+        lines.append(f"- Embedding Tokens / Query: {avg['embedding_tokens_per_query']:.3f}")
+    if totals["preprocess_llm_total_tokens"]:
+        lines.append(f"- Preprocess LLM Tokens / Query: {avg['preprocess_llm_total_tokens_per_query']:.3f}")
+        lines.append(f"- Preprocess LLM Cached Input Tokens / Query: {avg['preprocess_llm_cached_input_tokens_per_query']:.3f}")
+        lines.append(f"- Preprocess LLM Uncached Input Tokens / Query: {avg['preprocess_llm_uncached_input_tokens_per_query']:.3f}")
+        lines.append(f"- Preprocess LLM Output Tokens / Query: {avg['preprocess_llm_output_tokens_per_query']:.3f}")
+    if totals["preprocess_embedding_tokens"]:
+        lines.append(f"- Preprocess Embedding Tokens / Query: {avg['preprocess_embedding_tokens_per_query']:.3f}")
+    if len(lines) > 0 and lines[-1]:
+        lines.append("")
     lines.append("## By Database")
     for db_id, item in summary["by_database"].items():
         lines.append(f"- {db_id}: {item['correct']}/{item['total']} ({item['accuracy'] * 100:.2f}%)")
@@ -1573,6 +1669,12 @@ def main():
         help="Directory for structured results and evaluation summaries.",
     )
     parser.add_argument(
+        "--preprocess-summary",
+        type=Path,
+        default=None,
+        help="Pontis extract_summary.json to merge preprocessing token metrics into evaluation outputs.",
+    )
+    parser.add_argument(
         "--clear-bird-knowledge",
         action="store_true",
         help="运行前清空 bird 全局知识库中除 README 外的所有节点",
@@ -1615,6 +1717,11 @@ def main():
         print(f"Error: {json_path} not found")
         sys.exit(1)
 
+    if args.preprocess_summary is None:
+        candidate = PONTIS_WORKSPACE_ROOT / "preprocess_logs" / get_run_name(args.train) / "extract_summary.json"
+        if candidate.exists():
+            args.preprocess_summary = candidate
+
     data = assign_question_ids(json.loads(json_path.read_text(encoding="utf-8")))
     if args.db:
         db_filter = {x.strip() for x in args.db.split(",") if x.strip()}
@@ -1650,6 +1757,8 @@ def main():
     if args.output_dir is None:
         args.output_dir = get_results_dir(args.train)
     print(f"Results: {args.output_dir}\n")
+    if args.preprocess_summary:
+        print(f"Preprocess summary: {args.preprocess_summary}\n")
 
     cleanup_all(db_base, by_db, train=args.train)
     if args.clear_bird_knowledge and not args.use_bird_global:
@@ -1677,6 +1786,10 @@ def main():
 
     if all_results:
         all_results.sort(key=lambda r: (r['db_id'], r['question_id']))
+        attach_preprocess_metrics(
+            all_results,
+            load_preprocess_metrics(args.preprocess_summary, len(all_results)),
+        )
         write_total_summary(args.output_dir / "evaluation", all_results)
         write_structured_outputs(args.output_dir, all_results)
 

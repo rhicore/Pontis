@@ -154,11 +154,28 @@ cache_miss_input_tokens = reported_miss
 cache_unknown_input_tokens = input_tokens - hit - miss, if positive
 ```
 
-Provider fields should override local estimates.
+Provider fields should override local estimates. Do not promote locally estimated
+static prompt tokens into cache-hit tokens when the provider reports fewer hits.
+Commercial APIs bill from the provider-side cache decision, not from the client
+side's idea of which prompt segments are stable.
+
+Provider-specific notes:
+
+- OpenAI-compatible APIs such as OpenAI and DeepSeek usually report total prompt
+  input plus cache details, for example `prompt_tokens_details.cached_tokens` or
+  DeepSeek's `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`.
+- Anthropic reports `cache_read_input_tokens`, `cache_creation_input_tokens`, and
+  `input_tokens` separately. The total input for billing and rate-limit analysis
+  is their sum.
+- Gemini explicit caching reports cached token counts through cache and
+  `GenerateContent` usage metadata; cached tokens remain part of the prompt and
+  non-cached input/output are charged separately.
 
 ## Fallback Local Estimation
 
-If provider cache fields are unavailable, estimate repeated-prefix caching from the serialized messages sent to the model.
+If provider cache fields are unavailable, estimate repeated-prefix caching from
+the serialized messages sent to the model. The first request in a local session
+is treated as cache miss unless provider usage says otherwise.
 
 For each LLM round:
 

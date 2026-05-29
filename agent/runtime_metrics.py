@@ -23,8 +23,8 @@ def estimate_tokens(value: Any) -> int:
     """Estimate model tokens for static prompt pieces.
 
     Runtime input/output totals still come from provider usage. This estimator is
-    only used to split prompt tokens into cacheable pre-input and dynamic runtime
-    input when the provider does not expose cache-hit token details.
+    only used for the legacy static/dynamic split. Provider cache-hit/cache-miss
+    fields, when available, are handled separately by token_cache_accounting.
     """
     if value is None:
         return 0

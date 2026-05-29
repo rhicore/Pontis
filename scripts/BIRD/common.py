@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +17,9 @@ _RUN_ID = (
     or os.environ.get("BASELINE_RUN_ID")
     or datetime.now().strftime("%Y%m%d_%H%M%S")
 )
+_RUN_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+_TIMESTAMP_ONLY_RE = re.compile(r"^\d{8}_\d{6}$")
+_TIMESTAMP_PREFIX_RE = re.compile(r"^\d{8}_\d{6}(?:_|$)")
 
 
 def get_run_id() -> str:
@@ -33,7 +37,15 @@ def get_split_name(train: bool) -> str:
 
 
 def get_run_name(train: bool, run_id: str | None = None) -> str:
-    return f"{get_split_name(train)}_{run_id or get_run_id()}"
+    split = get_split_name(train)
+    raw_run_id = (run_id or get_run_id()).strip()
+    if _TIMESTAMP_ONLY_RE.match(raw_run_id):
+        return f"{raw_run_id}_{split}"
+    if _TIMESTAMP_PREFIX_RE.match(raw_run_id):
+        return raw_run_id
+    if raw_run_id.startswith(f"{split}_"):
+        return f"{_RUN_TIMESTAMP}_{raw_run_id}"
+    return f"{_RUN_TIMESTAMP}_{split}_{raw_run_id}"
 
 
 def get_data_dir(train: bool) -> Path:

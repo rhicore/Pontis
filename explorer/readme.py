@@ -148,6 +148,8 @@ def _preprocess_metrics(agent) -> dict:
     return {
         "preprocess_llm_calls": int(metrics.get("llm_rounds", 0) or 0),
         "preprocess_llm_input_tokens": int(metrics.get("input_tokens", 0) or 0),
+        "preprocess_llm_cached_input_tokens": int(metrics.get("cached_input_tokens", 0) or 0),
+        "preprocess_llm_uncached_input_tokens": int(metrics.get("uncached_input_tokens", 0) or 0),
         "preprocess_llm_output_tokens": int(metrics.get("output_tokens", 0) or 0),
         "preprocess_llm_total_tokens": int(metrics.get("total_tokens", 0) or 0),
     }

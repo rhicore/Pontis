@@ -101,6 +101,8 @@ def extract_one(
         "embedding": 0.0,
         "preprocess_llm_calls": 0,
         "preprocess_llm_input_tokens": 0,
+        "preprocess_llm_cached_input_tokens": 0,
+        "preprocess_llm_uncached_input_tokens": 0,
         "preprocess_llm_output_tokens": 0,
         "preprocess_llm_total_tokens": 0,
         "preprocess_embedding_calls": 0,
@@ -316,6 +318,10 @@ def main() -> None:
     all_results = []
     total_static = total_ai_col = total_ai_tbl = total_ai_db = 0.0
     total_agent = total_join = total_disambig = total_entity_hints = total_readme = 0.0
+    total_preprocess_llm_input_tokens = 0
+    total_preprocess_llm_cached_input_tokens = 0
+    total_preprocess_llm_uncached_input_tokens = 0
+    total_preprocess_llm_output_tokens = 0
     total_preprocess_llm_tokens = 0
     total_preprocess_embedding_tokens = 0
     total_preprocess_tokens = 0
@@ -347,6 +353,8 @@ def main() -> None:
                 "embedding": 0.0,
                 "preprocess_llm_calls": 0,
                 "preprocess_llm_input_tokens": 0,
+                "preprocess_llm_cached_input_tokens": 0,
+                "preprocess_llm_uncached_input_tokens": 0,
                 "preprocess_llm_output_tokens": 0,
                 "preprocess_llm_total_tokens": 0,
                 "preprocess_embedding_calls": 0,
@@ -388,6 +396,8 @@ def main() -> None:
     def record_result(result: dict) -> None:
         nonlocal total_static, total_ai_col, total_ai_tbl, total_ai_db
         nonlocal total_agent, total_join, total_disambig, total_entity_hints, total_readme
+        nonlocal total_preprocess_llm_input_tokens, total_preprocess_llm_cached_input_tokens
+        nonlocal total_preprocess_llm_uncached_input_tokens, total_preprocess_llm_output_tokens
         nonlocal total_preprocess_llm_tokens, total_preprocess_embedding_tokens
         nonlocal total_preprocess_tokens
         total_static += result["static"]
@@ -399,6 +409,10 @@ def main() -> None:
         total_disambig += result["disambiguate"]
         total_entity_hints += result.get("entity_hints", 0.0)
         total_readme += result["readme"]
+        total_preprocess_llm_input_tokens += int(result.get("preprocess_llm_input_tokens", 0) or 0)
+        total_preprocess_llm_cached_input_tokens += int(result.get("preprocess_llm_cached_input_tokens", 0) or 0)
+        total_preprocess_llm_uncached_input_tokens += int(result.get("preprocess_llm_uncached_input_tokens", 0) or 0)
+        total_preprocess_llm_output_tokens += int(result.get("preprocess_llm_output_tokens", 0) or 0)
         total_preprocess_llm_tokens += int(result.get("preprocess_llm_total_tokens", 0) or 0)
         total_preprocess_embedding_tokens += int(result.get("preprocess_embedding_total_tokens", 0) or 0)
         total_preprocess_tokens += int(result.get("preprocess_total_tokens", 0) or 0)
@@ -509,6 +523,10 @@ def main() -> None:
             "total": total_all,
         },
         "preprocess_tokens": {
+            "llm_input_tokens": total_preprocess_llm_input_tokens,
+            "llm_cached_input_tokens": total_preprocess_llm_cached_input_tokens,
+            "llm_uncached_input_tokens": total_preprocess_llm_uncached_input_tokens,
+            "llm_output_tokens": total_preprocess_llm_output_tokens,
             "llm_total_tokens": total_preprocess_llm_tokens,
             "embedding_total_tokens": total_preprocess_embedding_tokens,
             "total_tokens": total_preprocess_tokens,
