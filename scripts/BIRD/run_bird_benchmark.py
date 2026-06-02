@@ -264,12 +264,12 @@ README 覆盖性复盘要求：
 - `readme_minimum_update` 只在 README 缺失、错误或不清楚时提出最小补充/改写方向；README 已清楚覆盖时写 none。
 
 Final README recheck 介入复盘要求：
-- 主解题阶段可能启用了 `BirdReadmeFinalRecheck`。它不会调用额外审查流程，也不会读取示例；它会在最终 SQL 前通过 guardrail block 直接把完整 BIRD README 回灌给主 agent，要求主 agent 自查后只输出最终 SQL。
-- 以 `Guardrail / blocks` 和详细执行轨迹为准判断 recheck 是否真正介入；出现 `BirdReadmeFinalRecheck` 的 block 就说明完整 README 已回灌给主 agent。
+- 主解题阶段可能启用了 `BirdReadmeFinalRecheck`。它会让独立 reviewer 读取完整 BIRD README，并从中选择当前 question/evidence/predicted SQL 仍然违反的所有实质规则；guardrail block 只把这些精选规则回灌给主 agent。
+- 以 `Guardrail / blocks` 和详细执行轨迹为准判断 recheck 是否真正介入；出现 `BirdReadmeFinalRecheck` 的 block 就说明 reviewer 已介入，但不代表完整 README 已回灌给主 agent。
 - 为兼容旧评测 schema，若 `primary_error_category` 是 `GOLDEN_SQL_STYLE`，必须额外输出 `style_reviewer_intervention`：
-  - `REVIEWER_INTERVENED_BUT_NOT_FOLLOWED`：final README recheck 已经 BLOCK，README/checklist 若被执行通常会更接近 golden，但主 agent 最终没有执行或只部分执行。
-  - `REVIEWER_INTERVENED_WITH_WRONG_ADVICE`：保留兼容字段；直接 README 模式下通常不要使用，除非 README/checklist 本身错误或明显误导了主 agent。
-  - `REVIEWER_NOT_INTERVENED`：没有 `BirdReadmeFinalRecheck` block，或 README 回灌没有覆盖关键 style 问题。
+  - `REVIEWER_INTERVENED_BUT_NOT_FOLLOWED`：final README recheck 已经 BLOCK，精选规则若被执行通常会更接近 golden，但主 agent 最终没有执行或只部分执行。
+  - `REVIEWER_INTERVENED_WITH_WRONG_ADVICE`：reviewer 精选规则本身错误、遗漏关键规则，或明显误导了主 agent。
+  - `REVIEWER_NOT_INTERVENED`：没有 `BirdReadmeFinalRecheck` block，或精选规则没有覆盖关键 style 问题。
 - 若 `primary_error_category` 不是 `GOLDEN_SQL_STYLE`，`style_reviewer_intervention` 写 `not_applicable`。
 """
 
@@ -281,8 +281,8 @@ README 覆盖性复盘要求：
 - `readme_coverage_reason` 和 `readme_minimum_update` 固定写 none。
 
 Final README recheck 介入复盘要求：
-- 主解题阶段可能启用了 `BirdReadmeFinalRecheck`。它不会调用额外审查流程，也不会读取示例；它会在最终 SQL 前通过 guardrail block 直接把完整 BIRD README 回灌给主 agent。
-- 以 `Guardrail / blocks` 和详细执行轨迹为准判断它是否真正介入；没有 `BirdReadmeFinalRecheck` block，或 README 回灌没有覆盖关键 style 问题，归为 `REVIEWER_NOT_INTERVENED`。
+- 主解题阶段可能启用了 `BirdReadmeFinalRecheck`。若 BIRD README 被关闭，该 guardrail 通常也会被关闭；若仍出现 block，说明 reviewer 只把精选规则或 fallback 规则回灌给主 agent，不回灌完整 README。
+- 以 `Guardrail / blocks` 和详细执行轨迹为准判断它是否真正介入；没有 `BirdReadmeFinalRecheck` block，或精选规则没有覆盖关键 style 问题，归为 `REVIEWER_NOT_INTERVENED`。
 - 若 `primary_error_category` 是 `GOLDEN_SQL_STYLE`，输出 `style_reviewer_intervention`：
   - `REVIEWER_INTERVENED_BUT_NOT_FOLLOWED`
   - `REVIEWER_INTERVENED_WITH_WRONG_ADVICE`
@@ -968,7 +968,7 @@ def build_reflection_case_prompt(db_id: str, q: dict, collector: TraceCollector,
 
 
 def parse_reflection_fields(response: str) -> dict:
-    """Extract structured reflection fields from the model's line-based response."""
+    """Extract structured reflection fields from common text/JSON variants."""
     wanted = {
         "primary_error_category",
         "database_only_oracle_verdict",
@@ -984,13 +984,104 @@ def parse_reflection_fields(response: str) -> dict:
         "style_reviewer_intervention",
     }
     parsed = {}
-    for line in (response or "").splitlines():
-        match = re.match(r"^\s*([A-Za-z0-9_]+)\s*:\s*(.*)\s*$", line)
+    enum_values = {
+        "primary_error_category": (
+            "DB_EXPLORATION_FIXABLE",
+            "DATASET_PRIOR_REQUIRED",
+            "GOLDEN_SQL_STYLE",
+        ),
+        "golden_sql_style_readme_subcategory": (
+            "README_RULE_CLEAR_BUT_NOT_FOLLOWED",
+            "README_RULE_WRONG_OR_UNCLEAR",
+            "README_STYLE_NOT_COVERED",
+            "not_applicable",
+        ),
+        "style_reviewer_intervention": (
+            "REVIEWER_NOT_INTERVENED",
+            "REVIEWER_INTERVENED_WITH_CORRECT_ADVICE",
+            "REVIEWER_INTERVENED_WITH_WRONG_ADVICE",
+            "REVIEWER_INTERVENED_BUT_NOT_FOLLOWED",
+            "not_applicable",
+        ),
+    }
+
+    def add_field(key: str, value) -> None:
+        key = str(key).strip().strip("`*_").strip()
+        if key not in wanted or value is None:
+            return
+        if isinstance(value, (dict, list)):
+            rendered = json.dumps(value, ensure_ascii=False)
+        else:
+            rendered = str(value)
+        rendered = re.sub(r"^[\s`*_]+|[\s`*_]+$", "", rendered).strip()
+        for allowed in enum_values.get(key, ()):
+            if re.search(rf"\b{re.escape(allowed)}\b", rendered):
+                rendered = allowed
+                break
+        parsed[f"reflection_{key}"] = rendered
+
+    text = response or ""
+
+    # Some reflection calls return a fenced or bare JSON object instead of
+    # strict line-based key/value output.
+    json_candidates = [
+        m.group(1)
+        for m in re.finditer(
+            r"```(?:json)?\s*(\{.*?\})\s*```",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    ]
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        json_candidates.append(stripped)
+    for candidate in json_candidates:
+        try:
+            obj = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                add_field(str(key), value)
+
+    # Tolerate Markdown variants such as "**key**: value", "`key: value`",
+    # bullet-prefixed fields, and Chinese colons.
+    for line in text.splitlines():
+        cleaned = line.strip()
+        if not cleaned or cleaned.startswith("```"):
+            continue
+        if cleaned.startswith("`") and cleaned.endswith("`"):
+            cleaned = cleaned[1:-1].strip()
+        match = re.match(
+            r"^\s*(?:[-*]\s*)?(?:\*\*|__)?`?([A-Za-z0-9_]+)`?"
+            r"(?:\*\*|__)?\s*[:：]\s*(.*?)\s*$",
+            cleaned,
+        )
         if not match:
             continue
         key, value = match.group(1), match.group(2).strip()
-        if key in wanted:
-            parsed[f"reflection_{key}"] = value
+        add_field(key, value)
+
+    primary_key = "reflection_primary_error_category"
+    if primary_key not in parsed:
+        for category in (
+            "DB_EXPLORATION_FIXABLE",
+            "DATASET_PRIOR_REQUIRED",
+            "GOLDEN_SQL_STYLE",
+        ):
+            if re.search(rf"\b{re.escape(category)}\b", text):
+                parsed[primary_key] = category
+                break
+
+    if parsed.get(primary_key) != "GOLDEN_SQL_STYLE":
+        parsed.setdefault(
+            "reflection_golden_sql_style_readme_subcategory",
+            "not_applicable",
+        )
+        parsed.setdefault(
+            "reflection_style_reviewer_intervention",
+            "not_applicable",
+        )
     return parsed
 
 
