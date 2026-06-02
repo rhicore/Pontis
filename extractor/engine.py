@@ -100,6 +100,7 @@ def get_registry() -> Dict[str, object]:
         from explorer.text_chunk import generate as agent_text_chunk
         from explorer.json_pattern_summary import generate as agent_json_pattern_summary
         from explorer.csv_summary import generate as agent_csv_summary
+        from explorer.database_description_review import generate as agent_database_description_review
         _REGISTRY["agent_schema_prepare"] = agent_schema_prepare
         _REGISTRY["agent_join_detect"] = agent_join_detect
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
@@ -109,6 +110,7 @@ def get_registry() -> Dict[str, object]:
         _REGISTRY["agent_text_chunk"] = agent_text_chunk
         _REGISTRY["agent_json_pattern_summary"] = agent_json_pattern_summary
         _REGISTRY["agent_csv_summary"] = agent_csv_summary
+        _REGISTRY["agent_database_description_review"] = agent_database_description_review
     except ImportError:
         pass
 

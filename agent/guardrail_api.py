@@ -26,6 +26,8 @@ class CallVerdict:
     action: str = "allow"
     message: str = ""
     modified_args: Optional[dict] = None
+    replace_messages: Optional[List[dict]] = None
+    replace_tool_history: Optional[List[Tuple[str, dict, str]]] = None
 
 
 @dataclass

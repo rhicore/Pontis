@@ -268,7 +268,8 @@ class PontusAgent:
         return result, appended, trace_messages
 
     @staticmethod
-    def _aggregate(vs: List[Tuple[str, CallVerdict]]) -> Tuple[str, str, Optional[dict]]:
+    def _aggregate(vs: List[Tuple[str, CallVerdict]]
+                   ) -> Tuple[str, str, Optional[dict], Optional[list], Optional[list]]:
         """聚合单个调用的所有裁决。"""
         blocks = [(s, v) for s, v in vs if v.action == "block"]
         warnings = [(s, v) for s, v in vs if v.action == "warn"]
@@ -283,13 +284,18 @@ class PontusAgent:
 
         if blocks:
             msg = "\n".join(f"[{s}] {v.message}" for s, v in blocks)
-            return "block", msg, None
+            replace_messages = next((v.replace_messages for _, v in blocks if v.replace_messages is not None), None)
+            replace_tool_history = next(
+                (v.replace_tool_history for _, v in blocks if v.replace_tool_history is not None),
+                None,
+            )
+            return "block", msg, None, replace_messages, replace_tool_history
 
         if warnings:
             msg = "\n".join(f"[{s}] {v.message}" for s, v in warnings)
-            return "warn", msg, merged_args
+            return "warn", msg, merged_args, None, None
 
-        return "allow", "", merged_args
+        return "allow", "", merged_args, None, None
 
     def _guardrail_process(self, ctx: GuardrailContext, msg,
                            tool_calls) -> Iterator[dict]:
@@ -299,12 +305,27 @@ class PontusAgent:
         # ── 文本响应 ──
         if not tool_calls:
             text_vs = verdicts.get("text", [])
-            action, message, _ = self._aggregate(text_vs)
+            action, message, _, replace_messages, replace_tool_history = self._aggregate(text_vs)
             if action == "block":
                 sources = "+".join(s for s, v in text_vs if v.action == "block")
                 self.logger.info(f"Guardrail block [{sources}]: {message}")
                 yield {"type": "blocked", "guardrail": sources, "content": message}
-                self.messages.append({"role": "user", "content": message})
+                if replace_messages is not None:
+                    self.messages = list(replace_messages)
+                    self.logger.info(
+                        "Guardrail context rewrite [%s]: %d messages",
+                        sources,
+                        len(self.messages),
+                    )
+                    yield {
+                        "type": "context_rewrite",
+                        "guardrail": sources,
+                        "message_count": len(self.messages),
+                    }
+                else:
+                    self.messages.append({"role": "user", "content": message})
+                if replace_tool_history is not None:
+                    self._tool_history = list(replace_tool_history)
                 return
             if not (msg.content or "").strip():
                 self._empty_text_retries += 1
@@ -329,7 +350,7 @@ class PontusAgent:
         for i, tc in enumerate(tool_calls):
             name = tc.function.name
             call_vs = verdicts.get(i, [])
-            action, message, modified_args = self._aggregate(call_vs)
+            action, message, modified_args, _, _ = self._aggregate(call_vs)
 
             if action == "block":
                 sources = "+".join(s for s, v in call_vs if v.action == "block")

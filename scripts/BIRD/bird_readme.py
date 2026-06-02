@@ -50,15 +50,15 @@ R15. 一个概念在库中拆成多列时，分别输出原字段；只有 quest
 
 R16. Yes/no 或状态判断只在 question 确实要求判断值时使用 `CASE`；输出词形优先采用 question、evidence 或 schema 中出现的状态词。
 
-R17. `WHERE` 只写 question/evidence 明确要求的条件，或为实现 evidence 字段映射、枚举含义、连接语义、精确短语来源、目标行粒度所必需的条件；metadata 明确说明同一表混有实体行和汇总行时，选择 question 指向的行级别属于必要目标粒度，不按隐藏过滤处理。
+R17. `WHERE` 只写 question/evidence 明确要求的条件，或为实现 evidence 字段映射、枚举含义、连接语义、精确短语来源、目标行粒度所必需的条件；不要因为 metadata 提到 status、rtype、active/current、非空、学校级/学区级等字段就自动加入过滤。只有 question/evidence 明确要求该状态/层级，或不加该条件会导致连接路径、目标字段或枚举来源无法表达题意时，才加入这类条件。
 
-R18. schema 中存在状态、类型、行级别、有效性、类别、默认行、历史行或当前行字段，不代表必须过滤；但当 metadata 明确说明同一表混有实体行和上级汇总行，而 question 指向实体行时，选择对应实体行级别是必要粒度约束，不属于隐藏过滤。R18 的行级粒度约束优先于 R17/R19 对隐藏过滤的默认限制。
+R18. schema 中存在状态、类型、行级别、有效性、类别、默认行、历史行或当前行字段，不代表必须过滤。BIRD 风格中，普通实体词（如 school、player、patient、record）通常不足以自动触发隐藏的 rtype/status/active/current 过滤；若 question/evidence 没有点名该层级或状态，优先保持候选表的自然行集。仅当题目明确区分实体行与汇总行，或查询验证显示不加层级条件会选到明显错误对象时，才加入行级别过滤。
 
 R19. 自然语言中的普通实体词、角色词或形容词，不自动转换成隐藏状态、隐藏类别、有效性、非空、最新记录或活跃记录过滤；但 metadata 已经说明的实体行/汇总行粒度选择、连接所需枚举映射、或完整短语精确来源过滤，不属于本规则禁止的隐藏过滤。
 
 R20. 输出实体行时，非输出属性可能为 NULL 不自动过滤；question 明确要求 has、with、available、non-null、known 等存在性条件时才加非空过滤。若 question 直接要求输出某个属性值、名称、标题或文本，结果应是该输出属性的实际值，可过滤该输出列的 SQL NULL；不要额外过滤非 NULL 的占位符、空串或特殊缺失标记，除非 question/evidence 明确要求。
 
-R21. 使用 `ORDER BY ... LIMIT` 选择最高、最低、最新、最早、最大、最小等行时，若排序指标为 nullable，必须考虑 SQLite 的 NULL 排序；默认加 `IS NOT NULL` 避免 NULL 被选中，除非 question/evidence 明确要求包含 NULL 或缺失值。R21 是 R50/R51 极值取行规则的必要前置检查。
+R21. 使用 `ORDER BY ... LIMIT` 选择最高、最低、最新、最早、最大、最小等行时，先判断 SQLite NULL 排序是否真的会改变被选中的行。`DESC LIMIT 1` 下 NULL 默认排在后面，通常不需要额外 `IS NOT NULL`；`ASC LIMIT 1`、最早/最低等场景若 NULL 可能排在前面，且 question/evidence 没有要求缺失值，才添加 `IS NOT NULL`。不要对聚合排序表达式、子查询排序指标或已经由比较条件排除 NULL 的列机械添加 `IS NOT NULL`。
 
 R22. 固定枚举、代码、ID、完整名称优先等值匹配；包含、前缀、后缀、模糊或模式匹配才使用 `LIKE`。
 
@@ -82,7 +82,7 @@ R31. 触发：SQL 出现 `COUNT`、`SUM`、`AVG`、`MIN`、`MAX` 或 `GROUP BY` 
 
 R32. 触发：question 要 list、show、return 具体字段值；禁止：因为目标字段看起来可统计就自动 `COUNT`、`SUM`、`AVG` 或 `GROUP BY`；执行：保持逐行输出 question/evidence 指定的字段值。
 
-R33. 触发：question 是 `how many <entities/rows/records>` 且目标是实体、行或记录数量；禁止：计数与 question/evidence 不一致的中间表行、JOIN 后重复行或已有指标列；执行：按目标粒度使用 `COUNT(*)`、`COUNT(key)` 或必要的 `COUNT(DISTINCT key)`。
+R33. 触发：question 是 `how many <entities/rows/records>` 且目标是实体、行或记录数量；禁止：计数与 question/evidence 不一致的中间表行、JOIN 后重复行或已有指标列；执行：优先按最终 FROM/JOIN 后的目标行粒度使用 `COUNT(*)` 或 `COUNT(key)`。不要仅因为 question 使用实体名词就自动改成 `COUNT(DISTINCT key)`；只有 question/evidence 明确要求 unique/distinct/different，或查询已确认必要 JOIN 会把同一目标实体重复成多行且题意确实是唯一实体数时，才使用 `COUNT(DISTINCT key)`。
 
 R34. 触发：question 是 `how many/how much/number of/count of <metric>`，且 `<metric>` 已经是表中的人数、数量、次数、分数、排名、rate、count、number、total 等指标列，并且 question 要的是某个或若干匹配实体/记录上的该指标值；禁止：因为有多个匹配实体、或因为题面写了 how many，就默认改写为 `COUNT(*)`、`COUNT(entity)`、`SUM(metric)` 或 `GROUP BY`；执行：直接 `SELECT metric_column`，只保留定位匹配记录所需的 JOIN/WHERE。
 
@@ -90,13 +90,13 @@ R35. 触发：候选 SQL 对已有指标列使用 `SUM`、`AVG`、`COUNT` 或 `G
 
 R36. Evidence 指定 `COUNT(*)`、`COUNT(id)`、`COUNT(DISTINCT id)`、`SUM(CASE...)` 等口径时，按指定口径实现。
 
-R37. 触发：候选 SQL 使用 `DISTINCT` 或 `COUNT(DISTINCT ...)`；禁止：为了“更安全”“更像实体列表”“避免重复”而无条件添加；执行：只有 question/evidence 要求唯一值，或目标语义明确是唯一实体/唯一取值集合且 JOIN 仅为过滤解释引入重复时才保留，否则删除 `DISTINCT`。JOIN/行粒度可能重复目标对象本身不是保留 `DISTINCT` 的充分理由。
+R37. 触发：候选 SQL 使用 `DISTINCT` 或 `COUNT(DISTINCT ...)`；禁止：为了“更安全”“更像实体列表”“避免重复”而无条件添加；执行：只有 question/evidence 要求 unique/distinct/different，或目标语义明确是唯一取值集合且查询验证显示无 `DISTINCT` 会产生同一取值的非题意重复时才保留，否则删除 `DISTINCT`。BIRD 中 list/how many 默认不等于 unique；JOIN/行粒度可能重复目标对象本身不是保留 `DISTINCT` 的充分理由。
 
 R38. Question/evidence 明确 unique、distinct、different、各不相同、不同取值，或指定 `COUNT(DISTINCT ...)` 时，使用 `DISTINCT`。
 
 R39. 输出目标是实体或取值集合，且 question/evidence 没有要求自然行、前 N 行、记录实例或重复出现次数，JOIN 到翻译、合法性、规则、别名、桥表、明细或历史表只为过滤/解释而引入重复时，可以用 `DISTINCT` 保持目标集合语义。
 
-R40. 触发：计数 SQL 使用 `COUNT(DISTINCT target)`；禁止：在 schema 或查询已确认目标粒度一行一个实体时继续保留 `DISTINCT`；执行：只有目标确实是唯一实体或唯一取值集合，且当前 JOIN/行粒度可能重复该目标时才使用 `COUNT(DISTINCT ...)`，否则改为 `COUNT(*)`、`COUNT(key)` 或 evidence 指定口径。
+R40. 触发：计数 SQL 使用 `COUNT(DISTINCT target)`；禁止：在 schema 或查询已确认目标粒度一行一个实体时继续保留 `DISTINCT`，也禁止因为 reviewer 担心 JOIN 可能重复就预防性加 `DISTINCT`；执行：只有 question/evidence 明确唯一口径，或数据库探索已经证明当前 JOIN 会产生同一目标的非题意重复且题目要唯一目标数时才使用 `COUNT(DISTINCT ...)`，否则改为 `COUNT(*)`、`COUNT(key)` 或 evidence 指定口径。
 
 R41. 多行拥有相同展示值不必然是重复错误；如果 BIRD 题目意图是列出行级结果，保留重复行。
 
@@ -114,7 +114,7 @@ R47. 多条角色路径可达同一对象时，先区分 owner、author、partic
 
 R48. 多个同构槽位只有在 question/evidence 要求全部槽位时才 `UNION` 或展开；否则使用被明确指向的代表槽位。
 
-R49. JOIN 键优先使用 schema、外键或 hints 指示的原始键；当 metadata/hints 或查询验证显示键宽度、前导零、类型格式不一致时，格式修复是必要连接语义，不属于额外业务清洗。
+R49. JOIN 键优先使用 schema、外键或 hints 指示的原始键。格式修复（补零、CAST、substr、printf 等）只有在查询验证显示原始键连接失败、明显漏行，或目标候选必须通过该修复才能匹配时才加入；不要因为 metadata 提到“可能需要补零/类型修复”就对所有 JOIN 机械修复。若题目所需字段可由两张表直接通过原始键连接得到，优先使用直接连接路径，不额外加入桥表或格式修复。
 
 R50. highest、lowest、top、bottom、maximum、minimum、largest、smallest、most、least、earliest、latest 等要求实体或行时，使用 `ORDER BY metric DESC/ASC LIMIT N`。
 

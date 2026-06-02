@@ -28,6 +28,7 @@ class AgentSpec:
     projects: List[str] = field(default_factory=list)  # 本次开启的项目名列表，空则只开启 project_path
     effort: str = "mid"
     max_rounds: Optional[int] = None
+    bird_report_count: int = 2
 
     tools: List[str] = field(default_factory=list)
     prompts: List[str] = field(default_factory=list)

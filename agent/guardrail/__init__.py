@@ -15,6 +15,7 @@ def build_guardrails(spec, builder_names: list = None) -> list:
     from agent.guardrail.sql_disambig_check import SQLDisambigCheck
     from agent.guardrail.meta_disambig_prefetch import MetaDisambigPrefetch
     from agent.guardrail.sql_value_grounding_check import SQLValueGroundingCheck
+    from agent.guardrail.bird_multi_report_controller import BirdSchemaChallengeController
     from agent.guardrail.bird_readme_final_recheck import BirdReadmeFinalRecheck
     from agent.prompt._effort import get_effort_max_rounds
 
@@ -29,6 +30,13 @@ def build_guardrails(spec, builder_names: list = None) -> list:
         "disambig_check": lambda: SQLDisambigCheck(),
         "meta_disambig_prefetch": lambda: MetaDisambigPrefetch(),
         "value_grounding_check": lambda: SQLValueGroundingCheck(),
+        "bird_schema_challenge_controller": lambda: BirdSchemaChallengeController(
+            getattr(spec, "bird_report_count", 2)
+        ),
+        # Backward-compatible alias for older benchmark commands.
+        "bird_multi_report_controller": lambda: BirdSchemaChallengeController(
+            getattr(spec, "bird_report_count", 2)
+        ),
         "bird_readme_final_recheck": lambda: BirdReadmeFinalRecheck(),
     }
 

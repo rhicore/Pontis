@@ -590,12 +590,13 @@ class TraceCollector:
                 "args": event.get("arguments", {}),
             })
             self._next_round += 1
-        elif etype in {"warning", "sidechain", "append", "trace"}:
+        elif etype in {"warning", "sidechain", "append", "trace", "context_rewrite"}:
             self._entries.append({
                 "type": etype,
                 "round": self._next_round,
                 "source": event.get("guardrail", ""),
-                "msg": event.get("content", ""),
+                "msg": event.get("content", "")
+                or f"context rewritten to {event.get('message_count', '?')} messages",
                 "name": event.get("name"),
                 "args": event.get("arguments", {}),
                 "call_index": event.get("call_index"),
@@ -885,6 +886,9 @@ def load_query_prompt_template(args) -> str:
 
 def build_bird_benchmark_guardrails(args) -> list[str]:
     guardrails = list(BIRD_BENCHMARK_GUARDRAILS)
+    if getattr(args, "bird_schema_challenge", False) or getattr(args, "bird_multi_report", False):
+        insert_at = guardrails.index("bird_readme_final_recheck") if "bird_readme_final_recheck" in guardrails else len(guardrails)
+        guardrails.insert(insert_at, "bird_schema_challenge_controller")
     if not getattr(args, "bird_readme", True):
         guardrails = [g for g in guardrails if g != "bird_readme_final_recheck"]
     return guardrails
@@ -1564,6 +1568,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             tools=list(BIRD_BENCHMARK_TOOLS),
             prompts=list(BIRD_BENCHMARK_PROMPTS),
         )
+        spec.bird_report_count = max(1, int(getattr(args, "bird_report_count", 2) or 2))
         spec.projects = build_agent_projects(db_id, args.use_bird_global)
         spec.guardrails = build_guardrails(spec, build_bird_benchmark_guardrails(args))
         agent = create_agent(
@@ -1754,6 +1759,25 @@ def main():
         help="关闭 BIRD README 系统提示词注入和最终复审 guardrail，用于 ablation",
     )
     parser.add_argument(
+        "--bird-schema-challenge",
+        action="store_true",
+        default=False,
+        help="启用最终 SQL schema-linking challenge + judge 上下文重写控制器（默认关闭）",
+    )
+    parser.add_argument(
+        "--bird-multi-report",
+        dest="bird_multi_report",
+        action="store_true",
+        default=False,
+        help="兼容旧参数；等价于 --bird-schema-challenge",
+    )
+    parser.add_argument(
+        "--bird-report-count",
+        type=int,
+        default=2,
+        help="启用 --bird-schema-challenge 时生成的 SQL report 数量，默认 2",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
@@ -1841,6 +1865,8 @@ def main():
         "Config: "
         f"bird_global={'on' if args.use_bird_global else 'off'}, "
         f"bird_readme={'on' if args.bird_readme else 'off'}, "
+        f"bird_schema_challenge={'on' if (args.bird_schema_challenge or args.bird_multi_report) else 'off'}, "
+        f"bird_report_count={args.bird_report_count}, "
         f"prompt_profile={args.prompt_profile}, "
         f"prompt_file={args.prompt_file or '(none)'}\n"
     )

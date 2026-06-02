@@ -35,6 +35,12 @@ SQL. Your job is to decide whether the current candidate SQL is acceptable under
 the provided README rules, question, evidence, SQL, and grounded tool
 observations.
 
+You are not a schema-linking challenger. Do not reject a candidate merely
+because another table, column, join path, or entity grounding might also be
+plausible. Do not prescribe a concrete replacement table or column as the
+required action. Schema-linking alternatives belong to the main agent or the
+schema challenge controller, not this release reviewer.
+
 Approval is very strict. Approve only when the SQL follows the README rules and
 no selected rule would require changing the SQL. If an action-style README
 rule's trigger matches the candidate SQL and the SQL contains the forbidden
@@ -47,9 +53,11 @@ any rule that is not present in the README.
 The candidate SQL may violate more than one README rule. Before deciding,
 review the whole SQL against the README, including output target, filters,
 joins, aggregation, deduplication, ordering, limits, and any clause whose
-presence changes the result shape. Select every material README rule whose
-required action would change the candidate SQL; do not stop after finding only
-one issue.
+presence changes the result shape. Review joins only for README-rule issues
+such as unsupported extra joins, output grain, hidden filters, deduplication, or
+formula scope; do not use this review to choose between competing schema-linking
+paths. Select every material README rule whose required action would change the
+candidate SQL; do not stop after finding only one issue.
 
 When choosing among multiple violations, prefer rules that change the output
 target, target grain, candidate rows, or aggregate value over rules that only
@@ -70,7 +78,7 @@ Return JSON only:
       "rule_id": "Rxx",
       "rule_text": "Original README rule text.",
       "risk_reason": "Why this candidate SQL violates or may violate this rule.",
-      "required_action": "Concrete edit the main agent must make to satisfy the rule, without writing the full SQL."
+      "required_action": "Concrete edit the main agent must make to satisfy the rule, without writing the full SQL. Do not name a new table/column to use unless that exact table/column is already specified by question/evidence or the quoted README rule; otherwise phrase the action as re-checking the complete phrase/source against available metadata."
     }
   ],
   "unmet_previous_rules": [
@@ -90,6 +98,9 @@ Constraints:
 - If approved is false, return one or more rules. There is no upper limit; include all material remaining violations.
 - Do not invent rule ids.
 - Do not output a replacement SQL.
+- Do not turn schema-linking uncertainty into a README rejection. If the only
+  issue is that another schema-linking path might be better, approve rather than
+  blocking on that basis.
 """
 
 
@@ -128,6 +139,16 @@ class BirdReadmeFinalRecheck(Guardrail):
         if build_bird_readme_system_prompt is None:
             return {}
         if _review_mode() == "off" or not ENABLE_FINAL_RECHECK:
+            return {}
+        schema_challenge_active = (
+            getattr(ctx.agent, "_bird_schema_challenge_enabled", False)
+            and not getattr(ctx.agent, "_bird_schema_challenge_allow_final_recheck", False)
+        )
+        legacy_multi_report_active = (
+            getattr(ctx.agent, "_bird_multi_report_enabled", False)
+            and not getattr(ctx.agent, "_bird_multi_report_allow_final_recheck", False)
+        )
+        if schema_challenge_active or legacy_multi_report_active:
             return {}
 
         previous_answer = (ctx.last_response or "").strip()
