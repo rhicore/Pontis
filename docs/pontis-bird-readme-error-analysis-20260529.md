@@ -17,6 +17,25 @@ workspace/baselines/pontis/results/20260529_211836_bird_dev_full_readme_direct_n
 
 同时，部分错题并不是“不遵守 README”，而是 README 规则和 BIRD gold 口径存在冲突。例如 Q6 的问题是 “list the schools”，当前 README 中“实体但未指定展示字段则输出主键/ID/code”的规则会倾向输出 `CDSCode`，但 BIRD gold 输出 `School`。这类问题需要调整 README 本身，而不是更强地执行现有 README。
 
+## 2026-06-03 机制更新
+
+本轮不再采用硬编码规则拦截。`BirdReadmeFinalRecheck` 已改为先把 README 中每条 `Rxx.` 规则解析成独立可检索项，再基于 question、evidence、candidate SQL、近期工具观测和通用 SQL 语法特征做关键词/语义检索，只把候选 rule cards 交给独立 reviewer 判断。retriever 中不写具体 R 编号、具体数据库、具体字段或具体题型逻辑；README 增删改规则时，召回质量应由规则文本本身承担。
+
+小规模 smoke 结果：
+
+| run | qids | 结果 | 说明 |
+| --- | --- | --- | --- |
+| `20260603_typical3_readme_schema4_smoke1` | 344, 648, 1504 | 2/3 correct | Q344、Q648 转正；Q1504 暴露 value grounding 与“0-hit 精确路径有效”的冲突。 |
+| `20260603_q1504_valuefix_smoke1` | 1504 | 1/1 correct | 修改 `SQLValueGroundingCheck` 后，日期周期 `LIKE '%YYYY-MM%'` 的 0-hit 精确路径不再被强制改写，最终保留 transaction-detail 路径。 |
+
+代表性修复：
+
+- Q344：reviewer 现在能选中 R11，要求行级/印刷对象输出本地主键或本地行标识，而不是展示名 `name`。最终由 `SELECT c.name` 修正为 `SELECT c.id`。
+- Q648：R20 强化了 `available website URL` 作为输出属性修饰词时不自动添加 `IS NOT NULL`，最终保留 NULL 行并转正。
+- Q1504：schema challenge 明确禁止仅因明细事实表 0-hit 就改用非零命中的月度汇总代理表；`SQLValueGroundingCheck` 允许日期/时间列的周期过滤返回空结果。最终选择 `transactions_1k` 路径，执行评测转正。
+
+仍需注意：旧版“确定性 SQL 契约 lint”建议不再作为当前优先方案。硬拦截容易把 README 写死进代码，也会在 README 增删改时失效。当前方向是：规则内容保留在 README，retriever 只做通用检索，reviewer 只判断检索到的候选规则；DB exploration consistency 则通过 schema challenge / judge 阶段比较候选路径、行粒度、字段语义、0-hit 精确路径和代理表风险。
+
 ## 总体错因分布
 
 下面是基于 `results.jsonl` 的静态 SQL 差异归因。分类是启发式的，主要用于定位可修复方向；同一道题可能同时有多个 SQL 差异，表中采用主类归因。
@@ -354,3 +373,16 @@ Q54、Q85、Q86 这类题中，gold 默认使用 `AdmFName1/AdmLName1`，不扩�
 ### 6. 排序和 LIMIT 大多不是冲突
 
 粗扫时看起来有少量 gold `ORDER BY/LIMIT` 没有 top/maximum 等显式词，但人工看多数其实有自然语言触发词，例如 `fewest`、`biggest`、`older`、`fastest`、`costs more`。这些与 README 的 top/bottom/ranking 规则不冲突，只需要扩大触发词表，而不是修改原则。
+
+## 2026-06-03 schema challenge + retrieved README reviewer smoke
+
+本轮验证的关键机制变化：
+
+- `bird_readme_rule_retriever.py` 只从当前 README 文本解析 `R数字.` 规则，并用 question/evidence/candidate SQL/recent context 做关键词和语义召回；不包含具体规则、数据库字段、qid 或 SQL 特征硬编码。
+- `BirdSchemaChallengeController` 的 judge SQL 不再直接释放，而是先要求主 agent 原样输出 selected SQL，使下一轮 `BirdReadmeFinalRecheck` 必定能检查。
+- `BirdReadmeFinalRecheck` 优先从当前 assistant response 提取 SQL，再回退到历史消息提取，避免 context rewrite 后检查旧 SQL 或漏检。
+
+典型错题结果：
+
+- Q359 `card_games`: reviewer 现在能召回并执行 R76，成功拦截 `JOIN sets + ORDER BY releaseDate + LIMIT 1` 这类由 evidence-mapped phrase 二次推导出的行选择，并要求删除。主 agent 执行后输出 `SELECT originalType FROM cards WHERE name = ...`。仍未对齐 gold，因为 gold 额外使用 `originalType IS NOT NULL`；这暴露 R20/R76 之后还缺少“输出属性为 NULL 占位行时是否过滤 NULL”的 BIRD gold-style 规则。目前不能通过硬拦截或 retriever 解决。
+- Q584 `codebase_community`: schema challenge 已经比较 `comments.Text`、`comments.PostId=目标帖子`、`postHistory.Comment` 等路径，但仍选择“编辑过该帖的用户留下的全局 comments.Text”。Gold 使用 `postHistory.Comment`。这不是 final README reviewer 的职责；属于 schema/gold 语义偏好问题，需要在数据库探索一致性或多候选 judge 的 BIRD 风格先验中处理。

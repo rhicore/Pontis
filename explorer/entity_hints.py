@@ -24,6 +24,7 @@ PROMPT = """\
 
 使用这些信息源完成探索：
 - `find({"ref":"*:file:db"})` 或 `find({"ref":"*:db"})`
+- `find({"ref":"*:file"})`、`find({"ref":"*:csv"})`、`find({"ref":"*:text"})` 定位本地 schema/字段说明文件
 - `find({"ref":"*:table"})`
 - `find({"ref":"*:col"})`
 - `find({"ref":"*:fk"})`
@@ -32,6 +33,7 @@ PROMPT = """\
 - `find({"ref":"*:disambig"})`
 - `find({"ref":"*:hint"})`
 - 对上述实体调用 `meta`
+- 对确实描述 schema、字段含义、枚举值、行粒度或数据来源边界的本地说明文件调用 `read`
 - 对当前数据库调用只读 `query`
 
 本 explorer 只写当前数据库能验证的结构和值事实。数据集评测口径、SQL 输出风格、参考答案偏好和跨题经验由其他知识层维护。
@@ -98,11 +100,12 @@ PROMPT = """\
 ## 探索流程
 
 1. 找到当前数据库、表、列、fk、rel、overlap、已有 hint 和 disambig。
-2. 先建立表级 row_grain 草图：每张主要表的一行代表什么，主键或重复键是什么，常见 join 会扩行还是补属性。
-3. 扫描高歧义列名和近名列，建立 field_landing / disambig。
-4. 对事实表、日志表、快照表、汇总表、桥表和维表建立 fact_table_selection / join_consequence hint。
-5. 对日期、时间、金额、数量、rank、position、points、text/name/status/type 等列抽样检查格式和值域，建立 format_risk 和 aggregation_grain hint。
-6. 覆盖更新基础实体 `hints`，确认高价值结论在表/列 `meta` 时直接可见。
+2. 如果项目包含字段说明、数据字典、schema notes 或同类本地说明文件，先 `meta` 判断其用途；只有确认它会影响 SQL 决策时才用 `read` 读取相关原文。
+3. 先建立表级 row_grain 草图：每张主要表的一行代表什么，主键或重复键是什么，常见 join 会扩行还是补属性。
+4. 扫描高歧义列名和近名列，建立 field_landing / disambig。
+5. 对事实表、日志表、快照表、汇总表、桥表和维表建立 fact_table_selection / join_consequence hint。
+6. 对日期、时间、金额、数量、rank、position、points、text/name/status/type 等列抽样检查格式和值域，建立 format_risk 和 aggregation_grain hint。
+7. 覆盖更新基础实体 `hints`，确认高价值结论在表/列 `meta` 时直接可见。
 
 ## 质量标准
 
@@ -137,7 +140,7 @@ def generate(workspace: Workspace) -> None:
     spec = explorer_writer_spec(
         workspace,
         tools=[
-            "find", "meta", "query",
+            "find", "meta", "read", "query",
             "create_entity", "update_meta", "add_edge", "delete",
         ],
         include_readme=False,

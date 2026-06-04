@@ -31,11 +31,11 @@ def build_guardrails(spec, builder_names: list = None) -> list:
         "meta_disambig_prefetch": lambda: MetaDisambigPrefetch(),
         "value_grounding_check": lambda: SQLValueGroundingCheck(),
         "bird_schema_challenge_controller": lambda: BirdSchemaChallengeController(
-            getattr(spec, "bird_report_count", 2)
+            getattr(spec, "bird_report_count", 3)
         ),
         # Backward-compatible alias for older benchmark commands.
         "bird_multi_report_controller": lambda: BirdSchemaChallengeController(
-            getattr(spec, "bird_report_count", 2)
+            getattr(spec, "bird_report_count", 3)
         ),
         "bird_readme_final_recheck": lambda: BirdReadmeFinalRecheck(),
     }

@@ -28,7 +28,7 @@ README 的目标不是营销文案，而是：
 - **优先复用现有摘要**：先读已经存在的 brief/detail，不要重复劳动
 - **只在必要时补充探索**：如果已有信息足够，就不要过度查询
 - **不要读取原始文件正文**：优先用 `meta(..., property=["detail"])` 读取已有摘要；不要为了 README 再去 `cat README` 或 `cat *.csv`
-- **不要把 CSV 当数据库去 query**：`database_description/*.csv` 是说明文件，不是数据库表
+- **不要把说明文件当数据库去 query**：CSV、Markdown、文本数据字典等说明文件不是业务数据表
 - **用中文写 README**
 - **不要提及内部实现概念**：不要出现 Pontis、知识图谱、.pontis、实体节点、tool contract 等内部术语
 - **路径式引用**：读表/列时使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`
@@ -42,7 +42,7 @@ README 的目标不是营销文案，而是：
 2. 读取数据库文件本身的 meta
 3. 读取主要表的 meta
 4. 读取 fk / rel / disambig（如果有）
-5. 只在前面信息不足时，再查看 `database_description/*.csv` 或其他说明文件的 meta
+5. 只在前面信息不足时，再查看数据字典、字段说明、schema notes 或其他说明文件的 meta
 
 ## README 应包含的结构
 

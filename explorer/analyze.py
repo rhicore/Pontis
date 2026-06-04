@@ -54,8 +54,8 @@ COORDINATOR_PROMPT = """\
 只描述客观事实差异，**不给操作建议**（如"优先用 X 列"、"应该用代码列"等）。具体怎么选由 agent 自行判断。
 
 示例：
-- `SOC` col: "学校运营类型代码（2位数字）。区别于 SOCType（该类型的文字描述，如'District Community Day Schools'）。常见值：69=District Community Day Schools, 66=Community Day Schools"
-- `Free Meal Count` col: "免费午餐学生人数。区别于 FRPM Count（免费或减价午餐学生人数，数值通常更大，包含两个指标）"
+- `status_code` col: "状态代码。区别于 status_name（状态的文字描述）。常见值示例可写入 detail。"
+- `primary_count` col: "主指标计数。区别于 total_count（包含主指标和相关扩展指标的总数）。"
 
 ## 策略：依赖感知的协调者
 
@@ -105,7 +105,7 @@ COORDINATOR_PROMPT = """\
 - JSON、CSV、文本等其他文件（如果文本过长可调用子智能体）
 
 - 如果你在总结过程中发现缺失的关系或歧义，只需在相关实体的 detail 中提及即可，不要创建新实体
-- 不要把 CSV 当数据库去 `query`；`database_description/*.csv` 这类说明文件默认只读它们已有的 meta
+- 不要把说明文件当数据库去 `query`；CSV、Markdown、文本数据字典等说明文件默认只读它们已有的 meta
 - 如果 README / CSV / 其他辅助文件当前没有足够 detail，而且它们对表列理解不是必需，就先跳过，不要为了补文件摘要而发起失败的工具调用
 - 如果某张表已经有高质量 table summary，就不要重新展开它的全部列；只补缺的列或明显低质量的列
 """

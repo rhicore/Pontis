@@ -227,7 +227,7 @@ def _parse(sql: str) -> Optional[exp.Expression]:
     """解析 SQL，解析失败时返回 None。"""
     try:
         return sqlglot.parse_one(sql, dialect="sqlite")
-    except sqlglot.errors.ParseError:
+    except sqlglot.errors.SqlglotError:
         return None
 
 

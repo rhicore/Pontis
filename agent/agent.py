@@ -84,6 +84,7 @@ class PontusAgent:
         self._fresh_input_tokens = 0
         self._cache_accounting_sources: List[str] = []
         self._previous_prompt_text: Optional[str] = None
+        self._last_guardrail_trace: List[dict] = []
 
     # ──────────────── LLM 调用 ────────────────
 
@@ -224,9 +225,33 @@ class PontusAgent:
                           ) -> Dict[Union[int, str], List[Tuple[str, CallVerdict]]]:
         """运行所有 guardrail，收集 per-call 裁决矩阵。"""
         verdicts: Dict[Union[int, str], List[Tuple[str, CallVerdict]]] = defaultdict(list)
+        trace_guardrails = os.environ.get("PONTIS_GUARDRAIL_TRACE") == "1"
+        trace_rows = []
+        if trace_guardrails:
+            self.logger.info(
+                "Guardrail trace order: %s",
+                [g.__class__.__name__ for g in self.guardrails],
+            )
         for g in self.guardrails:
-            for key, v in g.check(ctx).items():
+            result = g.check(ctx)
+            if trace_guardrails:
+                trace_rows.append({
+                    "guardrail": g.__class__.__name__,
+                    "keys": [str(key) for key in result.keys()],
+                    "pending": bool(ctx.pending_calls),
+                    "rounds": ctx.rounds,
+                })
+            if trace_guardrails:
+                self.logger.info(
+                    "Guardrail trace check %s keys=%s pending=%s rounds=%s",
+                    g.__class__.__name__,
+                    list(result.keys()),
+                    bool(ctx.pending_calls),
+                    ctx.rounds,
+                )
+            for key, v in result.items():
                 verdicts[key].append((g.__class__.__name__, v))
+        self._last_guardrail_trace = trace_rows
         return dict(verdicts)
 
     def _drain_guardrail_messages(self, rounds: int) -> Iterator[dict]:
@@ -301,6 +326,14 @@ class PontusAgent:
                            tool_calls) -> Iterator[dict]:
         """guardrail 层：裁决 → 聚合 → 执行 → 后检查。"""
         verdicts = self._collect_verdicts(ctx)
+        if os.environ.get("PONTIS_GUARDRAIL_TRACE") == "1":
+            content = json.dumps(self._last_guardrail_trace, ensure_ascii=False)
+            yield {
+                "type": "trace",
+                "guardrail": "GuardrailTrace",
+                "content": content,
+                "trace_only": True,
+            }
 
         # ── 文本响应 ──
         if not tool_calls:
@@ -451,6 +484,7 @@ class PontusAgent:
                 rounds=rounds,
                 pending_calls=pending,
                 agent=self,
+                current_response=msg.content,
             )
 
             done = False

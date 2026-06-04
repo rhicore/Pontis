@@ -62,13 +62,15 @@ class GuardrailContext:
     def __init__(self, *, messages: list, tool_history: list,
                  workspace, rounds: int,
                  pending_calls: List[Tuple[str, dict]],
-                 agent=None):
+                 agent=None,
+                 current_response: Optional[str] = None):
         self._messages = messages
         self._tool_history = tool_history
         self._workspace = workspace
         self.rounds = rounds
         self.pending_calls = pending_calls
         self.agent = agent
+        self._current_response = current_response
 
     # ── 类型判断 ──
 
@@ -85,6 +87,8 @@ class GuardrailContext:
     @property
     def last_response(self) -> Optional[str]:
         """上一条 LLM 文本内容。"""
+        if self._current_response:
+            return self._current_response
         for msg in reversed(self._messages):
             if msg.get("role") == "assistant" and msg.get("content"):
                 return msg["content"]

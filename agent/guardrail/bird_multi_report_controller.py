@@ -1,4 +1,4 @@
-"""BIRD schema-linking challenge controller for final SQL judging."""
+"""Schema-linking challenge controller for final SQL judging."""
 from __future__ import annotations
 
 import re
@@ -11,49 +11,60 @@ from agent.guardrail.sql_utils import get_sql_from_messages
 class BirdSchemaChallengeController(Guardrail):
     """Turn a final SQL into schema-linking reports, then judge them.
 
-    The controller only runs on text responses. It keeps the first report in the
-    original context so the agent can summarize its own grounded exploration.
-    Later challenge/judge phases reset the visible context to system messages
-    plus accumulated reports.
+    This guardrail is an orchestration layer. It should keep prompts short and
+    generic; task-specific rules belong in README retrieval, metadata,
+    disambiguation entities, or other dedicated checks.
     """
 
-    def __init__(self, report_count: int = 2) -> None:
-        self.report_count = max(1, int(report_count or 2))
+    def __init__(self, report_count: int = 3) -> None:
+        self.report_count = max(1, int(report_count or 3))
         self._phase = "await_initial_sql"
         self._reports: list[str] = []
         self._task: dict[str, str] = {}
         self._last_sql_key: Optional[str] = None
+        self._judge_decision = ""
+        self._grounded_context = ""
+        self._grounded_tool_history: list[tuple] = []
 
     def check(self, ctx: GuardrailContext) -> dict:
         if ctx.pending_calls:
+            if self._phase in {"await_judge", "await_judge_audit"}:
+                prompt = self._build_no_more_tools_prompt()
+                return {i: CallVerdict("block", prompt) for i in range(len(ctx.pending_calls))}
             return {}
         if ctx.agent is None:
             return {}
 
         setattr(ctx.agent, "_bird_schema_challenge_enabled", True)
-        setattr(ctx.agent, "_bird_schema_challenge_allow_final_recheck", self._phase == "released")
+        release_prompt_pending = bool(
+            getattr(ctx.agent, "_bird_schema_challenge_release_prompt_pending", False)
+        )
+        setattr(
+            ctx.agent,
+            "_bird_schema_challenge_allow_final_recheck",
+            self._phase == "released" and not release_prompt_pending,
+        )
+        self._sync_agent_state(ctx.agent)
 
         response = (ctx.last_response or "").strip()
         if not response:
             return {}
-        sql = get_sql_from_messages(ctx.messages)
+        sql = self._extract_sql_from_text(response) or get_sql_from_messages(ctx.messages)
         if not sql:
             return {}
 
         if self._phase == "released":
+            setattr(ctx.agent, "_bird_schema_challenge_release_prompt_pending", False)
             setattr(ctx.agent, "_bird_schema_challenge_allow_final_recheck", True)
+            setattr(ctx.agent, "_bird_schema_challenge_release_sql", sql)
             return {}
 
         if self._phase == "await_initial_sql":
             self._task = self._extract_task(ctx.messages)
             self._last_sql_key = self._normalize_sql(sql)
+            self._grounded_tool_history = list(ctx.tool_history)
             self._phase = "await_report"
-            return {
-                "text": CallVerdict(
-                    "block",
-                    self._build_first_report_prompt(ctx, sql),
-                )
-            }
+            return {"text": CallVerdict("block", self._build_first_report_prompt(ctx, sql))}
 
         if self._phase in {"await_report", "await_challenge_report"}:
             self._append_report(response)
@@ -73,12 +84,46 @@ class BirdSchemaChallengeController(Guardrail):
             }
 
         if self._phase == "await_judge":
+            self._judge_decision = response
+            self._phase = "await_judge_audit"
+            self._last_sql_key = self._normalize_sql(sql)
+            prompt = self._build_judge_audit_prompt(response, sql)
+            self._sync_agent_state(ctx.agent)
+            return {
+                "text": CallVerdict(
+                    "block",
+                    prompt,
+                    replace_messages=self._rewritten_messages(ctx, prompt),
+                    replace_tool_history=[],
+                )
+            }
+
+        if self._phase == "await_judge_audit":
             self._phase = "released"
             self._last_sql_key = self._normalize_sql(sql)
-            setattr(ctx.agent, "_bird_schema_challenge_allow_final_recheck", True)
-            return {}
+            setattr(ctx.agent, "_bird_schema_challenge_release_prompt_pending", True)
+            setattr(ctx.agent, "_bird_schema_challenge_allow_final_recheck", False)
+            setattr(ctx.agent, "_bird_schema_challenge_release_sql", sql)
+            self._sync_agent_state(ctx.agent)
+            return {
+                "text": CallVerdict(
+                    "block",
+                    self._build_release_for_final_review_prompt(sql),
+                    replace_tool_history=list(self._grounded_tool_history),
+                )
+            }
 
         return {}
+
+    @staticmethod
+    def _build_no_more_tools_prompt() -> str:
+        return """\
+Do not call tools in the judge or audit phase.
+
+Use the reports, prior observations, question, evidence, and candidate SQL
+already present in this context. Output the required decision now, including the
+final SQLite SELECT in a ```sql``` block.
+"""
 
     def _append_report(self, response: str) -> None:
         report_id = f"R{len(self._reports) + 1}"
@@ -90,15 +135,32 @@ class BirdSchemaChallengeController(Guardrail):
             system_messages = [m for m in ctx.messages if m.get("role") == "system"]
         return list(system_messages) + [{"role": "user", "content": prompt}]
 
+    def _sync_agent_state(self, agent) -> None:
+        setattr(agent, "_bird_schema_challenge_grounded_context", self._grounded_context)
+        setattr(agent, "_bird_schema_challenge_reports", self._format_reports())
+        setattr(agent, "_bird_schema_challenge_judge_decision", self._judge_decision)
+
     def _build_first_report_prompt(self, ctx: GuardrailContext, sql: str) -> str:
         task = self._format_task()
         evidence = self._recent_grounded_context(ctx.tool_history)
+        self._grounded_context = evidence
         return f"""\
-你刚才已经给出了候选最终 SQL。现在先不要释放最终答案。
+You have proposed a final SQL. Pause before release and write a concise SQL
+report.
 
-请基于当前完整上下文复盘自己的 SQL 写作过程，输出一份结构化 SQL report。必须重复原始问题和 evidence，不要省略；必须重点说明 schema linking 决策：目标表、目标字段、实体/值定位、join path、行粒度、输出目标和已经排除的候选表/字段/连接路径。
+Focus on schema linking and grounded observations:
+- target tables and columns
+- join path
+- entity/value grounding
+- row or aggregation grain
+- output columns
+- rejected alternative schema-linking paths
+- any mismatch between tool observations and the candidate SQL
 
-必须使用以下格式：
+Do not perform README/style review here. That is handled by a separate release
+reviewer.
+
+Required format:
 
 [SQL Report]
 [Task]
@@ -111,12 +173,14 @@ Evidence:
 - target columns:
 - join path:
 - entity/value grounding:
-- aggregation grain:
+- row or aggregation grain:
 - output columns:
 
-[Exploration Evidence]
-- tool observations:
-- rejected paths:
+[Grounded Observations]
+- supporting observations:
+- contradicted or zero-hit attempts:
+- rejected alternatives:
+- remaining uncertainty:
 
 [Candidate SQL]
 ```sql
@@ -126,60 +190,114 @@ Evidence:
 [Known Risks]
 - ...
 
-原始任务：
+Original task:
 {task}
 
-你刚才的候选 SQL：
+Candidate SQL:
 ```sql
 {sql.strip()}
 ```
 
-近期工具证据：
+Recent grounded tool observations:
 {evidence}
 """
 
     def _build_challenge_prompt(self, report_no: int) -> str:
         return f"""\
-你现在作为一个新的 BIRD Text-to-SQL schema-linking challenge 智能体工作。
+You are a new Text-to-SQL schema-linking challenger.
 
-下面是其他智能体已经生成的 SQL report。你的职责是挑战 schema linking，不是做 SQL 语法审稿。请重新从原始问题和 evidence 出发，主动寻找是否存在不同且更合理的表、字段、join path、实体标识列、行粒度、输出目标或值来源。
+Review the original task and prior SQL reports. Look for a different plausible
+schema-linking path or value grounding. Use tools only when they can resolve a
+material schema-linking uncertainty. Do not perform README/style review.
 
-重点检查：
-- 同一自然语言概念是否可能对应另一张表或另一列；
-- 当前 SQL 是否把维表/事实表、实体行/事件行、版本行/实体行混用；
-- JOIN path 是否还有另一条能表达题意的路径；
-- 输出的是不是 question/evidence 要求的实体标识或属性；
-- 过滤值是否来自正确表的正确字段。
+Compare candidates by:
+- table and column semantics
+- join path
+- entity/value grounding
+- row or aggregation grain
+- requested output columns
+- consistency with observed tool results
 
-不要把主要精力放在 SQLite 语法、日期格式函数、ORDER BY 展示顺序、别名、空格、大小写、轻微格式化或可等价改写的表达式上。只有这些问题会改变 schema linking、目标行集或输出目标时，才作为辅助证据提及。
+If you agree with the prior report, say why and keep the same SQL. If you find a
+better path, provide a new report and candidate SQL.
 
-不要为已有 report 辩护；如果最终同意已有 schema linking，也必须说明你检查过哪些替代表/字段/JOIN/粒度候选，为什么没有更合理的替代路径。
+Use the same report format as before and include one candidate SQLite SELECT.
 
-你可以继续使用工具探索当前数据库。完成探索后，输出第 {report_no} 份结构化 SQL report，格式必须与前面一致，并包含一个候选 SQLite SELECT。
-
-原始任务：
+Original task:
 {self._format_task()}
 
-已有 SQL reports：
+Prior SQL reports:
 {self._format_reports()}
 """
 
     def _build_judge_prompt(self) -> str:
         return f"""\
-你现在作为 BIRD Text-to-SQL 裁判智能体工作。
+You are a Text-to-SQL judge.
 
-下面有多份 SQL report。请优先比较 schema linking 质量：目标表、目标字段、join path、实体/事件/版本行粒度、输出标识或属性、过滤值来源。只有在 schema linking 等价时，再比较公式、排序、语法和展示细节。你可以使用工具核验关键 schema-linking 分歧。
+Choose the best candidate SQL from the reports. Prioritize schema-linking
+quality and consistency with grounded tool observations: target tables, target
+columns, join path, entity/value grounding, row or aggregation grain, and output
+columns. Only compare SQL style details when schema linking is otherwise
+equivalent.
 
-最终输出必须包含：
+You may use tools only to resolve a material disagreement between reports.
+
+Final output must contain:
 - selected_report_id
 - selection_reason
-- 一个 ```sql``` 代码块，代码块内是一条最终 SQLite SELECT
+- one ```sql``` block containing the selected SQLite SELECT
 
-原始任务：
+Original task:
 {self._format_task()}
 
-SQL reports：
+SQL reports:
 {self._format_reports()}
+"""
+
+    def _build_judge_audit_prompt(self, judge_decision: str, sql: str) -> str:
+        return f"""\
+You are auditing the previous Text-to-SQL judge decision.
+
+Do not solve the task from scratch. Check whether the selected SQL is supported
+by the reports and grounded observations. If the judge selected an unsupported
+schema-linking path while a report provides a better grounded path, correct it.
+Otherwise keep the judge SQL.
+
+Use tools only for material disagreements. Do not perform README/style review.
+
+Final output must contain:
+- audit_result: `keep_judge_sql` or `corrected`
+- selected_report_id: original report id, `JUDGE_SYNTHESIZED`, or `AUDIT_SYNTHESIZED`
+- audit_reason
+- one ```sql``` block containing the final SQLite SELECT
+
+Original task:
+{self._format_task()}
+
+SQL reports:
+{self._format_reports()}
+
+Previous judge decision:
+{judge_decision.strip()}
+
+Previous judge SQL:
+```sql
+{sql.strip()}
+```
+"""
+
+    @staticmethod
+    def _build_release_for_final_review_prompt(sql: str) -> str:
+        return f"""\
+Schema-linking challenge and judge have selected the candidate SQL below.
+
+Now output only this selected SQL as the final answer so the final release
+reviewer can inspect it. Do not add explanation, do not run tools, and do not
+change the SQL unless the next reviewer explicitly blocks it.
+
+```sql
+{sql.strip()}
+```
 """
 
     def _format_task(self) -> str:
@@ -194,16 +312,34 @@ SQL reports：
 
     @staticmethod
     def _extract_task(messages: list[dict]) -> dict[str, str]:
-        for msg in messages:
+        fallback = ""
+        for msg in reversed(messages):
             if msg.get("role") != "user":
                 continue
             text = str(msg.get("content") or "")
-            if "Question ID:" not in text or "问题：" not in text:
+            if text.startswith("BIRD README reviewer") or text.startswith("You are a new Text-to-SQL"):
                 continue
+            if not fallback:
+                fallback = text.strip()
+            question_id = _extract_line_value(text, "Question ID:")
+            if "问题：" in text:
+                return {
+                    "question_id": question_id,
+                    "question": _extract_between_any(text, "问题：", ["\n\n提示：", "\n提示："]).strip(),
+                    "evidence": _extract_after(text, "提示：").strip(),
+                }
+            question = _extract_line_value(text, "Question:")
+            if question:
+                return {
+                    "question_id": question_id,
+                    "question": question,
+                    "evidence": _extract_line_value(text, "Evidence:"),
+                }
+        if fallback:
             return {
-                "question_id": _extract_line_value(text, "Question ID:"),
-                "question": _extract_between(text, "问题：", "\n\n提示：").strip(),
-                "evidence": _extract_after(text, "提示：").strip(),
+                "question_id": "",
+                "question": fallback,
+                "evidence": "",
             }
         return {}
 
@@ -230,16 +366,24 @@ SQL reports：
     def _normalize_sql(sql: str) -> str:
         return re.sub(r"\s+", " ", (sql or "").strip()).lower()
 
+    @staticmethod
+    def _extract_sql_from_text(text: str) -> Optional[str]:
+        candidates = []
+        for match in re.finditer(r"```(?:sql)?\s*(.*?)\s*```", text or "", re.DOTALL | re.IGNORECASE):
+            sql = match.group(1).strip()
+            if BirdSchemaChallengeController._looks_like_select(sql):
+                candidates.append(sql)
+        return candidates[-1] if candidates else None
 
-def _extract_between(text: str, start: str, end: str) -> str:
-    s = text.find(start)
-    if s < 0:
-        return ""
-    s += len(start)
-    e = text.find(end, s)
-    if e < 0:
-        return text[s:]
-    return text[s:e]
+    @staticmethod
+    def _looks_like_select(sql: str) -> bool:
+        text = sql.strip()
+        while True:
+            stripped = re.sub(r"^\s*--[^\n]*(?:\n|$)", "", text, count=1)
+            if stripped == text:
+                break
+            text = stripped
+        return bool(re.match(r"^(select|with)\b", text.strip(), re.IGNORECASE))
 
 
 def _extract_after(text: str, marker: str) -> str:
@@ -252,6 +396,17 @@ def _extract_after(text: str, marker: str) -> str:
 def _extract_line_value(text: str, marker: str) -> str:
     match = re.search(rf"^{re.escape(marker)}\s*(.*)$", text, re.MULTILINE)
     return match.group(1).strip() if match else ""
+
+
+def _extract_between_any(text: str, start: str, ends: list[str]) -> str:
+    s = text.find(start)
+    if s < 0:
+        return ""
+    s += len(start)
+    end_positions = [text.find(end, s) for end in ends]
+    end_positions = [pos for pos in end_positions if pos >= 0]
+    e = min(end_positions) if end_positions else -1
+    return text[s:e] if e >= 0 else text[s:]
 
 
 def _single_line(text: object, limit: int) -> str:

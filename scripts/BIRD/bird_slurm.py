@@ -434,6 +434,7 @@ def _write_batch_script(args: argparse.Namespace, projects: list[str], neo4j_job
                 "",
                 "set -euo pipefail",
                 f"cd {shlex.quote(str(ROOT))}",
+                f"export PYTHONPATH={shlex.quote(str(ROOT.parent / 'tools'))}:{shlex.quote(str(ROOT.parent))}:${{PYTHONPATH:-}}",
                 f"mkdir -p {shlex.quote(str(slurm_dir))}",
                 f"echo \"${{SLURM_JOB_ID}} $(hostname)\" > {shlex.quote(str(node_file))}",
                 f"echo 'Neo4j job: {neo4j_job or '(manual node)'} on {node}'",

@@ -31,7 +31,7 @@ def _quote_ident(name: str) -> str:
 def _parse(sql: str) -> Optional[exp.Expression]:
     try:
         return sqlglot.parse_one(sql, dialect="sqlite")
-    except sqlglot.errors.ParseError:
+    except sqlglot.errors.SqlglotError:
         return None
 
 
@@ -91,6 +91,88 @@ def _iter_literal_predicates(sql: str):
             yield ("LIKE", resolved[0], resolved[1], value)
 
 
+def _literal_predicates_under_or(sql: str) -> set[tuple[str, str, str, str]]:
+    """Return literal predicates that appear inside an OR expression.
+
+    A single zero-hit branch in a disjunction is often an optional slot,
+    synonym, or fallback candidate. Blocking that branch independently can
+    create loops even when the whole SQL has grounded alternatives.
+    """
+    tree = _parse(sql)
+    if tree is None:
+        return set()
+
+    tables, aliases = extract_tables(sql)
+    single_table = next(iter(tables)) if len(tables) == 1 else None
+    predicates: set[tuple[str, str, str, str]] = set()
+
+    for or_node in tree.find_all(exp.Or):
+        for node in or_node.walk():
+            if isinstance(node, exp.EQ):
+                left, right = node.left, node.right
+                if isinstance(left, exp.Column):
+                    resolved = _resolve_column_table(left, aliases, single_table)
+                    value = _literal_value(right)
+                elif isinstance(right, exp.Column):
+                    resolved = _resolve_column_table(right, aliases, single_table)
+                    value = _literal_value(left)
+                else:
+                    resolved = None
+                    value = None
+                if resolved and value is not None:
+                    predicates.add(("=", resolved[0].lower(), resolved[1].lower(), str(value)))
+            elif isinstance(node, exp.Like):
+                left, right = node.this, node.expression
+                if not isinstance(left, exp.Column):
+                    continue
+                resolved = _resolve_column_table(left, aliases, single_table)
+                value = _literal_value(right)
+                if resolved and isinstance(value, str):
+                    predicates.add(("LIKE", resolved[0].lower(), resolved[1].lower(), str(value)))
+
+    return predicates
+
+
+def _empty_string_with_null_or_pairs(sql: str) -> set[tuple[str, str]]:
+    """Return columns where ``col = ''`` is paired with ``col IS NULL`` in OR.
+
+    Empty strings are often used as a missing-value alternative. If the SQL
+    explicitly checks both NULL and empty string for the same column, a zero-hit
+    empty string branch should not be treated as an ungrounded value by itself.
+    """
+    tree = _parse(sql)
+    if tree is None:
+        return set()
+
+    tables, aliases = extract_tables(sql)
+    single_table = next(iter(tables)) if len(tables) == 1 else None
+    pairs: set[tuple[str, str]] = set()
+
+    for or_node in tree.find_all(exp.Or):
+        empty_columns: set[tuple[str, str]] = set()
+        null_columns: set[tuple[str, str]] = set()
+        for node in or_node.walk():
+            if isinstance(node, exp.EQ):
+                left, right = node.left, node.right
+                if isinstance(left, exp.Column) and _literal_value(right) == "":
+                    resolved = _resolve_column_table(left, aliases, single_table)
+                elif isinstance(right, exp.Column) and _literal_value(left) == "":
+                    resolved = _resolve_column_table(right, aliases, single_table)
+                else:
+                    resolved = None
+                if resolved:
+                    empty_columns.add((resolved[0].lower(), resolved[1].lower()))
+            elif isinstance(node, exp.Is):
+                left, right = node.this, node.expression
+                if isinstance(left, exp.Column) and isinstance(right, exp.Null):
+                    resolved = _resolve_column_table(left, aliases, single_table)
+                    if resolved:
+                        null_columns.add((resolved[0].lower(), resolved[1].lower()))
+        pairs.update(empty_columns & null_columns)
+
+    return pairs
+
+
 def _db_connect_for_table(workspace, table: str):
     active = list(getattr(workspace, "active_projects", []) or [None])
     for project in active:
@@ -141,6 +223,23 @@ def _is_year_prefix_like(column: str, declared_type: str, pattern: str) -> bool:
         or col_l.endswith("date")
         or "date" in col_l
         or "year" in col_l
+    )
+
+
+def _is_date_period_like(column: str, declared_type: str, pattern: str) -> bool:
+    """Allow empty date/month period filters; an empty period can be a valid answer."""
+    text = str(pattern)
+    if not re.fullmatch(r"%?\d{4}(?:-\d{2})?(?:-\d{2})?%?", text):
+        return False
+    col_l = column.lower()
+    type_u = declared_type.upper()
+    return (
+        "DATE" in type_u
+        or "TIME" in type_u
+        or "date" in col_l
+        or "time" in col_l
+        or "year" in col_l
+        or "month" in col_l
     )
 
 
@@ -196,6 +295,8 @@ class SQLValueGroundingCheck(Guardrail):
     def __init__(self, *, enum_distinct_threshold: int = 100, broad_ratio: float = 0.2):
         self.enum_distinct_threshold = enum_distinct_threshold
         self.broad_ratio = broad_ratio
+        self._last_block_signature: tuple[str, tuple[tuple[str, str, str, str, str], ...]] | None = None
+        self._repeat_count = 0
 
     def check(self, ctx: GuardrailContext) -> dict:
         result = {}
@@ -205,13 +306,44 @@ class SQLValueGroundingCheck(Guardrail):
                 issues = self._check_sql(ctx.workspace, sql)
                 blocking = [issue for issue in issues if issue.severity == "block"]
                 if blocking:
-                    result["text"] = CallVerdict("block", self._format(blocking))
+                    signature = self._signature(sql, blocking)
+                    if signature == self._last_block_signature:
+                        self._repeat_count += 1
+                    else:
+                        self._last_block_signature = signature
+                        self._repeat_count = 1
+                    result["text"] = CallVerdict(
+                        "block",
+                        self._format(blocking, repeat_count=self._repeat_count),
+                    )
+                else:
+                    self._last_block_signature = None
+                    self._repeat_count = 0
         return result
+
+    @staticmethod
+    def _signature(sql: str, issues: list[ValueIssue]) -> tuple[str, tuple[tuple[str, str, str, str, str], ...]]:
+        normalized_sql = re.sub(r"\s+", " ", (sql or "").strip()).lower()
+        issue_key = tuple(
+            sorted(
+                (
+                    issue.table.lower(),
+                    issue.column.lower(),
+                    issue.operator.upper(),
+                    issue.value,
+                    issue.message,
+                )
+                for issue in issues
+            )
+        )
+        return normalized_sql, issue_key
 
     def _check_sql(self, workspace, sql: str) -> list[ValueIssue]:
         issues: list[ValueIssue] = []
         if workspace is None:
             return issues
+        empty_string_null_or_pairs = _empty_string_with_null_or_pairs(sql)
+        or_literal_predicates = _literal_predicates_under_or(sql)
 
         for op, table, column, value in _iter_literal_predicates(sql) or []:
             connect, physical_table = _db_connect_for_table(workspace, table)
@@ -226,8 +358,20 @@ class SQLValueGroundingCheck(Guardrail):
                     continue
                 declared_type = _column_declared_type(conn, physical_table, column)
                 if op == "=":
+                    if (
+                        value == ""
+                        and (table.lower(), column.lower()) in empty_string_null_or_pairs
+                    ):
+                        continue
                     exact_count = _count(conn, physical_table, column, "=", value)
                     if exact_count == 0:
+                        if (
+                            op,
+                            table.lower(),
+                            column.lower(),
+                            str(value),
+                        ) in or_literal_predicates:
+                            continue
                         top = _top_values(conn, physical_table, column)
                         issues.append(ValueIssue(
                             "block",
@@ -241,6 +385,15 @@ class SQLValueGroundingCheck(Guardrail):
 
                 like_count = _count(conn, physical_table, column, "LIKE", value)
                 if like_count == 0:
+                    if (
+                        op,
+                        table.lower(),
+                        column.lower(),
+                        str(value),
+                    ) in or_literal_predicates:
+                        continue
+                    if _is_date_period_like(column, declared_type, str(value)):
+                        continue
                     top = _top_values(conn, physical_table, column)
                     issues.append(ValueIssue(
                         "block",
@@ -265,7 +418,10 @@ class SQLValueGroundingCheck(Guardrail):
                 if _is_year_prefix_like(column, declared_type, str(value)):
                     continue
 
-                if exact_candidate is not None and exact_count > 0:
+                if (
+                    exact_candidate is not None
+                    and exact_count > 0
+                ):
                     issues.append(ValueIssue(
                         "block",
                         table,
@@ -274,7 +430,10 @@ class SQLValueGroundingCheck(Guardrail):
                         str(value),
                         f"`{table}.{column}` 存在精确值 {exact_candidate!r}（{exact_count} 行），当前 LIKE 命中 {like_count} 行；优先使用精确匹配。",
                     ))
-                elif distinct <= self.enum_distinct_threshold and ("%" in str(value) or "_" in str(value)):
+                elif (
+                    distinct <= self.enum_distinct_threshold
+                    and ("%" in str(value) or "_" in str(value))
+                ):
                     top = _top_values(conn, physical_table, column)
                     issues.append(ValueIssue(
                         "block",
@@ -299,9 +458,17 @@ class SQLValueGroundingCheck(Guardrail):
                 conn.close()
         return issues
 
-    def _format(self, issues: list[ValueIssue]) -> str:
+    def _format(self, issues: list[ValueIssue], *, repeat_count: int = 1) -> str:
         lines = ["以下 SQL 过滤值需要重新 grounding："]
+        if repeat_count > 1:
+            lines.append(
+                f"这是同一 SQL 第 {repeat_count} 次触发相同 value-grounding 拦截；"
+                "不要原样输出上一版 SQL，必须修改对应的谓词或 CASE 条件。"
+            )
         for issue in issues[:8]:
             lines.append(f"  - {issue.message}")
-        lines.append("请根据列的真实取值重写 WHERE/LIKE 条件。")
+        lines.append(
+            "请根据列的真实取值重写相关谓词、WHERE、LIKE 或 CASE 条件；"
+            "若列中存在精确枚举值，优先使用等值匹配。"
+        )
         return "\n".join(lines)

@@ -4,11 +4,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import hashlib
 from typing import Any, Optional
 
 from openai import OpenAI
 
 from agent.guardrail_api import CallVerdict, Guardrail, GuardrailContext
+from agent.guardrail.bird_readme_rule_retriever import (
+    format_rule_cards,
+    retrieve_bird_readme_rules,
+)
 from agent.guardrail.sql_utils import get_sql_from_messages
 from agent.utils import load_agent_config
 
@@ -30,44 +35,23 @@ def _review_mode() -> str:
 _REVIEWER_SYSTEM_PROMPT = """\
 You are a BIRD README release reviewer for a Text-to-SQL guardrail.
 
-Your job is not to solve the task from scratch and not to output a replacement
-SQL. Your job is to decide whether the current candidate SQL is acceptable under
-the provided README rules, question, evidence, SQL, and grounded tool
-observations.
+Decide whether the current candidate SQL should be released under the retrieved
+README candidate rules, question, evidence, SQL, and grounded tool observations.
+Do not solve the task from scratch and do not output a replacement SQL.
 
-You are not a schema-linking challenger. Do not reject a candidate merely
-because another table, column, join path, or entity grounding might also be
-plausible. Do not prescribe a concrete replacement table or column as the
-required action. Schema-linking alternatives belong to the main agent or the
-schema challenge controller, not this release reviewer.
-
-Approval is very strict. Approve only when the SQL follows the README rules and
-no selected rule would require changing the SQL. If an action-style README
-rule's trigger matches the candidate SQL and the SQL contains the forbidden
-action without explicit question/evidence support, reject it. If there is a
-material doubt about a README violation, reject instead of approving; it is
-better to block one extra revision than to release a likely invalid SQL. Select
-rules by exact rule id such as R09 and quote the original rule text. Do not use
-any rule that is not present in the README.
-
-The candidate SQL may violate more than one README rule. Before deciding,
-review the whole SQL against the README, including output target, filters,
-joins, aggregation, deduplication, ordering, limits, and any clause whose
-presence changes the result shape. Review joins only for README-rule issues
-such as unsupported extra joins, output grain, hidden filters, deduplication, or
-formula scope; do not use this review to choose between competing schema-linking
-paths. Select every material README rule whose required action would change the
-candidate SQL; do not stop after finding only one issue.
-
-When choosing among multiple violations, prefer rules that change the output
-target, target grain, candidate rows, or aggregate value over rules that only
-remove presentation details. Presentation-only issues should not crowd out a
-remaining output-target or row-grain issue.
-
-In a multi-turn release review, previously selected rules are not an exhaustive
-checklist. After the main agent revises the SQL, review the revised SQL again
-against the full README. If a previous issue is fixed but another material
-README violation remains, reject again and select the remaining rule or rules.
+Scope:
+- Use only retrieved candidate README rules and previous required actions.
+- Do not invent rule ids or use rules that were not retrieved.
+- Treat retrieved README rules as authoritative; SQL reports, judge/audit text,
+  and tool observations are context, not permission to waive a retrieved rule.
+- Do not act as a schema-linking challenger. If the only concern is that a
+  different table, column, join path, or entity grounding might be better,
+  approve instead of blocking.
+- Reject only when the current context shows that a retrieved README rule
+  requires a concrete SQL edit.
+- On later review turns, first verify that every previous required action was
+  actually executed, then review the revised SQL against the current retrieved
+  rules.
 
 Return JSON only:
 {
@@ -98,9 +82,8 @@ Constraints:
 - If approved is false, return one or more rules. There is no upper limit; include all material remaining violations.
 - Do not invent rule ids.
 - Do not output a replacement SQL.
-- Do not turn schema-linking uncertainty into a README rejection. If the only
-  issue is that another schema-linking path might be better, approve rather than
-  blocking on that basis.
+- Do not reject merely to ask the main agent to verify something.
+- Do not turn schema-linking uncertainty into a README rejection.
 """
 
 
@@ -109,6 +92,9 @@ BIRD README reviewer rejected the current final SQL.
 
 Re-read the question, evidence, schema/tool observations, and candidate SQL.
 You must revise the SQL to satisfy every selected README rule and required action below.
+The reviewer feedback is not a schema-linking challenge. Do not change table,
+join path, or entity grounding solely because another path might also be
+plausible.
 Do not explain your reasoning; output only the revised final SQL.
 
 Required output format:
@@ -120,6 +106,18 @@ Selected README rules:
 {selected_rules}
 """
 
+_REVIEW_RETRY_TEMPLATE = """\
+BIRD README reviewer could not complete the release check for the current final SQL.
+
+Do not change the SQL and do not call tools. Output only the same candidate SQL
+again in a ```sql``` block so the release reviewer can retry with a compact
+review packet.
+
+```sql
+{sql}
+```
+"""
+
 
 class BirdReadmeFinalRecheck(Guardrail):
     """Keep reviewing final BIRD SQL until the reviewer approves it."""
@@ -127,18 +125,27 @@ class BirdReadmeFinalRecheck(Guardrail):
     def __init__(self) -> None:
         self._config: Optional[dict[str, Any]] = None
         self._client: Optional[OpenAI] = None
-        self._approved_sql: set[str] = set()
+        self._approved_sql: set[tuple[str, int, str]] = set()
         self._feedback_count = 0
         self._review_messages: list[dict[str, str]] = []
         self._last_blocked_sql_key: Optional[str] = None
         self._last_selected_rules_text = ""
+        self._last_candidate_rule_ids: set[str] = set()
+        self._review_error_count = 0
 
     def check(self, ctx: GuardrailContext) -> dict:
+        release_sql = getattr(ctx.agent, "_bird_schema_challenge_release_sql", None)
         if ctx.pending_calls:
+            if release_sql:
+                self._log(ctx, "BIRD README final recheck skipped: pending tool calls")
             return {}
         if build_bird_readme_system_prompt is None:
+            if release_sql:
+                self._log(ctx, "BIRD README final recheck skipped: README prompt unavailable")
             return {}
         if _review_mode() == "off" or not ENABLE_FINAL_RECHECK:
+            if release_sql:
+                self._log(ctx, "BIRD README final recheck skipped: review mode off")
             return {}
         schema_challenge_active = (
             getattr(ctx.agent, "_bird_schema_challenge_enabled", False)
@@ -149,16 +156,33 @@ class BirdReadmeFinalRecheck(Guardrail):
             and not getattr(ctx.agent, "_bird_multi_report_allow_final_recheck", False)
         )
         if schema_challenge_active or legacy_multi_report_active:
+            if release_sql:
+                self._log(
+                    ctx,
+                    "BIRD README final recheck skipped: schema challenge still active "
+                    f"allow={getattr(ctx.agent, '_bird_schema_challenge_allow_final_recheck', None)}",
+                )
             return {}
 
         previous_answer = (ctx.last_response or "").strip()
         if not previous_answer:
+            if release_sql:
+                self._log(ctx, "BIRD README final recheck skipped: empty previous answer")
             return {}
-        sql = get_sql_from_messages(ctx.messages)
+        sql = (
+            self._extract_sql_from_text(previous_answer)
+            or (release_sql if isinstance(release_sql, str) and release_sql.strip() else None)
+            or get_sql_from_messages(ctx.messages)
+        )
         if not sql:
+            if release_sql:
+                self._log(ctx, "BIRD README final recheck skipped: no SQL extracted")
             return {}
         sql_key = self._normalize_sql(sql)
-        if sql_key in self._approved_sql:
+        approval_key = self._approval_key(ctx, sql_key)
+        if approval_key in self._approved_sql:
+            if release_sql:
+                self._log(ctx, "BIRD README final recheck skipped: SQL already approved")
             return {}
         if self._last_blocked_sql_key == sql_key and self._last_selected_rules_text:
             self._feedback_count += 1
@@ -170,15 +194,17 @@ class BirdReadmeFinalRecheck(Guardrail):
             }
 
         bird_readme = build_bird_readme_system_prompt()
-        self._ensure_review_messages(bird_readme)
+        self._ensure_review_messages()
         packet = self._build_review_packet(
             ctx,
             sql,
             previous_answer,
+            bird_readme,
             require_rule_selection=(self._feedback_count == 0),
         )
         try:
             review = self._review(packet, ctx)
+            self._review_error_count = 0
             if (
                 self._feedback_count > 0
                 and bool(review.get("approved"))
@@ -186,12 +212,27 @@ class BirdReadmeFinalRecheck(Guardrail):
             ):
                 selected_rules = self._previous_actions_not_satisfied_rules(review, bird_readme)
             elif self._feedback_count > 0 and bool(review.get("approved")):
-                self._approved_sql.add(sql_key)
+                self._approved_sql.add(approval_key)
                 return {}
             else:
-                selected_rules = self._format_selected_rules(review, bird_readme)
+                selected_rules = self._format_selected_rules(review, bird_readme, ctx)
         except Exception as exc:
-            selected_rules = self._fallback_selected_rules(exc, bird_readme)
+            self._review_error_count += 1
+            self._log(
+                ctx,
+                "BIRD README review failed: "
+                f"{type(exc).__name__}: {str(exc)[:500]}",
+            )
+            return {
+                "text": CallVerdict(
+                    "block",
+                    _REVIEW_RETRY_TEMPLATE.format(sql=sql.strip()),
+                )
+            }
+
+        if not selected_rules.strip():
+            self._approved_sql.add(approval_key)
+            return {}
 
         self._feedback_count += 1
         self._last_blocked_sql_key = sql_key
@@ -224,14 +265,22 @@ class BirdReadmeFinalRecheck(Guardrail):
         )
         content = response.choices[0].message.content or ""
         self._review_messages.append({"role": "assistant", "content": content})
-        return self._parse_review(content)
+        parsed = self._parse_review(content)
+        self._log(
+            ctx,
+            "BIRD README review decision: "
+            f"approved={parsed.get('approved')} "
+            f"previous_required_actions_satisfied={parsed.get('previous_required_actions_satisfied')} "
+            f"selected_rules={[item.get('rule_id') for item in parsed.get('selected_rules', []) if isinstance(item, dict)]} "
+            f"summary={parsed.get('review_summary', '')}",
+        )
+        return parsed
 
-    def _ensure_review_messages(self, bird_readme: str) -> None:
+    def _ensure_review_messages(self) -> None:
         if self._review_messages:
             return
         self._review_messages = [
             {"role": "system", "content": _REVIEWER_SYSTEM_PROMPT},
-            {"role": "system", "content": bird_readme},
         ]
 
     def _build_review_packet(
@@ -239,20 +288,39 @@ class BirdReadmeFinalRecheck(Guardrail):
         ctx: GuardrailContext,
         sql: str,
         previous_answer: str,
+        bird_readme: str,
         require_rule_selection: bool = False,
     ) -> str:
         task = self._extract_task(ctx.messages)
-        recent_context = self._recent_grounded_context(ctx.tool_history)
+        recent_context = self._combined_grounded_context(ctx)
+        retrieved_rules = retrieve_bird_readme_rules(
+            bird_readme,
+            question=task.get("question", ""),
+            evidence=task.get("evidence", ""),
+            sql=sql,
+            recent_context=recent_context,
+            top_k=int(os.environ.get("PONTIS_BIRD_README_RULE_RETRIEVAL_TOPK", "24") or 24),
+            project_path=getattr(ctx.workspace, "project_path", None),
+        )
+        self._last_candidate_rule_ids = {card.rule_id for card in retrieved_rules}
+        self._log(
+            ctx,
+            "BIRD README retrieved candidate rules: "
+            + ", ".join(card.rule_id for card in retrieved_rules),
+        )
+        retrieved_rule_text = format_rule_cards(retrieved_rules)
         previous_actions = (
             f"[Previous reviewer required actions]\n{self._last_selected_rules_text}\n\n"
             if self._last_selected_rules_text
             else ""
         )
         review_instruction = (
-            "This is the first release check for this answer. Do not approve on this pass; broadly inspect the whole candidate SQL against the full README and select every material README rule that the main agent must reconsider before release. Return at least one rule, with no upper limit."
+            "First release check: select only grounded violations of the retrieved README rules. Approve if none are present."
             if require_rule_selection
-            else "Continue the same release review thread. First verify every previous required action listed above. If any one is not fully executed, reject and include that still-unmet rule in selected_rules. Then re-check the whole revised SQL against the full README for any remaining material violation. Prior selected rules were not exhaustive. Approve only when the current SQL satisfies both all previous required actions and the full README."
+            else "Continuation check: verify previous required actions first, then select any remaining grounded violations of the retrieved README rules."
         )
+        compact_answer = self._compact_text(previous_answer.strip(), 1200)
+        compact_context = self._compact_text(recent_context, 6000)
         return f"""\
 {previous_actions}[Question]
 {task.get("question", "(unknown)")}
@@ -266,10 +334,13 @@ class BirdReadmeFinalRecheck(Guardrail):
 ```
 
 [Raw final answer text]
-{previous_answer.strip()}
+{compact_answer}
+
+[Retrieved candidate README rules]
+{retrieved_rule_text}
 
 [Recent grounded tool observations]
-{recent_context}
+{compact_context}
 
 {review_instruction}
 """
@@ -301,6 +372,12 @@ class BirdReadmeFinalRecheck(Guardrail):
         parsed["selected_rules"] = rules
         return parsed
 
+    @staticmethod
+    def _log(ctx: GuardrailContext, message: str) -> None:
+        logger = getattr(getattr(ctx, "agent", None), "logger", None)
+        if logger is not None:
+            logger.info(message)
+
     def _previous_actions_not_satisfied_rules(self, review: dict[str, Any], bird_readme: str) -> str:
         unmet = review.get("unmet_previous_rules")
         prefix = "Reviewer approved without confirming all previous required actions. Continue enforcing the previous reviewer requirements."
@@ -330,7 +407,7 @@ class BirdReadmeFinalRecheck(Guardrail):
     def _readme_rule_map(bird_readme: str) -> dict[str, str]:
         rules = {}
         for line in bird_readme.splitlines():
-            match = re.match(r"^(R\d{2})\.\s+(.*)$", line.strip())
+            match = re.match(r"^(R\d+)\.\s+(.*)$", line.strip())
             if match:
                 rules[match.group(1)] = f"{match.group(1)}. {match.group(2).strip()}"
         return rules
@@ -343,7 +420,7 @@ class BirdReadmeFinalRecheck(Guardrail):
             return value.strip().lower() in {"true", "yes", "1", "approved", "pass"}
         return False
 
-    def _format_selected_rules(self, review: dict[str, Any], bird_readme: str) -> str:
+    def _format_selected_rules(self, review: dict[str, Any], bird_readme: str, ctx: GuardrailContext) -> str:
         rule_map = self._readme_rule_map(bird_readme)
         lines = []
         seen = set()
@@ -354,13 +431,15 @@ class BirdReadmeFinalRecheck(Guardrail):
             rid = str(item.get("rule_id") or "").strip().upper()
             if rid not in rule_map or rid in seen:
                 continue
+            if self._last_candidate_rule_ids and rid not in self._last_candidate_rule_ids:
+                continue
+            reason = str(item.get("risk_reason") or "").strip()
+            action = str(item.get("required_action") or "").strip()
             seen.add(rid)
             item_no += 1
-            reason = str(item.get("risk_reason") or "").strip()
             lines.append(f"{item_no}. {rule_map[rid]}")
             if reason:
                 lines.append(f"   Risk: {reason}")
-            action = str(item.get("required_action") or "").strip()
             if action:
                 lines.append(f"   Required action: {action}")
         if lines:
@@ -368,18 +447,23 @@ class BirdReadmeFinalRecheck(Guardrail):
             if summary:
                 return summary + "\n" + "\n".join(lines)
             return "\n".join(lines)
-        return self._fallback_selected_rules(
-            ValueError("reviewer selected no valid README rules"), bird_readme
-        )
+        return ""
 
     def _fallback_selected_rules(self, exc: Exception, bird_readme: str) -> str:
-        rule_map = self._readme_rule_map(bird_readme)
-        fallback_ids = ["R07", "R16", "R30"]
-        lines = [f"Reviewer failed to select rules ({type(exc).__name__}: {exc}). Use these high-risk release-check rules:"]
-        for idx, rid in enumerate(fallback_ids, 1):
-            if rid in rule_map:
-                lines.append(f"{idx}. {rule_map[rid]}")
-        return "\n".join(lines)
+        return ""
+
+    @staticmethod
+    def _compact_text(text: str, max_chars: int) -> str:
+        text = str(text or "").strip()
+        if len(text) <= max_chars:
+            return text
+        head = max_chars // 2
+        tail = max_chars - head - 80
+        return (
+            text[:head].rstrip()
+            + "\n...[omitted for compact release review]...\n"
+            + text[-tail:].lstrip()
+        )
 
     def _extract_task(self, messages: list[dict]) -> dict[str, str]:
         for msg in reversed(messages):
@@ -426,7 +510,7 @@ class BirdReadmeFinalRecheck(Guardrail):
     @staticmethod
     def _recent_grounded_context(tool_history: list) -> str:
         items = []
-        for name, args, result in tool_history[-12:]:
+        for name, args, result in tool_history[-30:]:
             if name == "meta":
                 ref = args.get("ref") or args.get("path") or ""
                 if ref:
@@ -440,6 +524,35 @@ class BirdReadmeFinalRecheck(Guardrail):
                     items.append(f"- query: {sql}\n  result_preview: {preview}")
         return "\n".join(items) if items else "(none)"
 
+    def _combined_grounded_context(self, ctx: GuardrailContext) -> str:
+        parts = []
+        recent = self._recent_grounded_context(ctx.tool_history)
+        if recent and recent != "(none)":
+            parts.append(recent)
+        preserved = self._schema_challenge_grounded_context(ctx)
+        if preserved:
+            parts.append(
+                "[Preserved schema-challenge grounded observations]\n"
+                + self._compact_text(preserved, 3000)
+            )
+        return "\n".join(parts) if parts else "(none)"
+
+    @staticmethod
+    def _schema_challenge_grounded_context(ctx: GuardrailContext) -> str:
+        agent = getattr(ctx, "agent", None)
+        text = str(getattr(agent, "_bird_schema_challenge_grounded_context", "") or "").strip()
+        return text
+
+    def _approval_key(self, ctx: GuardrailContext, sql_key: str) -> tuple[str, int, str]:
+        context = self._combined_grounded_context(ctx)
+        digest = hashlib.sha1(context.encode("utf-8", errors="ignore")).hexdigest()
+        return (sql_key, len(ctx.tool_history or []), digest)
+
     @staticmethod
     def _normalize_sql(sql: str) -> str:
         return re.sub(r"\s+", " ", sql.strip()).lower()
+
+    @staticmethod
+    def _extract_sql_from_text(text: str) -> str:
+        match = re.search(r"```sql\s*(.*?)\s*```", text or "", re.DOTALL | re.IGNORECASE)
+        return match.group(1).strip() if match else ""

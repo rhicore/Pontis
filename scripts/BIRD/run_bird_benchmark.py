@@ -113,6 +113,7 @@
 """
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -152,7 +153,6 @@ BIRD_BENCHMARK_PROMPTS = [
 BIRD_BENCHMARK_GUARDRAILS = [
     "round_limit", "exploration_check",
     "sql_check", "bridge_check", "disambig_check",
-    "value_grounding_check",
     "bird_readme_final_recheck",
 ]
 
@@ -264,7 +264,7 @@ README 覆盖性复盘要求：
 - `readme_minimum_update` 只在 README 缺失、错误或不清楚时提出最小补充/改写方向；README 已清楚覆盖时写 none。
 
 Final README recheck 介入复盘要求：
-- 主解题阶段可能启用了 `BirdReadmeFinalRecheck`。它会让独立 reviewer 读取完整 BIRD README，并从中选择当前 question/evidence/predicted SQL 仍然违反的所有实质规则；guardrail block 只把这些精选规则回灌给主 agent。
+- 主解题阶段可能启用了 `BirdReadmeFinalRecheck`。它会先从 BIRD README 中用语义、关键词和 SQL 特征检索候选规则，再让独立 reviewer 判断当前 question/evidence/predicted SQL 是否违反这些候选规则；guardrail block 只把 reviewer 选中的规则回灌给主 agent。
 - 以 `Guardrail / blocks` 和详细执行轨迹为准判断 recheck 是否真正介入；出现 `BirdReadmeFinalRecheck` 的 block 就说明 reviewer 已介入，但不代表完整 README 已回灌给主 agent。
 - 为兼容旧评测 schema，若 `primary_error_category` 是 `GOLDEN_SQL_STYLE`，必须额外输出 `style_reviewer_intervention`：
   - `REVIEWER_INTERVENED_BUT_NOT_FOLLOWED`：final README recheck 已经 BLOCK，精选规则若被执行通常会更接近 golden，但主 agent 最终没有执行或只部分执行。
@@ -506,14 +506,105 @@ def extract_sql(text: str) -> str | None:
 
 
 def execute_sql(db_path: str, sql: str) -> set | str:
+    timeout_sec = float(os.environ.get("PONTIS_BIRD_SQL_TIMEOUT_SEC", "30") or 30)
+    first = _execute_sql_once(db_path, sql, timeout_sec)
+    if not _is_sql_timeout(first):
+        return first
+
+    optimized_sql = _reorder_independent_aggregate_join(sql)
+    if optimized_sql and _normalize_sql_text(optimized_sql) != _normalize_sql_text(sql):
+        retry = _execute_sql_once(db_path, optimized_sql, timeout_sec)
+        if not _is_sql_timeout(retry):
+            return retry
+    return first
+
+
+def _execute_sql_once(db_path: str, sql: str, timeout_sec: float) -> set | str:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        if timeout_sec > 0:
+            start = time.time()
+
+            def progress() -> int:
+                return 1 if time.time() - start > timeout_sec else 0
+
+            conn.set_progress_handler(progress, 10000)
         cursor = conn.execute(sql)
         rows = cursor.fetchall()
         conn.close()
         return set(tuple(r) for r in rows)
     except Exception as e:
         return f"ERROR: {e}"
+
+
+def _is_sql_timeout(result: set | str) -> bool:
+    return isinstance(result, str) and "interrupted" in result.lower()
+
+
+def _normalize_sql_text(sql: str) -> str:
+    return re.sub(r"\s+", " ", (sql or "").strip()).lower()
+
+
+_JOIN_AGG_SUBQUERY_RE = re.compile(
+    r"""
+    (?P<prefix>\bFROM\s+)
+    (?P<src1>[A-Za-z_][\w."]*(?:\s+(?:AS\s+)?(?P<a1>[A-Za-z_][\w]*))?)
+    \s+INNER\s+JOIN\s+
+    (?P<src2>[A-Za-z_][\w."]*(?:\s+(?:AS\s+)?(?P<a2>[A-Za-z_][\w]*))?)
+    \s+ON\s+(?P<on12>.*?)
+    \s+INNER\s+JOIN\s+
+    \(\s*(?P<subquery>SELECT\s+[^()]*?\b(?:MAX|MIN|SUM|AVG|COUNT)\s*\([^()]*\)[^()]*?\bFROM\b[^()]*?)\s*\)
+    \s+(?:AS\s+)?(?P<subalias>[A-Za-z_][\w]*)
+    \s+ON\s+(?P<onagg>.*?)
+    (?P<tail>\s+(?:WHERE|GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT)\b|$)
+    """,
+    re.IGNORECASE | re.DOTALL | re.VERBOSE,
+)
+
+
+def _reorder_independent_aggregate_join(sql: str) -> str | None:
+    """Move an independent aggregate subquery earlier to avoid bad SQLite plans.
+
+    SQLite can choose a very slow plan for queries shaped as
+    `A JOIN B JOIN (SELECT MAX(...) FROM A) C`. For inner joins, moving the
+    independent aggregate subquery before the table it filters is equivalent
+    and can make BIRD gold execution finish instead of stalling.
+    """
+
+    match = _JOIN_AGG_SUBQUERY_RE.search(sql or "")
+    if not match:
+        return None
+
+    a1 = match.group("a1") or _source_alias(match.group("src1"))
+    a2 = match.group("a2") or _source_alias(match.group("src2"))
+    subalias = match.group("subalias")
+    onagg = match.group("onagg").strip()
+    on12 = match.group("on12").strip()
+    src1 = match.group("src1").strip()
+    src2 = match.group("src2").strip()
+    subquery = match.group("subquery").strip()
+
+    if re.search(rf"\b{re.escape(a1)}\.", onagg) and re.search(rf"\b{re.escape(subalias)}\.", onagg):
+        reordered_from = (
+            f"{match.group('prefix')}({subquery}) {subalias} "
+            f"INNER JOIN {src1} ON {onagg} "
+            f"INNER JOIN {src2} ON {on12}"
+        )
+    elif re.search(rf"\b{re.escape(a2)}\.", onagg) and re.search(rf"\b{re.escape(subalias)}\.", onagg):
+        reordered_from = (
+            f"{match.group('prefix')}({subquery}) {subalias} "
+            f"INNER JOIN {src2} ON {onagg} "
+            f"INNER JOIN {src1} ON {on12}"
+        )
+    else:
+        return None
+
+    return (sql[: match.start()] + reordered_from + match.group("tail") + sql[match.end() :]).strip()
+
+
+def _source_alias(source: str) -> str:
+    parts = source.strip().split()
+    return parts[-1].strip('"') if parts else ""
 
 
 def is_correct(predicted: set | str, golden: set | str) -> bool:
@@ -892,6 +983,13 @@ def build_bird_benchmark_guardrails(args) -> list[str]:
     if not getattr(args, "bird_readme", True):
         guardrails = [g for g in guardrails if g != "bird_readme_final_recheck"]
     return guardrails
+
+
+def include_bird_readme_prompt(args) -> bool:
+    value = getattr(args, "bird_readme_prompt", None)
+    if value is None:
+        return bool(getattr(args, "bird_readme", True))
+    return bool(value)
 
 
 def build_query_prompt(q: dict, args) -> str:
@@ -1568,7 +1666,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             tools=list(BIRD_BENCHMARK_TOOLS),
             prompts=list(BIRD_BENCHMARK_PROMPTS),
         )
-        spec.bird_report_count = max(1, int(getattr(args, "bird_report_count", 2) or 2))
+        spec.bird_report_count = max(1, int(getattr(args, "bird_report_count", 3) or 3))
         spec.projects = build_agent_projects(db_id, args.use_bird_global)
         spec.guardrails = build_guardrails(spec, build_bird_benchmark_guardrails(args))
         agent = create_agent(
@@ -1579,7 +1677,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
         agent.set_system_prompt(
             build_bird_benchmark_system_prompt(
                 spec,
-                include_bird_readme=args.bird_readme,
+                include_bird_readme=include_bird_readme_prompt(args),
             )
         )
         agent._reflection_collector = collector
@@ -1605,6 +1703,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                     **efficiency,
                     'use_bird_global': args.use_bird_global,
                     'bird_readme': args.bird_readme,
+                    'bird_readme_prompt': include_bird_readme_prompt(args),
                     'prompt_profile': args.prompt_profile,
                     'prompt_file': str(args.prompt_file) if args.prompt_file else None}
 
@@ -1668,6 +1767,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                 **reflection_fields,
                 'use_bird_global': args.use_bird_global,
                 'bird_readme': args.bird_readme,
+                'bird_readme_prompt': include_bird_readme_prompt(args),
                 'prompt_profile': args.prompt_profile,
                 'prompt_file': str(args.prompt_file) if args.prompt_file else None}
 
@@ -1756,7 +1856,20 @@ def main():
         "--no-bird-readme",
         dest="bird_readme",
         action="store_false",
-        help="关闭 BIRD README 系统提示词注入和最终复审 guardrail，用于 ablation",
+        help="关闭 BIRD README 最终复审 guardrail；若未单独设置 prompt 开关，也同时关闭主提示词 README 注入",
+    )
+    parser.add_argument(
+        "--bird-readme-prompt",
+        dest="bird_readme_prompt",
+        action="store_true",
+        default=None,
+        help="把 BIRD README 全量注入主求解系统提示词；默认跟随 --bird-readme",
+    )
+    parser.add_argument(
+        "--no-bird-readme-prompt",
+        dest="bird_readme_prompt",
+        action="store_false",
+        help="不把 BIRD README 全量注入主求解系统提示词，但不关闭最终 README reviewer",
     )
     parser.add_argument(
         "--bird-schema-challenge",
@@ -1774,8 +1887,8 @@ def main():
     parser.add_argument(
         "--bird-report-count",
         type=int,
-        default=2,
-        help="启用 --bird-schema-challenge 时生成的 SQL report 数量，默认 2",
+        default=3,
+        help="启用 --bird-schema-challenge 时生成的 SQL report 总数，默认 3（主 agent 1 份 + challenger 2 份）",
     )
     parser.add_argument(
         "--output-dir",
@@ -1865,6 +1978,7 @@ def main():
         "Config: "
         f"bird_global={'on' if args.use_bird_global else 'off'}, "
         f"bird_readme={'on' if args.bird_readme else 'off'}, "
+        f"bird_readme_prompt={'on' if include_bird_readme_prompt(args) else 'off'}, "
         f"bird_schema_challenge={'on' if (args.bird_schema_challenge or args.bird_multi_report) else 'off'}, "
         f"bird_report_count={args.bird_report_count}, "
         f"prompt_profile={args.prompt_profile}, "
