@@ -12,7 +12,7 @@
 
 `workspace/baselines/bash_agent/runtime_logs/bird_dev_20260524_031500_bash_agent_bird_dev_full_reflection_w50_fixed`
 
-现有文档 `Pontis/docs/pontis-db-exploration-fixable-analysis.md` 曾把这个集合收紧为约 `112` 个严格 case。你提到的 `122` 在当前文档和日志里没有一个稳定的显式列表；它更像是中间人工口径。下面不纠结旧数字，而是给出新的严格判据和高置信列表。
+现有文档 `reflection/pontis-db-exploration-fixable-analysis.md` 曾把这个集合收紧为约 `112` 个严格 case。你提到的 `122` 在当前文档和日志里没有一个稳定的显式列表；它更像是中间人工口径。下面不纠结旧数字，而是给出新的严格判据和高置信列表。
 
 ## 严格判据
 
@@ -108,4 +108,3 @@
 4. `value_grounding_profile`: 题面值、evidence 值、真实枚举值之间的映射和空集反证。
 
 但对于 `DATASET_PRIOR_REQUIRED`，图谱只能暴露多个合理解释，不能保证唯一对齐 golden。那些需要 query history、few-shot、prompt 约束或微调解决。
-

@@ -66,6 +66,28 @@ not become a general database-knowledge extractor.
 It writes single-entity knowledge to `hints` and cross-entity knowledge to
 neighboring `hint` entities.
 
+## Decision Knowledge Categories
+
+Use hints for database-verifiable decision facts, not benchmark-answer priors.
+The main reusable categories are:
+
+- `field_landing`: competing columns that can receive the same natural-language
+  phrase, with each column's role and SQL consequence.
+- `fact_table_ownership`: which table owns a measure, event, history, snapshot,
+  or entity attribute when related tables have similar fields.
+- `row_grain`: what one row represents and when grouping or distinct counting is
+  required to preserve the target entity.
+- `value_format`: enum aliases, text numbers, date strings, null/empty formats,
+  and raw-vs-normalized values.
+- `join_consequence`: whether a join only adds attributes, expands rows, drops
+  unmatched records, or changes the target entity set.
+- `relationship_shape`: whether a bridge or structure table row represents an
+  endpoint pair, membership relation, event, or other multi-column fact.
+
+Each hint should be short enough to appear in normal `meta` output. Longer
+evidence belongs in `detail`, with a one-line local hint copied to each involved
+table or column when visibility matters.
+
 ## Guardrail Consumption
 
 The meta-triggered sidechain should react to both disambiguation and hint

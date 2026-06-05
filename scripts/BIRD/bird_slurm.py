@@ -8,6 +8,10 @@ the requested extract/benchmark job pinned to the same node.
 Examples:
     python -m scripts.BIRD.bird_slurm extract submit -- --workers 6
     python -m scripts.BIRD.bird_slurm benchmark submit -- --workers 20 --db-workers 6
+    python -m scripts.BIRD.bird_slurm benchmark submit \
+        --local-model-endpoint-file workspace/baselines/pontis/model_slurm/qwen3coder30b-server.endpoint \
+        --local-model-name Qwen/Qwen3-Coder-30B-A3B-Instruct \
+        -- --db-workers 4 --workers 1
 """
 
 from __future__ import annotations
@@ -76,16 +80,6 @@ def _task_args(args: argparse.Namespace) -> list[str]:
     return values
 
 
-def _benchmark_uses_bird_global(task_args: list[str]) -> bool:
-    use_bird = False
-    for arg in task_args:
-        if arg == "--no-bird-global":
-            use_bird = False
-        elif arg == "--use-bird-global":
-            use_bird = True
-    return use_bird
-
-
 def _benchmark_db_filter(task_args: list[str]) -> list[str]:
     dbs: list[str] = []
     index = 0
@@ -141,8 +135,6 @@ def _selected_projects(args: argparse.Namespace) -> list[str]:
     if args.task == "benchmark":
         selected = _benchmark_db_filter(task_args)
         projects = selected or _configured_bird_dev_projects(config_path)
-        if _benchmark_uses_bird_global(task_args):
-            projects = ["bird", *projects]
     else:
         selected = _extract_db_filter(task_args)
         projects = selected or _configured_bird_dev_projects(config_path)
@@ -209,6 +201,64 @@ def _node_file(args: argparse.Namespace) -> Path:
 def _job_id_file(args: argparse.Namespace) -> Path:
     default = _task_config(args)["default_job_name"]
     return Path(args.slurm_dir).expanduser() / f"{_safe_name(args.job_name, default)}.jobid"
+
+
+def _local_model_env_lines(args: argparse.Namespace) -> list[str]:
+    if not args.local_model_endpoint and not args.local_model_endpoint_file:
+        return []
+
+    lines = [
+        "echo \"Configuring local OpenAI-compatible model service\"",
+    ]
+    if args.local_model_endpoint_file:
+        endpoint_file = shlex.quote(str(Path(args.local_model_endpoint_file).expanduser()))
+        lines.extend(
+            [
+                f"LOCAL_MODEL_ENDPOINT_FILE={endpoint_file}",
+                "if [[ ! -s \"${LOCAL_MODEL_ENDPOINT_FILE}\" ]]; then",
+                "  echo \"Local model endpoint file is missing or empty: ${LOCAL_MODEL_ENDPOINT_FILE}\" >&2",
+                "  exit 1",
+                "fi",
+                "read -r _local_model_job _local_model_host _local_model_port _local_model_extra < \"${LOCAL_MODEL_ENDPOINT_FILE}\"",
+                "if [[ \"${_local_model_job}\" == http://* || \"${_local_model_job}\" == https://* ]]; then",
+                "  LOCAL_MODEL_BASE_URL=\"${_local_model_job}\"",
+                "elif [[ -n \"${_local_model_host:-}\" && -n \"${_local_model_port:-}\" ]]; then",
+                "  LOCAL_MODEL_BASE_URL=\"http://${_local_model_host}:${_local_model_port}/v1\"",
+                "else",
+                "  echo \"Invalid local model endpoint file: ${LOCAL_MODEL_ENDPOINT_FILE}\" >&2",
+                "  exit 1",
+                "fi",
+            ]
+        )
+    else:
+        lines.append(f"LOCAL_MODEL_BASE_URL={shlex.quote(args.local_model_endpoint)}")
+
+    if args.local_model_name:
+        model_name = shlex.quote(args.local_model_name)
+        lines.extend(
+            [
+                f"export MODEL_NAME={model_name}",
+                f"export OPENAI_MODEL={model_name}",
+                f"export PONTIS_AGENT_MODEL={model_name}",
+                f"export PONTIS_EXTRACTOR_MODEL={model_name}",
+            ]
+        )
+
+    api_key = shlex.quote(args.local_model_api_key)
+    lines.extend(
+        [
+            "export MODEL_API_URL=\"${LOCAL_MODEL_BASE_URL}\"",
+            "export OPENAI_BASE_URL=\"${LOCAL_MODEL_BASE_URL}\"",
+            f"export MODEL_API_KEY={api_key}",
+            f"export OPENAI_API_KEY={api_key}",
+            f"export PONTIS_AGENT_API_KEY={api_key}",
+            f"export PONTIS_EXTRACTOR_API_KEY={api_key}",
+            "echo \"Local model endpoint: ${LOCAL_MODEL_BASE_URL}\"",
+            "echo \"Local model name: ${MODEL_NAME:-${OPENAI_MODEL:-'(from config)'}}\"",
+            "",
+        ]
+    )
+    return lines
 
 
 def _read_saved_neo4j_job(args: argparse.Namespace) -> tuple[str, str]:
@@ -418,6 +468,7 @@ def _write_batch_script(args: argparse.Namespace, projects: list[str], neo4j_job
     status_cmd = _instance_status_command(args, projects)
     job_cmd = _job_command(args)
     label = config["label"]
+    local_model_lines = _local_model_env_lines(args)
 
     script_path.write_text(
         "\n".join(
@@ -440,6 +491,7 @@ def _write_batch_script(args: argparse.Namespace, projects: list[str], neo4j_job
                 f"echo 'Neo4j job: {neo4j_job or '(manual node)'} on {node}'",
                 f"echo 'Neo4j projects: {', '.join(projects)}'",
                 "",
+                *local_model_lines,
                 "echo \"Checking Pontis Neo4j status at $(date)\"",
                 f"{status_cmd}",
                 "",
@@ -460,6 +512,8 @@ def _write_batch_script(args: argparse.Namespace, projects: list[str], neo4j_job
 
 
 def cmd_submit(args: argparse.Namespace) -> int:
+    if args.local_model_endpoint and args.local_model_endpoint_file:
+        raise ValueError("Use only one of --local-model-endpoint or --local-model-endpoint-file")
     projects = _selected_projects(args)
     neo4j_job, node = _ensure_neo4j_ready(args, projects)
     script_path = _write_batch_script(args, projects, neo4j_job, node)
@@ -560,6 +614,26 @@ def _add_submit_args(subparser: argparse.ArgumentParser, task: str):
     subparser.add_argument("--neo4j-ready-timeout", type=float, default=300.0)
     subparser.add_argument("--neo4j-ready-poll", type=float, default=10.0)
     subparser.add_argument("--dry-run", action="store_true", help="Write the sbatch script but do not submit it")
+    subparser.add_argument(
+        "--local-model-endpoint",
+        help="Use a local OpenAI-compatible model endpoint, e.g. http://GPU136:18000/v1.",
+    )
+    subparser.add_argument(
+        "--local-model-endpoint-file",
+        help=(
+            "Read a local model endpoint from a file. Supported formats: a URL, "
+            "or '<job_id> <host> <port>' as written by Pontis model Slurm scripts."
+        ),
+    )
+    subparser.add_argument(
+        "--local-model-name",
+        help="Model name sent to the OpenAI-compatible local endpoint.",
+    )
+    subparser.add_argument(
+        "--local-model-api-key",
+        default="local",
+        help="API key value exported for OpenAI-compatible local servers. Default: local.",
+    )
     subparser.add_argument(
         "--neo4j-projects",
         help="Comma-separated Pontis projects to check. Default: selected BIRD dev projects.",

@@ -63,16 +63,6 @@
                               开启 --bird-readme 时，GOLDEN_SQL_STYLE 额外输出
                               README 覆盖性子类。
 
-    bird 全局经验库：
-      --use-bird-global       显式开启。会额外连接 `bird` project，检索 train example。
-      --no-bird-global        显式关闭，只使用当前数据库 project。默认就是关闭。
-      --clear-bird-knowledge  运行前清空 bird 中除 README 外的知识节点。
-      --no-auto-sync-bird-global
-                              bird 为空时不自动导入 train examples，直接失败。
-      --no-bird-global-embedding
-                              自动同步 bird 时不生成 embedding。
-      --bird-train-json PATH  指定 bird 全局经验同步用的 train.json。
-
     Prompt：
       --prompt-profile full|minimal
                               full 是默认完整 prompt；minimal 只保留最小输出协议。
@@ -113,11 +103,8 @@
 """
 import json
 import logging
-import os
 import re
-import sqlite3
 import sys
-import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -139,6 +126,20 @@ from scripts.BIRD.common import (
     PONTIS_WORKSPACE_ROOT,
 )
 from scripts.BIRD.bird_readme import build_bird_readme_system_prompt
+from scripts.BIRD.benchmark_runtime import (
+    ProgressTracker,
+    TraceCollector,
+    aggregate_efficiency,
+    attach_preprocess_metrics,
+    execute_sql,
+    extract_sql,
+    find_db_file,
+    format_efficiency_line,
+    format_execution_result,
+    get_agent_efficiency_metrics,
+    is_correct,
+    load_preprocess_metrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +154,7 @@ BIRD_BENCHMARK_PROMPTS = [
 BIRD_BENCHMARK_GUARDRAILS = [
     "round_limit", "exploration_check",
     "sql_check", "bridge_check", "disambig_check",
-    "bird_readme_final_recheck",
+    "bird_readme_final_recheck", "final_sql_validity_check",
 ]
 
 # ═══════════════════════════════════════════════════════════
@@ -172,8 +173,6 @@ QUERY_PROMPT_BASE_TEMPLATE = """\
 输出格式：一个 ```sql``` 代码块，代码块内是一条 SQLite SELECT 语句。多值答案用单列多行表示。
 SELECT 输出列按问题文字顺序给出；题目列出多个地址字段时分别输出字段，不拼接成单个字符串。
 
-{bird_global_section}
-
 请根据以下信息生成一条 SQLite SQL 查询。
 
 Question ID: {question_id}
@@ -184,30 +183,14 @@ Question ID: {question_id}
 
 """
 
-BIRD_PROJECT_SCOPE = """\
-本次运行会打开两个 project：
-- 当前数据库项目用于探索 schema、执行查询，并最终回答用户 query。
-- `bird` 项目：BIRD 数据集的全局知识库，存储 SQL 生成任务的抽象知识和经验总结。
-当前库 schema 以当前数据库项目为准；`bird` 提供跨库 SQL 经验参考。
-项目 ref 入口：当前库 `{current_project}::*:file:db`，全局经验 `bird::*:example`。
-"""
-
 LOCAL_ONLY_PROJECT_SCOPE = """\
 本次运行只打开当前数据库项目：`{current_project}`。
 """
 
-BIRD_GLOBAL_PROMPT_SECTION = """\
-关于 `bird` 经验的使用：
-- 在 `bird` 项目的 example 知识中检索相近题型，迁移 SQL 写作风格和输出习惯。
-- 检索词使用问题意图、SQL 形态、输出契约和 evidence 口径，例如 percentage、conditional aggregation、return id、multiply by 100。
-- 最终 SQL 按当前数据库 schema 生成，并用检索到的 BIRD 偏好检查输出列、聚合粒度、排序、limit、distinct 和比例公式。
-
-"""
 
 QUERY_PROMPT_MINIMAL_TEMPLATE = """\
 请根据以下 BIRD 问题生成一条 SQLite SQL 查询。
 {project_scope}
-{bird_global_section}
 
 输出格式：一个 ```sql``` 代码块，代码块内是一条 SQLite SELECT 语句。
 SELECT 输出列按问题文字顺序给出；题目列出多个地址字段时分别输出字段，不拼接成单个字符串。
@@ -299,94 +282,6 @@ REFLECTION_CASE_PROMPT_TEMPLATE = """\
 你现在仍在同一个对话上下文里：刚刚的 benchmark 消息、工具调用和最终 SQL 都还在。
 你不是新开一个会话，而是继续复盘这条已经完成并已验证结果的 benchmark case。
 
-按 benchmark 的解题工作流回放这道错题，判断做错的根因。你拥有正常 agent 的工具权限；
-不要只根据下面的文本包下结论，必须主动调用工具重新核验 predicted SQL 和 golden SQL 涉及的
-表、列、值、连接路径、行粒度和关键中间结果。
-golden SQL 在本阶段是有意提供给你的：把它当成待验证假设的来源，沿着它使用的表、列、值、
-连接路径、行粒度和中间结果做定向探索，再与 predicted SQL 的假设逐项对比。不要在未确认
-当前数据库是否支持 golden interpretation 之前完成分类。
-
-本轮复盘对象：
-- 数据库项目：{db_id}
-- Question ID: {question_id}
-- Difficulty: {difficulty}
-- Result: {result}
-- Elapsed: {elapsed:.1f}s
-
-题目：
-{question}
-
-Evidence：
-{evidence}
-
-Predicted SQL：
-{predicted_sql}
-
-Golden SQL：
-{golden_sql}
-
-Benchmark 调用链摘要：
-{calls_summary}
-
-Guardrail / blocks：
-{blocks_summary}
-
-Predicted execution result：
-{predicted_execution}
-
-Golden execution result：
-{golden_execution}
-
-详细执行轨迹：
-{trace_detail}
-
-你的任务：
-1. 先用工具做数据库证据审计：查询 predicted SQL 与 golden SQL 的关键中间集合，检查 schema/meta/样例值/连接路径/行粒度。必要时把两个 SQL 拆成更小的 COUNT、DISTINCT、GROUP BY、JOIN 覆盖率或样例行查询。
-2. 如果启用了 `bird` 全局项目，可以检索相关经验辅助解释，但不能用其他题的 golden SQL 偏好替代当前数据库证据。
-3. 最终只输出复盘结论，不输出长篇工具过程。
-
-错误三分类要求：
-- 必须把主因归入且只归入以下三类之一：`DB_EXPLORATION_FIXABLE`、`DATASET_PRIOR_REQUIRED`、`GOLDEN_SQL_STYLE`。
-
-分类测试：
-1. 先判断 predicted SQL 和 golden SQL 是在“数据库语义”上不一致，还是只在“答案呈现/SQL 表达”上不一致。
-2. 如果二者使用的数据库实体和值大体相同，差异主要是输出形状、聚合呈现、DISTINCT、分组、排序、LIMIT/tie、NULL 处理、重复行、舍入/格式或 SQLite 表达方式，选 `GOLDEN_SQL_STYLE`。
-3. 否则这是数据库理解错误。接着做 database-only oracle test：
-   - 假设一个 oracle 只能读取当前 question、evidence、schema、完整数据库内容和当前项目图谱/文档。
-   - oracle 不能读取其他 query-SQL pair、benchmark 历史、训练样例或隐藏 golden 风格。
-   - 如果这个 oracle 能找到当前数据库中的具体证据，唯一排除 predicted interpretation 并支持 golden interpretation，选 `DB_EXPLORATION_FIXABLE`。
-   - 如果这个 oracle 不能唯一决定，golden 的选择依赖同库 query log、业务约定、benchmark 约定、命名先验或跨题经验，选 `DATASET_PRIOR_REQUIRED`。
-
-类别定义：
-- `DB_EXPLORATION_FIXABLE`：当前数据库信息足够；错误应该能通过更充分数据库探索或更好的 schema/value 标注修正。
-- `DATASET_PRIOR_REQUIRED`：当前数据库信息不足以唯一决定；错误需要 query-log 记忆、benchmark 约定、业务先验、命名先验或跨题经验修正。
-- `GOLDEN_SQL_STYLE`：数据库理解基本正确；错误在目标 SQL 风格或结果形状。
-{readme_style_review_section}
-
-硬边界：
-- 不要用“是否要改表/列/JOIN”区分前两类；`DB_EXPLORATION_FIXABLE` 和 `DATASET_PRIOR_REQUIRED` 都可能需要改表、列、值或连接。
-- `DB_EXPLORATION_FIXABLE` 必须在 `decisive_db_evidence` 中引用具体当前数据库事实，例如字段含义、样例值、枚举覆盖、主外键路径、行粒度、JOIN 覆盖率、中间查询结果或某个候选路径会错误增删行的证据。
-- 如果 `decisive_db_evidence` 只能写得很空泛、缺失，或者只是“golden SQL 使用了另一个表/列”，不要选 `DB_EXPLORATION_FIXABLE`，应选 `DATASET_PRIOR_REQUIRED`。
-
-最终复盘文本必须包含以下字段：
-primary_error_category: DB_EXPLORATION_FIXABLE | DATASET_PRIOR_REQUIRED | GOLDEN_SQL_STYLE
-database_only_oracle_verdict: yes_unique_db_evidence | no_needs_prior | not_applicable_style
-decisive_db_evidence: 当前数据库中支持分类的具体证据；若不是 DB_EXPLORATION_FIXABLE，写 none
-plausible_alternatives: 若是 DATASET_PRIOR_REQUIRED，列出 predicted 与 golden 各自为何都可解释；否则写 none
-missing_prior: 若是 DATASET_PRIOR_REQUIRED，说明需要哪类 query log / 业务口径 / benchmark 先验；否则写 none
-mistake_summary: 一句话总结错误
-minimum_fix: 最小修正方向
-classification_reason: 为什么该错因属于上面的唯一类别
-golden_sql_style_readme_subcategory: README_STYLE_NOT_COVERED | README_RULE_WRONG_OR_UNCLEAR | README_RULE_CLEAR_BUT_NOT_FOLLOWED | not_applicable
-readme_coverage_reason: 若是 GOLDEN_SQL_STYLE 且启用 README，说明 README 是否覆盖该风格；否则写 none
-readme_minimum_update: 若 README 缺失、错误或不清楚，写最小更新方向；否则写 none
-style_reviewer_intervention: REVIEWER_INTERVENED_BUT_NOT_FOLLOWED | REVIEWER_INTERVENED_WITH_WRONG_ADVICE | REVIEWER_NOT_INTERVENED | not_applicable
-"""
-
-REFLECTION_CASE_NO_BIRD_PROMPT_TEMPLATE = """\
-你现在仍在同一个对话上下文里：刚刚的 benchmark 消息、工具调用和最终 SQL 都还在。
-你不是新开一个会话，而是继续复盘这条已经完成并已验证结果的 benchmark case。
-
 本次运行使用当前数据库项目、工具调用轨迹、预测 SQL 和 golden SQL 做复盘，输出高密度错误归因与可复用改进建议。
 你拥有正常 agent 的工具权限；不要只根据下面的文本包下结论，必须主动调用工具重新核验
 predicted SQL 和 golden SQL 涉及的表、列、值、连接路径、行粒度和关键中间结果。
@@ -471,7 +366,6 @@ readme_minimum_update: 若 README 缺失、错误或不清楚，写最小更新�
 style_reviewer_intervention: REVIEWER_INTERVENED_BUT_NOT_FOLLOWED | REVIEWER_INTERVENED_WITH_WRONG_ADVICE | REVIEWER_NOT_INTERVENED | not_applicable
 """
 
-DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
 
 def assign_question_ids(questions: list[dict]) -> list[dict]:
     """为没有 question_id 的数据集补一个稳定 id。"""
@@ -483,469 +377,9 @@ def assign_question_ids(questions: list[dict]) -> list[dict]:
         normalized.append(item)
     return normalized
 
-# ═══════════════════════════════════════════════════════════
-#  SQL 提取与执行
-# ═══════════════════════════════════════════════════════════
 
-_SQL_BLOCK_RE = re.compile(r"```sql\s*\n?(.*?)```", re.DOTALL | re.IGNORECASE)
-_SELECT_RE = re.compile(r"(SELECT\s.+?)(?:;|$)", re.DOTALL | re.IGNORECASE)
-
-
-def extract_sql(text: str) -> str | None:
-    if not text:
-        return None
-    blocks = _SQL_BLOCK_RE.findall(text)
-    if blocks:
-        sql = blocks[-1].strip()
-        if sql:
-            return sql
-    matches = _SELECT_RE.findall(text)
-    if matches:
-        return matches[-1].strip()
-    return None
-
-
-def execute_sql(db_path: str, sql: str) -> set | str:
-    timeout_sec = float(os.environ.get("PONTIS_BIRD_SQL_TIMEOUT_SEC", "30") or 30)
-    first = _execute_sql_once(db_path, sql, timeout_sec)
-    if not _is_sql_timeout(first):
-        return first
-
-    optimized_sql = _reorder_independent_aggregate_join(sql)
-    if optimized_sql and _normalize_sql_text(optimized_sql) != _normalize_sql_text(sql):
-        retry = _execute_sql_once(db_path, optimized_sql, timeout_sec)
-        if not _is_sql_timeout(retry):
-            return retry
-    return first
-
-
-def _execute_sql_once(db_path: str, sql: str, timeout_sec: float) -> set | str:
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        if timeout_sec > 0:
-            start = time.time()
-
-            def progress() -> int:
-                return 1 if time.time() - start > timeout_sec else 0
-
-            conn.set_progress_handler(progress, 10000)
-        cursor = conn.execute(sql)
-        rows = cursor.fetchall()
-        conn.close()
-        return set(tuple(r) for r in rows)
-    except Exception as e:
-        return f"ERROR: {e}"
-
-
-def _is_sql_timeout(result: set | str) -> bool:
-    return isinstance(result, str) and "interrupted" in result.lower()
-
-
-def _normalize_sql_text(sql: str) -> str:
-    return re.sub(r"\s+", " ", (sql or "").strip()).lower()
-
-
-_JOIN_AGG_SUBQUERY_RE = re.compile(
-    r"""
-    (?P<prefix>\bFROM\s+)
-    (?P<src1>[A-Za-z_][\w."]*(?:\s+(?:AS\s+)?(?P<a1>[A-Za-z_][\w]*))?)
-    \s+INNER\s+JOIN\s+
-    (?P<src2>[A-Za-z_][\w."]*(?:\s+(?:AS\s+)?(?P<a2>[A-Za-z_][\w]*))?)
-    \s+ON\s+(?P<on12>.*?)
-    \s+INNER\s+JOIN\s+
-    \(\s*(?P<subquery>SELECT\s+[^()]*?\b(?:MAX|MIN|SUM|AVG|COUNT)\s*\([^()]*\)[^()]*?\bFROM\b[^()]*?)\s*\)
-    \s+(?:AS\s+)?(?P<subalias>[A-Za-z_][\w]*)
-    \s+ON\s+(?P<onagg>.*?)
-    (?P<tail>\s+(?:WHERE|GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT)\b|$)
-    """,
-    re.IGNORECASE | re.DOTALL | re.VERBOSE,
-)
-
-
-def _reorder_independent_aggregate_join(sql: str) -> str | None:
-    """Move an independent aggregate subquery earlier to avoid bad SQLite plans.
-
-    SQLite can choose a very slow plan for queries shaped as
-    `A JOIN B JOIN (SELECT MAX(...) FROM A) C`. For inner joins, moving the
-    independent aggregate subquery before the table it filters is equivalent
-    and can make BIRD gold execution finish instead of stalling.
-    """
-
-    match = _JOIN_AGG_SUBQUERY_RE.search(sql or "")
-    if not match:
-        return None
-
-    a1 = match.group("a1") or _source_alias(match.group("src1"))
-    a2 = match.group("a2") or _source_alias(match.group("src2"))
-    subalias = match.group("subalias")
-    onagg = match.group("onagg").strip()
-    on12 = match.group("on12").strip()
-    src1 = match.group("src1").strip()
-    src2 = match.group("src2").strip()
-    subquery = match.group("subquery").strip()
-
-    if re.search(rf"\b{re.escape(a1)}\.", onagg) and re.search(rf"\b{re.escape(subalias)}\.", onagg):
-        reordered_from = (
-            f"{match.group('prefix')}({subquery}) {subalias} "
-            f"INNER JOIN {src1} ON {onagg} "
-            f"INNER JOIN {src2} ON {on12}"
-        )
-    elif re.search(rf"\b{re.escape(a2)}\.", onagg) and re.search(rf"\b{re.escape(subalias)}\.", onagg):
-        reordered_from = (
-            f"{match.group('prefix')}({subquery}) {subalias} "
-            f"INNER JOIN {src2} ON {onagg} "
-            f"INNER JOIN {src1} ON {on12}"
-        )
-    else:
-        return None
-
-    return (sql[: match.start()] + reordered_from + match.group("tail") + sql[match.end() :]).strip()
-
-
-def _source_alias(source: str) -> str:
-    parts = source.strip().split()
-    return parts[-1].strip('"') if parts else ""
-
-
-def is_correct(predicted: set | str, golden: set | str) -> bool:
-    if isinstance(predicted, str) or isinstance(golden, str):
-        return False
-    return predicted == golden
-
-
-def format_execution_result(result: set | str, limit: int = 20) -> str:
-    """Compact execution result for reflection prompts."""
-    if isinstance(result, str):
-        return result
-    rows = sorted(result, key=lambda row: tuple(str(item) for item in row))
-    shown = rows[:limit]
-    text = json.dumps(shown, ensure_ascii=False, default=str)
-    if len(rows) > limit:
-        text += f"\n... ({len(rows) - limit} more rows; total {len(rows)})"
-    else:
-        text += f"\n(total {len(rows)})"
-    return text
-
-
-# ═══════════════════════════════════════════════════════════
-#  Trace 收集 + 两级日志
-# ═══════════════════════════════════════════════════════════
-
-class TraceCollector:
-    """收集 agent 事件，生成简洁版和详细版日志。"""
-
-    def __init__(self):
-        self._next_round = 1
-        self._entries = []  # [{type, round, ...}]
-        self._pending_by_id = {}
-
-    def callback(self, event: dict):
-        etype = event.get("type")
-
-        if etype == "tool_call":
-            entry = {
-                "type": "call",
-                "round": self._next_round,
-                "name": event["name"],
-                "args": event.get("arguments", {}),
-                "result": None,
-            }
-            self._entries.append(entry)
-            if event.get("id"):
-                self._pending_by_id[event["id"]] = entry
-            self._next_round += 1
-        elif etype == "tool_result":
-            result = event.get("result", "")
-            entry = None
-            event_id = event.get("id")
-            if event_id:
-                entry = self._pending_by_id.pop(event_id, None)
-            if entry is None:
-                for item in reversed(self._entries):
-                    if (
-                        item["type"] == "call"
-                        and item["name"] == event.get("name")
-                        and item["result"] is None
-                    ):
-                        entry = item
-                        break
-            if entry is not None:
-                entry["result"] = result
-        elif etype == "blocked":
-            self._entries.append({
-                "type": "block",
-                "round": self._next_round,
-                "source": event.get("guardrail", ""),
-                "msg": event.get("content", ""),
-                "name": event.get("name"),
-                "args": event.get("arguments", {}),
-            })
-            self._next_round += 1
-        elif etype in {"warning", "sidechain", "append", "trace", "context_rewrite"}:
-            self._entries.append({
-                "type": etype,
-                "round": self._next_round,
-                "source": event.get("guardrail", ""),
-                "msg": event.get("content", "")
-                or f"context rewritten to {event.get('message_count', '?')} messages",
-                "name": event.get("name"),
-                "args": event.get("arguments", {}),
-                "call_index": event.get("call_index"),
-                "trace_only": bool(event.get("trace_only")),
-            })
-        elif etype == "done":
-            self._pending_by_id.clear()
-
-    def write_logs(self, bench_dir: Path, qid: int, q: dict,
-                   response: str, predicted_sql: str | None,
-                   result_str: str, elapsed: float,
-                   efficiency: dict | None = None):
-        """写两个日志文件。"""
-        efficiency = efficiency or empty_efficiency_metrics()
-        # ── 通用头部 ──
-        header = "\n".join([
-            f"Q{qid} [{q.get('difficulty', '?')}] {result_str} {elapsed:.1f}s",
-            f"Question: {q['question']}",
-            f"Evidence: {q.get('evidence', '') or '(无)'}",
-            f"Predicted SQL: {predicted_sql or 'PARSE_ERROR'}",
-            f"Golden SQL: {q['SQL']}",
-            (
-                "LLM Efficiency: "
-                f"rounds={efficiency.get('llm_rounds', 0)}, "
-                f"cached_input_tokens={efficiency.get('cached_input_tokens', 0)}, "
-                f"uncached_input_tokens={efficiency.get('uncached_input_tokens', 0)}, "
-                f"output_tokens={efficiency.get('output_tokens', 0)}, "
-                f"total_tokens={efficiency.get('total_tokens', 0)}"
-            ),
-        ])
-
-        # ── 详细版 ──
-        detail_lines = [header, "---"]
-        for entry in self._entries:
-            if entry["type"] == "call":
-                args_full = json.dumps(entry["args"], ensure_ascii=False) if entry["args"] else "{}"
-                detail_lines.append(f"Round {entry['round']} | {entry['name']}({args_full})")
-                result = entry["result"] or "(no result)"
-                detail_lines.append(f"  {result}")
-            else:
-                detail_lines.append(self._format_event_header(entry))
-                detail_lines.append(f"  {_format_event_message(entry)}")
-            detail_lines.append("---")
-
-        if response:
-            detail_lines.append(f"Agent response:\n{response[-1000:]}")
-        detail_lines.append("")
-        (bench_dir / f"q{qid}.log").write_text("\n".join(detail_lines), encoding="utf-8")
-
-    def summarize_calls(self) -> str:
-        parts = []
-        for entry in self._entries:
-            if entry["type"] == "call":
-                parts.append(f"{entry['name']}({_args_brief(entry['args'])})")
-            elif entry.get("name"):
-                parts.append(f"{entry['name']}({_args_brief(entry['args'])})(blocked)")
-        return " → ".join(parts) if parts else "(no calls)"
-
-    def summarize_blocks(self) -> str:
-        parts = []
-        for entry in self._entries:
-            if entry["type"] != "block":
-                continue
-            label = f"{entry['name']}({_args_brief(entry['args'])})" if entry.get("name") else "text response"
-            msg = _normalize_block_message(entry["msg"])
-            parts.append(f"[{entry['source']}] {label}: {msg}")
-        return "\n".join(parts) if parts else "(none)"
-
-    def detailed_trace_text(self) -> str:
-        lines = []
-        for entry in self._entries:
-            if entry["type"] == "call":
-                args_full = json.dumps(entry["args"], ensure_ascii=False) if entry["args"] else "{}"
-                lines.append(f"Round {entry['round']} | {entry['name']}({args_full})")
-                result = entry["result"] or "(no result)"
-                lines.append(f"  {result}")
-            else:
-                lines.append(self._format_event_header(entry))
-                lines.append(f"  {_format_event_message(entry)}")
-            lines.append("---")
-        return "\n".join(lines) if lines else "(empty trace)"
-
-    @staticmethod
-    def _format_event_header(entry: dict) -> str:
-        kind_by_type = {
-            "block": "BLOCKED",
-            "warning": "WARNING",
-            "sidechain": "SIDECHAIN",
-            "append": "APPEND",
-            "trace": "TRACE",
-        }
-        kind = kind_by_type.get(entry.get("type"), entry.get("type", "EVENT").upper())
-        source = entry.get("source", "")
-        suffix = " trace-only" if entry.get("trace_only") else ""
-        if entry.get("name"):
-            args_full = json.dumps(entry["args"], ensure_ascii=False) if entry["args"] else "{}"
-            return f"Round {entry['round']} | [{kind} by {source}{suffix}] {entry['name']}({args_full})"
-        call_index = entry.get("call_index")
-        label = f"call#{call_index}" if call_index is not None else "agent event"
-        return f"Round {entry['round']} | [{kind} by {source}{suffix}] {label}"
-
-
-def _args_brief(args: dict) -> str:
-    """参数的简洁表示。"""
-    if not args:
-        return ""
-    parts = []
-    for k, v in args.items():
-        sv = str(v)
-        if len(sv) > 40:
-            sv = sv[:40] + "..."
-        parts.append(f"{k}={sv}")
-    return ", ".join(parts)
-
-
-def _normalize_block_message(msg: str) -> str:
-    return " ".join((msg or "").split())
-
-
-def _format_event_message(entry: dict) -> str:
-    msg = entry.get("msg", "")
-    if entry.get("type") != "block":
-        return msg or "(empty event)"
-    return _normalize_block_message(msg)
-
-
-EFFICIENCY_FIELDS = (
-    "llm_rounds",
-    "cached_input_tokens",
-    "uncached_input_tokens",
-    "output_tokens",
-    "total_tokens",
-    "embedding_calls",
-    "embedding_documents",
-    "embedding_tokens",
-    "preprocess_llm_input_tokens",
-    "preprocess_llm_cached_input_tokens",
-    "preprocess_llm_uncached_input_tokens",
-    "preprocess_llm_output_tokens",
-    "preprocess_llm_total_tokens",
-    "preprocess_embedding_tokens",
-)
-
-
-def empty_efficiency_metrics() -> dict:
-    metrics = {field: 0 for field in EFFICIENCY_FIELDS}
-    metrics["cache_accounting_source"] = "unknown"
-    return metrics
-
-
-def get_agent_efficiency_metrics(agent) -> dict:
-    if hasattr(agent, "llm_metrics"):
-        metrics = agent.llm_metrics()
-        out = {field: int(metrics.get(field, 0) or 0) for field in EFFICIENCY_FIELDS}
-        out["cache_accounting_source"] = str(metrics.get("cache_accounting_source") or "unknown")
-        return out
-    return empty_efficiency_metrics()
-
-
-def aggregate_efficiency(rows: list[dict]) -> dict:
-    count = len(rows)
-    totals = {
-        field: sum(int(row.get(field, 0) or 0) for row in rows)
-        for field in EFFICIENCY_FIELDS
-    }
-    averages = {
-        f"{field}_per_query": round(totals[field] / count, 3) if count else 0.0
-        for field in EFFICIENCY_FIELDS
-    }
-    return {"totals": totals, "averages": averages}
-
-
-def load_preprocess_metrics(summary_path: Path | None, total_queries: int) -> dict:
-    if summary_path is None:
-        return {}
-    if not summary_path.exists():
-        print(f"Warning: preprocess summary not found: {summary_path}")
-        return {}
-    data = json.loads(summary_path.read_text(encoding="utf-8"))
-    tokens = data.get("preprocess_tokens", {}) if isinstance(data.get("preprocess_tokens"), dict) else {}
-    llm_total = int(tokens.get("llm_total_tokens", 0) or 0)
-    embedding_total = int(tokens.get("embedding_total_tokens", 0) or 0)
-    per_db = data.get("per_database", []) if isinstance(data.get("per_database"), list) else []
-    llm_input = int(tokens.get("llm_input_tokens", 0) or 0)
-    llm_cached_input = int(tokens.get("llm_cached_input_tokens", 0) or 0)
-    llm_uncached_input = int(tokens.get("llm_uncached_input_tokens", 0) or 0)
-    llm_output = int(tokens.get("llm_output_tokens", 0) or 0)
-    if not llm_input:
-        llm_input = sum(int(row.get("preprocess_llm_input_tokens", 0) or 0) for row in per_db)
-    if not llm_cached_input:
-        llm_cached_input = sum(int(row.get("preprocess_llm_cached_input_tokens", 0) or 0) for row in per_db)
-    if not llm_uncached_input:
-        llm_uncached_input = sum(int(row.get("preprocess_llm_uncached_input_tokens", 0) or 0) for row in per_db)
-    if not llm_output:
-        llm_output = sum(int(row.get("preprocess_llm_output_tokens", 0) or 0) for row in per_db)
-    embedding_calls = sum(int(row.get("preprocess_embedding_calls", 0) or 0) for row in per_db)
-    embedding_documents = sum(int(row.get("preprocess_embedding_documents", 0) or 0) for row in per_db)
-    metrics = {
-        "preprocess_llm_input_tokens": llm_input,
-        "preprocess_llm_cached_input_tokens": llm_cached_input,
-        "preprocess_llm_uncached_input_tokens": llm_uncached_input,
-        "preprocess_llm_output_tokens": llm_output,
-        "preprocess_llm_total_tokens": llm_total,
-        "preprocess_embedding_tokens": embedding_total,
-        "embedding_calls": embedding_calls,
-        "embedding_documents": embedding_documents,
-        "embedding_tokens": 0,
-    }
-    return metrics
-
-
-def attach_preprocess_metrics(rows: list[dict], metrics: dict) -> None:
-    if not rows or not metrics:
-        return
-    count = len(rows)
-    for key, value in metrics.items():
-        if key not in EFFICIENCY_FIELDS:
-            continue
-        total = int(value or 0)
-        if total == 0:
-            continue
-        base, remainder = divmod(total, count)
-        for index, row in enumerate(rows):
-            row[key] = int(row.get(key, 0) or 0) + base + (1 if index < remainder else 0)
-
-
-def format_efficiency_line(rows: list[dict], indent: str = "") -> str:
-    eff = aggregate_efficiency(rows)
-    avg = eff["averages"]
-    totals = eff["totals"]
-    return (
-        f"{indent}Efficiency: "
-        f"LLM rounds/q={avg['llm_rounds_per_query']:.2f}, "
-        f"cached input tokens/q={avg['cached_input_tokens_per_query']:.1f}, "
-        f"uncached input tokens/q={avg['uncached_input_tokens_per_query']:.1f}, "
-        f"output tokens/q={avg['output_tokens_per_query']:.1f}, "
-        f"total tokens/q={avg['total_tokens_per_query']:.1f}, "
-        f"total tokens={totals['total_tokens']}"
-    )
-
-
-# ═══════════════════════════════════════════════════════════
-#  辅助
-# ═══════════════════════════════════════════════════════════
-
-def find_db_file(db_dir: Path) -> str | None:
-    for ext in DB_EXTS:
-        matches = list(db_dir.glob(f"*{ext}"))
-        if matches:
-            return str(matches[0])
-    return None
-
-
-def build_agent_projects(db_id: str, use_bird_global: bool) -> list[str]:
-    projects = [db_id]
-    if use_bird_global:
-        projects.append("bird")
-    return projects
+def build_agent_projects(db_id: str) -> list[str]:
+    return [db_id]
 
 
 def build_bird_benchmark_system_prompt(spec, include_bird_readme: bool = True) -> list[str]:
@@ -997,21 +431,7 @@ def build_query_prompt(q: dict, args) -> str:
     question_id = str(q.get("question_id", ""))
     evidence = q.get("evidence", "") or "(无额外提示)"
     current_project = q.get("db_id") or "current_project"
-    bird_global_note = (
-        "本次运行启用 `bird` 全局经验库。"
-        if getattr(args, "use_bird_global", False)
-        else "本次运行未启用 `bird` 全局经验库。"
-    )
-    project_scope = (
-        BIRD_PROJECT_SCOPE
-        if getattr(args, "use_bird_global", False)
-        else LOCAL_ONLY_PROJECT_SCOPE
-    ).format(current_project=current_project)
-    bird_global_section = (
-        BIRD_GLOBAL_PROMPT_SECTION
-        if getattr(args, "use_bird_global", False)
-        else ""
-    )
+    project_scope = LOCAL_ONLY_PROJECT_SCOPE.format(current_project=current_project)
     template = load_query_prompt_template(args)
     if getattr(args, "prompt_file", None):
         return (
@@ -1019,9 +439,7 @@ def build_query_prompt(q: dict, args) -> str:
             .replace("{question}", question)
             .replace("{question_id}", question_id)
             .replace("{evidence}", evidence)
-            .replace("{bird_global_note}", bird_global_note)
             .replace("{project_scope}", project_scope)
-            .replace("{bird_global_section}", bird_global_section)
             .replace("{current_project}", current_project)
         )
     return template.format(
@@ -1029,24 +447,16 @@ def build_query_prompt(q: dict, args) -> str:
         question_id=question_id,
         evidence=evidence,
         current_project=current_project,
-        bird_global_note=bird_global_note,
         project_scope=project_scope,
-        bird_global_section=bird_global_section,
     )
 
 
 def build_reflection_case_prompt(db_id: str, q: dict, collector: TraceCollector,
                                  predicted_sql: str | None, result_str: str,
-                                 elapsed: float, use_bird_global: bool,
-                                 include_bird_readme: bool,
+                                 elapsed: float, include_bird_readme: bool,
                                  predicted_execution: set | str,
                                  golden_execution: set | str) -> str:
-    template = (
-        REFLECTION_CASE_PROMPT_TEMPLATE
-        if use_bird_global
-        else REFLECTION_CASE_NO_BIRD_PROMPT_TEMPLATE
-    )
-    return template.format(
+    return REFLECTION_CASE_PROMPT_TEMPLATE.format(
         db_id=db_id,
         question_id=q.get("question_id", 0),
         difficulty=q.get("difficulty", "?"),
@@ -1191,7 +601,6 @@ def run_reflection_for_case(db_id: str, q: dict,
                             agent,
                             predicted_sql: str | None, result_str: str,
                             elapsed: float, bench_dir: Path,
-                            use_bird_global: bool,
                             include_bird_readme: bool,
                             predicted_execution: set | str,
                             golden_execution: set | str) -> dict:
@@ -1205,7 +614,7 @@ def run_reflection_for_case(db_id: str, q: dict,
         tools=list(DEFAULT_READONLY_TOOLS),
         prompts=list(DEFAULT_READONLY_PROMPTS) + ["effort"],
     )
-    reflection_spec.projects = build_agent_projects(db_id, use_bird_global)
+    reflection_spec.projects = build_agent_projects(db_id)
     reflection_spec.guardrails = build_guardrails(reflection_spec, ["round_limit"])
 
     # 方案 1：沿用同一个 agent 会话，只在反思阶段切到 reflection 配置。
@@ -1232,7 +641,6 @@ def run_reflection_for_case(db_id: str, q: dict,
         predicted_sql=predicted_sql,
         result_str=result_str,
         elapsed=elapsed,
-        use_bird_global=use_bird_global,
         include_bird_readme=include_bird_readme,
         predicted_execution=predicted_execution,
         golden_execution=golden_execution,
@@ -1471,72 +879,6 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict]):
     (evaluation_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-# ═══════════════════════════════════════════════════════════
-#  进度追踪
-# ═══════════════════════════════════════════════════════════
-
-class ProgressTracker:
-    """线程安全的进度记录器。"""
-
-    def __init__(self, db_map: dict[str, list], progress_path: Path):
-        self._lock = threading.Lock()
-        self._path = progress_path
-        self._states: dict[str, dict] = {
-            db_id: {
-                "total": len(qs), "status": "pending",
-                "done": 0, "correct": 0,
-                "started_at": None, "finished_at": None,
-            }
-            for db_id, qs in db_map.items()
-        }
-        self._write()
-
-    def start_test(self, db_id: str):
-        with self._lock:
-            self._states[db_id]["status"] = "testing"
-            if self._states[db_id]["started_at"] is None:
-                self._states[db_id]["started_at"] = time.time()
-            self._write()
-
-    def update(self, db_id: str, done: int, correct: int):
-        with self._lock:
-            self._states[db_id]["done"] = done
-            self._states[db_id]["correct"] = correct
-            self._write()
-
-    def finish(self, db_id: str, correct: int, total: int):
-        with self._lock:
-            self._states[db_id]["status"] = "done"
-            self._states[db_id]["done"] = total
-            self._states[db_id]["correct"] = correct
-            self._states[db_id]["finished_at"] = time.time()
-            self._write()
-
-    def _write(self):
-        lines = [f"=== Progress — {time.strftime('%Y-%m-%d %H:%M:%S')} ===", ""]
-        total_done = sum(s["done"] for s in self._states.values())
-        total_queries = sum(s["total"] for s in self._states.values())
-        total_correct = sum(s["correct"] for s in self._states.values())
-        lines.append(f"Overall: {total_done}/{total_queries} queries, {total_correct} correct")
-        lines.append("")
-        for db_id in sorted(self._states.keys()):
-            s = self._states[db_id]
-            pct = s["done"] / s["total"] * 100 if s["total"] else 0
-            elapsed = ""
-            if s["started_at"] and s["status"] != "done":
-                elapsed = f" ({time.time() - s['started_at']:.0f}s)"
-            elif s["started_at"] and s["finished_at"]:
-                elapsed = f" ({s['finished_at'] - s['started_at']:.0f}s)"
-            lines.append(
-                f"  [{s['status']:>10}] {db_id:25s} "
-                f"{s['done']:>4}/{s['total']:<4} ({pct:5.1f}%) "
-                f"correct={s['correct']}{elapsed}"
-            )
-        lines.append("")
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 def cleanup_all(db_base: Path, db_map: dict[str, list], *, train: bool):
     print("=== Cleanup ===")
     for db_id in sorted(db_map.keys()):
@@ -1557,76 +899,6 @@ def cleanup_all(db_base: Path, db_map: dict[str, list], *, train: bool):
             shutil.rmtree(legacy_pontis_dir, ignore_errors=True)
             print(f"  [{db_id}] Removed legacy data .pontis")
     print("Cleanup done\n")
-
-
-def cleanup_bird_global(clear_bird_knowledge: bool = False):
-    if not clear_bird_knowledge:
-        return
-
-    from storage.workspace import Workspace
-
-    print("=== Cleanup bird ===")
-    ws = Workspace(active_projects=["bird"])
-    rows = ws.cypher("MATCH (n) WHERE n.name != 'README' RETURN n", project="bird")
-    total = len(rows)
-    if not total:
-        print("  [bird] No non-README knowledge nodes to delete")
-        print("Cleanup bird done\n")
-        return
-
-    ws.cypher("MATCH (n) WHERE n.name != 'README' DELETE n", project="bird")
-    print(f"  [bird] Deleted {total} non-README nodes")
-    print("Cleanup bird done\n")
-
-
-def ensure_bird_global_ready(args) -> None:
-    """Make --use-bird-global fail fast or populate bird before benchmark."""
-    if not getattr(args, "use_bird_global", False):
-        return
-
-    from storage.workspace import Workspace
-    from scripts.BIRD.bird_readme import sync_bird_readme
-    from scripts.BIRD.sync_bird_global import (
-        count_bird_train_examples,
-        resolve_train_json_path,
-        sync_bird_global,
-    )
-
-    ws = Workspace(active_projects=["bird"])
-    sync_bird_readme(ws)
-    count = count_bird_train_examples(ws)
-    if count > 0:
-        print(f"=== bird global ===\n  Synced README\n  Found {count} imported train examples\n")
-        return
-
-    train_json = resolve_train_json_path(getattr(args, "bird_train_json", None))
-    if not getattr(args, "auto_sync_bird_global", True):
-        print(
-            "Error: --use-bird-global is enabled but bird has 0 imported train examples.\n"
-            f"Run: python Pontis/scripts/BIRD/sync_bird_global.py --train-json {train_json}\n"
-            "Or pass --no-bird-global."
-        )
-        sys.exit(1)
-
-    if not train_json.exists():
-        print(
-            "Error: --use-bird-global is enabled but bird has 0 imported train examples, "
-            f"and train.json was not found: {train_json}"
-        )
-        sys.exit(1)
-
-    print("=== bird global ===")
-    print(f"  Empty bird graph; syncing train examples from {train_json}")
-    sync_bird_global(
-        import_train=True,
-        embed_train=not getattr(args, "no_bird_global_embedding", False),
-        train_json=train_json,
-    )
-    count = count_bird_train_examples(ws)
-    if count <= 0:
-        print("Error: bird global sync completed but no train examples were imported")
-        sys.exit(1)
-    print(f"  Ready: {count} imported train examples\n")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1667,7 +939,7 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
             prompts=list(BIRD_BENCHMARK_PROMPTS),
         )
         spec.bird_report_count = max(1, int(getattr(args, "bird_report_count", 3) or 3))
-        spec.projects = build_agent_projects(db_id, args.use_bird_global)
+        spec.projects = build_agent_projects(db_id)
         spec.guardrails = build_guardrails(spec, build_bird_benchmark_guardrails(args))
         agent = create_agent(
             str(db_dir),
@@ -1701,7 +973,6 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                     'golden_sql': q.get('SQL'), 'predicted_sql': None,
                     'correct': False, 'result': "ERROR", 'elapsed': round(elapsed, 1),
                     **efficiency,
-                    'use_bird_global': args.use_bird_global,
                     'bird_readme': args.bird_readme,
                     'bird_readme_prompt': include_bird_readme_prompt(args),
                     'prompt_profile': args.prompt_profile,
@@ -1744,7 +1015,6 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                     result_str=result_str,
                     elapsed=elapsed,
                     bench_dir=bench_dir,
-                    use_bird_global=args.use_bird_global,
                     include_bird_readme=args.bird_readme,
                     predicted_execution=predicted_result,
                     golden_execution=golden_result,
@@ -1765,7 +1035,6 @@ def run_database(db_id: str, queries: list[dict], db_base: Path,
                 'correct': correct, 'result': result_str, 'elapsed': round(elapsed, 1),
                 **efficiency,
                 **reflection_fields,
-                'use_bird_global': args.use_bird_global,
                 'bird_readme': args.bird_readme,
                 'bird_readme_prompt': include_bird_readme_prompt(args),
                 'prompt_profile': args.prompt_profile,
@@ -1818,19 +1087,7 @@ def main():
         default=True,
         help="最终 SQL 执行失败时不追加一次无工具修复",
     )
-    parser.add_argument(
-        "--use-bird-global",
-        dest="use_bird_global",
-        action="store_true",
-        default=False,
-        help="启用 bird 全局经验库（默认关闭）",
-    )
-    parser.add_argument(
-        "--no-bird-global",
-        dest="use_bird_global",
-        action="store_false",
-        help="禁用 bird 全局经验库，只使用当前数据库项目（默认）",
-    )
+    parser.add_argument("--no-bird-global", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--prompt-profile",
         choices=PROMPT_PROFILES,
@@ -1840,10 +1097,7 @@ def main():
     parser.add_argument(
         "--prompt-file",
         type=Path,
-        help=(
-            "使用自定义主求解 prompt 模板；可包含 {question}、{evidence}、"
-            "{bird_global_note}、{project_scope}、{bird_global_section}"
-        ),
+        help="使用自定义主求解 prompt 模板；可包含 {question}、{evidence}、{project_scope}",
     )
     parser.add_argument(
         "--bird-readme",
@@ -1902,28 +1156,6 @@ def main():
         default=None,
         help="Pontis extract_summary.json to merge preprocessing token metrics into evaluation outputs.",
     )
-    parser.add_argument(
-        "--clear-bird-knowledge",
-        action="store_true",
-        help="运行前清空 bird 全局知识库中除 README 外的所有节点",
-    )
-    parser.add_argument(
-        "--no-auto-sync-bird-global",
-        dest="auto_sync_bird_global",
-        action="store_false",
-        default=True,
-        help="启用 bird 全局库但库为空时直接失败，不自动导入 train examples",
-    )
-    parser.add_argument(
-        "--no-bird-global-embedding",
-        action="store_true",
-        help="自动同步 bird 全局库时只导入 train examples，不生成语义向量",
-    )
-    parser.add_argument(
-        "--bird-train-json",
-        type=Path,
-        help="用于同步 bird 全局经验库的 BIRD train.json 路径",
-    )
     args = parser.parse_args()
 
     if args.run_id:
@@ -1976,7 +1208,6 @@ def main():
     print(f"Runtime logs: {PONTIS_WORKSPACE_ROOT / 'runtime_logs' / get_run_name(args.train)}")
     print(
         "Config: "
-        f"bird_global={'on' if args.use_bird_global else 'off'}, "
         f"bird_readme={'on' if args.bird_readme else 'off'}, "
         f"bird_readme_prompt={'on' if include_bird_readme_prompt(args) else 'off'}, "
         f"bird_schema_challenge={'on' if (args.bird_schema_challenge or args.bird_multi_report) else 'off'}, "
@@ -1992,11 +1223,6 @@ def main():
         print(f"Preprocess summary: {args.preprocess_summary}\n")
 
     cleanup_all(db_base, by_db, train=args.train)
-    if args.clear_bird_knowledge and not args.use_bird_global:
-        print("Skip --clear-bird-knowledge because --no-bird-global is set\n")
-    else:
-        cleanup_bird_global(clear_bird_knowledge=args.clear_bird_knowledge)
-    ensure_bird_global_ready(args)
 
     progress_path = get_progress_path(args.train)
     tracker = ProgressTracker(by_db, progress_path)

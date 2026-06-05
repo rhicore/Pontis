@@ -16,7 +16,7 @@ Pontis 当前更强的是第一层：帮助 agent 探索数据库结构和语义
 
 | Split | DB 数 | Query 数 | 当前用途 |
 |---|---:|---:|---|
-| Train | 69 | 9428 | BIRD 全局经验库来源 |
+| Train | 69 | 9428 | 外部参考；当前默认 benchmark 不使用 train gold SQL 或答案 |
 | Dev | 11 | 1534 | 主评测集 |
 
 train 和 dev 数据库不重叠，所以 train 中的具体 SQL 不能直接迁移。可迁移的是：
@@ -26,16 +26,16 @@ train 和 dev 数据库不重叠，所以 train 中的具体 SQL 不能直接迁
 - 常见错误规避规则
 - value / date / ratio / top-k 等 benchmark 风格经验
 
-这些内容现在主要同步到 `bird::README` 和 `bird::*:example`。
+当前默认运行关闭 BIRD global，不把 train 的具体 SQL、gold answer 或 dev 前序题结果写回给后续题。BIRD 适配只应通过外部可声明的 README/规则文档进入系统；通用 agent、guardrail、multi-report controller 不应包含 BIRD 专用表名、字段名或题号逻辑。
 
 ## 3. 当前运行结论
 
-最近一次完整有效的老日志显示，Pontis 使用 bird global 后，错题中大多数都实际读取过全局知识或局部 schema 语义。关键问题不是“没读知识”，而是：
+旧完整日志显示，错题中大多数都实际读取过局部 schema 语义。关键问题通常不是“完全没读知识”，而是：
 
 - 读到 `disambig` 后把说明误当成强过滤条件。
 - 读到 join/fk 后仍然选错输出列或聚合粒度。
-- 检索到相似 example 后没有稳定迁移 SQL 口径。
 - BIRD gold 偏好的 `id/name`、`ORDER BY LIMIT`、`DISTINCT`、ratio 分母没有被稳定执行。
+- 最终 SQL synthesis 没有稳定使用已经读到的证据。
 
 在一次暂停前的部分新日志中，31 个完成但错误的题大致可分为：
 
@@ -45,6 +45,26 @@ train 和 dev 数据库不重叠，所以 train 中的具体 SQL 不能直接迁
 | SQL 口径/组织错误 | 约 22/31 | 表列基本找到，但输出字段、聚合、top-k、distinct、日期片段等不符合 gold |
 
 这说明 Pontis 的瓶颈已经部分转移到 evidence-to-SQL 决策，而不是纯 schema retrieval。
+
+## 3.1 机制边界
+
+近期实验把机制边界重新收窄：
+
+- BIRD README final reviewer 只负责输出契约、SQL 风格和 README 中可声明的 benchmark 规则，不负责显式替 agent 做 schema linking。
+- schema challenger / multi-report controller 是通用候选路径生成机制，适合比较表、列、值、join path、row grain、aggregation grain 等候选，但不应写入 BIRD 专用规则。
+- final SQL validity check 只检查最终答案是否是可解析、只读、结构有效的 SQL，不根据题号或数据集风格强行改 SQL。
+- value grounding 不能作为通用零命中拦截规则，因为某些正确 SQL 的结果本身可以是零命中或依赖空值逻辑。
+- 所有可迁移的 BIRD 适配只能进入 BIRD README；README 应保持扁平、短规则、可检索、无数据库专名。
+
+## 3.2 已合并的逐轮实验结论
+
+旧的逐轮长文和 CSV 已合并为以下当前结论：
+
+- `20260529` 531 错题分析说明，README 确实进入了最终审查流程；问题主要是同一 agent 自查会受既有 SQL 锚定，且部分 README 规则本身和 gold 口径冲突。
+- `20260603` 108 题回归说明，去掉硬编码拦截后，主要漏洞不是某个单点规则，而是 reviewer 召回/审查不稳定、主 agent 执行 reviewer 建议不稳定，以及 guardrail 之间可能互相冲突。
+- `20260604` schema-linking 修复调研说明，DB-exploration-fixable 题应优先通过更好的局部 hints、消歧和 challenger 解决；不要把具体数据库事实塞进通用 guardrail。
+- `20260605` schema-linking full-pool 审计说明，多智能体 challenge 能提高某些候选路径出现概率，但 final judge 仍可能选错；因此要分开报告 schema-linking 是否找到正确路径和 execution 是否最终正确。
+- explorer 相关计划已收敛到通用 `hints` 视图：写入 DB 可验证事实，例如 row grain、predicate landing、field role、join coverage、value format；不写 query/gold priors。
 
 ## 4. Schema Linking 与等结构性
 
@@ -107,7 +127,7 @@ EX | schema linking failure
 - **CHESS**：同题内部有候选生成、修正、执行反馈；跨 query 不在线学习。
 - **Alpha-SQL**：每题独立 MCTS 搜索和 self-consistency；跨 query 不反馈经验。
 - **DeepEye-SQL**：stage pipeline 保存每题中间结果；few-shot 是离线文件，不是 dev 在线学习。
-- **Pontis**：当前使用静态预处理图和 bird global 经验库；benchmark 中不应把 dev 前序题写回给后续题，除非明确测试 continuous mode。
+- **Pontis**：当前使用静态预处理图和可选数据集 README 规则；benchmark 中不应把 dev 前序题写回给后续题，除非明确测试 continuous mode。
 
 因此默认公平设定是：
 

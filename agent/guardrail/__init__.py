@@ -11,6 +11,7 @@ def build_guardrails(spec, builder_names: list = None) -> list:
     from agent.guardrail.tool_abuse import ToolAbuse
     from agent.guardrail.exploration_check import ExplorationCheck
     from agent.guardrail.sql_check import SQLEntityCheck
+    from agent.guardrail.sql_final_validity_check import FinalSQLValidityCheck
     from agent.guardrail.sql_join_check import BridgeTableCheck
     from agent.guardrail.sql_disambig_check import SQLDisambigCheck
     from agent.guardrail.meta_disambig_prefetch import MetaDisambigPrefetch
@@ -26,6 +27,7 @@ def build_guardrails(spec, builder_names: list = None) -> list:
         "query_abuse": lambda: ToolAbuse("query", total_limit=5, consecutive_limit=3),
         "exploration_check": lambda: ExplorationCheck(),
         "sql_check": lambda: SQLEntityCheck(),
+        "final_sql_validity_check": lambda: FinalSQLValidityCheck(),
         "bridge_check": lambda: BridgeTableCheck(),
         "disambig_check": lambda: SQLDisambigCheck(),
         "meta_disambig_prefetch": lambda: MetaDisambigPrefetch(),

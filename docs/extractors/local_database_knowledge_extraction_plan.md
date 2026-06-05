@@ -62,9 +62,9 @@
 
 这些问题更适合由：
 
-- train 历史 SQL
-- bird global
-- benchmark-aware guardrail
+- 数据集级 README / 规则文档
+- 外部实验分析
+- benchmark-aware reviewer
 
 来补，而不是要求 extractor 直接解决。
 

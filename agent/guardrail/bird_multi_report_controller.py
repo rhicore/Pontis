@@ -28,9 +28,6 @@ class BirdSchemaChallengeController(Guardrail):
 
     def check(self, ctx: GuardrailContext) -> dict:
         if ctx.pending_calls:
-            if self._phase in {"await_judge", "await_judge_audit"}:
-                prompt = self._build_no_more_tools_prompt()
-                return {i: CallVerdict("block", prompt) for i in range(len(ctx.pending_calls))}
             return {}
         if ctx.agent is None:
             return {}
@@ -115,16 +112,6 @@ class BirdSchemaChallengeController(Guardrail):
 
         return {}
 
-    @staticmethod
-    def _build_no_more_tools_prompt() -> str:
-        return """\
-Do not call tools in the judge or audit phase.
-
-Use the reports, prior observations, question, evidence, and candidate SQL
-already present in this context. Output the required decision now, including the
-final SQLite SELECT in a ```sql``` block.
-"""
-
     def _append_report(self, response: str) -> None:
         report_id = f"R{len(self._reports) + 1}"
         self._reports.append(f"[{report_id}]\n{response.strip()}")
@@ -148,14 +135,19 @@ final SQLite SELECT in a ```sql``` block.
 You have proposed a final SQL. Pause before release and write a concise SQL
 report.
 
+This first report is not expected to discover every possible schema-linking
+path. Report only the path you selected, evidence you actually observed,
+alternatives you actually considered, and uncertainties that remain.
+
 Focus on schema linking and grounded observations:
-- target tables and columns
+- selected tables and columns
+- direct schema anchors from the question/evidence to those tables or columns
 - join path
 - entity/value grounding
 - row or aggregation grain
 - output columns
-- rejected alternative schema-linking paths
-- any mismatch between tool observations and the candidate SQL
+- observed rejected paths or zero-hit attempts
+- unresolved schema-linking uncertainties
 
 Do not perform README/style review here. That is handled by a separate release
 reviewer.
@@ -169,8 +161,9 @@ Question:
 Evidence:
 
 [Schema Linking]
-- target tables:
-- target columns:
+- selected tables:
+- selected columns:
+- direct schema anchors:
 - join path:
 - entity/value grounding:
 - row or aggregation grain:
@@ -179,15 +172,16 @@ Evidence:
 [Grounded Observations]
 - supporting observations:
 - contradicted or zero-hit attempts:
-- rejected alternatives:
-- remaining uncertainty:
+- observed rejected paths:
+- unresolved schema-linking uncertainties:
+- row-grain consequences:
 
 [Candidate SQL]
 ```sql
 -- candidate SQLite SELECT
 ```
 
-[Known Risks]
+[Known Risks For Challengers]
 - ...
 
 Original task:
@@ -206,22 +200,54 @@ Recent grounded tool observations:
         return f"""\
 You are a new Text-to-SQL schema-linking challenger.
 
-Review the original task and prior SQL reports. Look for a different plausible
-schema-linking path or value grounding. Use tools only when they can resolve a
-material schema-linking uncertainty. Do not perform README/style review.
+Review the original task and prior SQL reports only to understand which paths
+have already been tried. Your job is not to defend or judge the previous SQL.
+Look for a materially different plausible schema-linking path, field landing,
+value grounding, join path, or row-grain interpretation.
 
-Compare candidates by:
+Use tools only when they can resolve a material schema-linking uncertainty.
+Do not perform README/style review.
+
+When searching for an alternative, record evidence about:
 - table and column semantics
+- direct schema anchors from question/evidence
 - join path
 - entity/value grounding
 - row or aggregation grain
 - requested output columns
+- whether the path can produce complete, non-empty requested outputs
 - consistency with observed tool results
 
-If you agree with the prior report, say why and keep the same SQL. If you find a
-better path, provide a new report and candidate SQL.
+Do not rank all reports. If you find a materially better-grounded alternative,
+provide a new report and candidate SQL. If you keep a prior SQL, explain which
+alternative paths you checked or why no material alternative is supported by the
+available schema evidence. The judge will compare reports later.
 
-Use the same report format as before and include one candidate SQLite SELECT.
+Required format:
+
+[SQL Report]
+[Task]
+Question ID:
+Question:
+Evidence:
+
+[Alternative Analysis]
+- prior selected path:
+- alternative path considered:
+- direct schema anchors:
+- verification or coverage evidence:
+- row-grain consequences:
+- requested output completeness:
+- decision: keep_prior | replace_with_alternative
+- reason:
+
+[Candidate SQL]
+```sql
+-- candidate SQLite SELECT
+```
+
+[Known Risks]
+- ...
 
 Original task:
 {self._format_task()}
@@ -234,17 +260,23 @@ Prior SQL reports:
         return f"""\
 You are a Text-to-SQL judge.
 
-Choose the best candidate SQL from the reports. Prioritize schema-linking
-quality and consistency with grounded tool observations: target tables, target
-columns, join path, entity/value grounding, row or aggregation grain, and output
-columns. Only compare SQL style details when schema linking is otherwise
-equivalent.
+Choose the best candidate SQL from the reports. Treat the first report and all
+challenge reports as competing candidates; do not prefer the first report just
+because it came from the original solver, and do not prefer a challenger just
+because it is different.
+
+Prioritize schema-linking quality and consistency with grounded observations:
+direct schema anchors, table and column semantics, join path, entity/value
+grounding, row or aggregation grain, requested output columns, and whether the
+candidate path can produce complete requested outputs. Only compare SQL style
+details when schema linking is otherwise equivalent.
 
 You may use tools only to resolve a material disagreement between reports.
 
 Final output must contain:
 - selected_report_id
 - selection_reason
+- rejected_report_reasons
 - one ```sql``` block containing the selected SQLite SELECT
 
 Original task:
@@ -264,6 +296,7 @@ schema-linking path while a report provides a better grounded path, correct it.
 Otherwise keep the judge SQL.
 
 Use tools only for material disagreements. Do not perform README/style review.
+Treat all reports as equal candidates during the audit.
 
 Final output must contain:
 - audit_result: `keep_judge_sql` or `corrected`
