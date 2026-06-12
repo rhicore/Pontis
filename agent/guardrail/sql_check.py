@@ -36,11 +36,6 @@ class SQLEntityCheck(Guardrail):
                 result[i] = CallVerdict("warn", msg)
 
         if not ctx.pending_calls:
-            if (
-                getattr(ctx.agent, "_bird_schema_challenge_enabled", False)
-                and not getattr(ctx.agent, "_bird_schema_challenge_allow_final_recheck", False)
-            ):
-                return result
             sql = get_sql_from_messages(ctx.messages)
             if sql:
                 missing = self._check_missing(

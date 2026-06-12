@@ -194,6 +194,91 @@ def _run(cmd: list[str], env: dict[str, str], quiet: bool = False) -> int:
     return subprocess.run(cmd, env=env, stdout=stdout, stderr=stderr).returncode
 
 
+def _project_processes(project_root: Path, tracked_pid: int | None) -> list[int]:
+    marker = str(project_root)
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,args="],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return []
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line or marker not in line:
+            continue
+        parts = line.split(None, 1)
+        if not parts:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if pid == os.getpid() or pid == tracked_pid:
+            continue
+        pids.append(pid)
+    return pids
+
+
+def _cleanup_orphan_processes(project: str, base_dir: Path, timeout_seconds: float) -> None:
+    tracked_pid = _read_pid(base_dir, project)
+    root = _project_dir(base_dir, project)
+    for pid in _project_processes(root, tracked_pid):
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except OSError:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                continue
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        remaining = [pid for pid in _project_processes(root, tracked_pid) if _pid_running(pid)]
+        if not remaining:
+            return
+        time.sleep(0.2)
+    for pid in _project_processes(root, tracked_pid):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except OSError:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+def _path_has_open_handles(path: Path) -> bool:
+    if not path.exists():
+        return False
+    result = subprocess.run(
+        ["lsof", str(path)],
+        check=False,
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def _wait_for_project_release(project: str, base_dir: Path, timeout_seconds: float) -> None:
+    root = _project_dir(base_dir, project)
+    watched = [
+        root / "data" / "databases" / "system" / "neostore",
+        root / "data" / "databases" / "store_lock",
+    ]
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if not any(_path_has_open_handles(path) for path in watched):
+            return
+        time.sleep(0.2)
+
+
 def _start_console(project: str, conf_env: dict[str, str], base_dir: Path, grace_seconds: float) -> int:
     root = _project_dir(base_dir, project)
     log_path = root / "logs" / "console.log"
@@ -327,6 +412,9 @@ def cmd_start(args) -> int:
         if _pid_running(_read_pid(base_dir, name)):
             print(f"{name}\talready running")
             continue
+        _pid_file(base_dir, name).unlink(missing_ok=True)
+        _cleanup_orphan_processes(name, base_dir, args.stop_timeout)
+        _wait_for_project_release(name, base_dir, args.stop_timeout)
         _ensure_initial_password(name, conf_env, base_dir)
         code = _start_console(name, conf_env, base_dir, args.start_grace)
         if code != 0:

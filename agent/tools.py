@@ -12,6 +12,8 @@ _TOOL_DIR_MAP = {
     "agent": "sub_agent",
 }
 
+EXIT_PLAN_TOOL = "exit_plan"
+
 
 def _load_prompt(tool_name: str) -> str:
     """Load tool prompt from agent/tool_use/{dir}/prompt.py."""
@@ -288,6 +290,31 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                 },
             },
         },
+        EXIT_PLAN_TOOL: {
+            "type": "function",
+            "function": {
+                "name": EXIT_PLAN_TOOL,
+                "description": _load_prompt(EXIT_PLAN_TOOL),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Short label for the SQL writing plan.",
+                        },
+                        "plan": {
+                            "type": "string",
+                            "description": "The SQL writing plan based on completed exploration.",
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Why this plan should be approved.",
+                        },
+                    },
+                    "required": ["title", "plan"],
+                },
+            },
+        },
     }
 
 
@@ -511,6 +538,10 @@ def _exec_cypher(workspace, arguments: dict) -> str:
     )
 
 
+def _exec_exit_plan(workspace, arguments: dict) -> str:
+    return "Exit plan request was not intercepted by the runtime."
+
+
 def _exec_create_entity(workspace, arguments: dict) -> str:
     from tool.create_entity.tool import create_entity_command
     return create_entity_command(
@@ -581,6 +612,7 @@ _READONLY_EXECUTORS = {
     "bash": _exec_bash,
     "query": _exec_query,
     "cypher": _exec_cypher,
+    EXIT_PLAN_TOOL: _exec_exit_plan,
 }
 
 _WRITE_EXECUTORS = {

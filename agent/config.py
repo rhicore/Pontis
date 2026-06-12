@@ -7,7 +7,7 @@ from agent.prompt import build_prompt_messages
 from agent.guardrail_api import Guardrail
 from agent.guardrail import build_guardrails
 
-DEFAULT_READONLY_TOOLS = ["find", "grep", "read", "jd", "meta", "bash", "query", "agent"]
+DEFAULT_READONLY_TOOLS = ["find", "grep", "read", "jd", "meta", "bash", "query", "agent", "exit_plan"]
 DEFAULT_READONLY_PROMPTS = [
     "base", "tool", "ontology", "sql",
     "guardrail", "project", "readme",
@@ -28,7 +28,6 @@ class AgentSpec:
     projects: List[str] = field(default_factory=list)  # 本次开启的项目名列表，空则只开启 project_path
     effort: str = "mid"
     max_rounds: Optional[int] = None
-    bird_report_count: int = 3
 
     tools: List[str] = field(default_factory=list)
     prompts: List[str] = field(default_factory=list)

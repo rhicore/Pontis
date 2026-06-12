@@ -553,6 +553,33 @@ def _resolve_db_connection(workspace, selector: str):
             return None, None, f"错误：数据库文件不存在: {selector}"
         return None, selector, None
 
+    active_projects = set(getattr(workspace, "active_projects", []) or [])
+    if selector in active_projects:
+        rows = workspace.cypher(
+            "MATCH (f:file:db) "
+            "RETURN f.path AS path, coalesce(f._db_connect, f.db_connect) AS db_connect",
+            project=selector,
+        )
+        if len(rows) == 1:
+            db_connect = rows[0].get("db_connect")
+            db_path = getattr(db_connect, "db_path", None) if db_connect is not None else None
+            if db_connect is not None and db_path:
+                return db_connect, db_path, None
+
+    selector_head = selector.split(":", 1)[0].strip()
+    selector_stem = os.path.splitext(os.path.basename(selector_head))[0].strip()
+    if selector_stem and selector_stem in active_projects:
+        rows = workspace.cypher(
+            "MATCH (f:file:db) "
+            "RETURN f.path AS path, coalesce(f._db_connect, f.db_connect) AS db_connect",
+            project=selector_stem,
+        )
+        if len(rows) == 1:
+            db_connect = rows[0].get("db_connect")
+            db_path = getattr(db_connect, "db_path", None) if db_connect is not None else None
+            if db_connect is not None and db_path:
+                return db_connect, db_path, None
+
     sources = resolve_file_sources(workspace, selector, labels=("db",), allow_directory=False)
     if len(sources) > 1:
         options = "\n".join(f"- {src.path}" for src in sources[:20])
@@ -598,6 +625,14 @@ def _resolve_db_connection(workspace, selector: str):
         return db_connect, db_path, None
     except Exception:
         return None, None, f"错误：数据库文件不存在或不唯一: {selector}"
+
+
+def _normalize_db_selector(selector: str) -> str:
+    selector = (selector or "").strip()
+    marker = ":db/"
+    if marker in selector:
+        return selector.split(marker, 1)[0] + ":db"
+    return selector
 
 
 def _register_db_tables(conn: sqlite3.Connection, workspace, source, tables: list[dict]) -> None:
@@ -727,7 +762,8 @@ def query_command(workspace, sql: str, ref: str = "", limit: int = _DEFAULT_LIMI
     if json_source is not None:
         return _query_json_source(stripped, json_source, limit)
 
-    db_connect, db_path, db_err = _resolve_db_connection(workspace, selector)
+    db_selector = _normalize_db_selector(selector)
+    db_connect, db_path, db_err = _resolve_db_connection(workspace, db_selector)
     if db_err:
         return db_err
 

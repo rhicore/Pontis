@@ -37,7 +37,7 @@ AI_PIPELINE = [
 
 AGENT_PIPELINE = [
     "agent_schema_prepare",
-    "agent_entity_hints",
+    "agent_bird_entity_hints",
     "agent_readme",
 ]
 
@@ -157,7 +157,10 @@ def extract_one(
             result["agent"] = result["schema_prepare"]
             result["join_detect"] = agent_timings.get("agent_join_detect", 0.0)
             result["disambiguate"] = agent_timings.get("agent_disambiguate", 0.0)
-            result["entity_hints"] = agent_timings.get("agent_entity_hints", 0.0)
+            result["entity_hints"] = (
+                agent_timings.get("agent_bird_entity_hints", 0.0)
+                or agent_timings.get("agent_entity_hints", 0.0)
+            )
             result["readme"] = agent_timings.get("agent_readme", 0.0)
 
             if result["ai_columns"]:
@@ -372,7 +375,10 @@ def main() -> None:
                 result["agent"] = result["schema_prepare"]
                 result["join_detect"] = timings.get("agent_join_detect", 0.0)
                 result["disambiguate"] = timings.get("agent_disambiguate", 0.0)
-                result["entity_hints"] = timings.get("agent_entity_hints", 0.0)
+                result["entity_hints"] = (
+                    timings.get("agent_bird_entity_hints", 0.0)
+                    or timings.get("agent_entity_hints", 0.0)
+                )
                 result["readme"] = timings.get("agent_readme", 0.0)
                 result["embedding"] = timings.get("semantic_embedding", 0.0)
                 if hasattr(config, "get_preprocess_token_metrics"):

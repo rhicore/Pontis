@@ -26,11 +26,6 @@ class FinalSQLValidityCheck(Guardrail):
     def check(self, ctx: GuardrailContext) -> dict:
         if ctx.pending_calls:
             return {}
-        if (
-            getattr(ctx.agent, "_bird_schema_challenge_enabled", False)
-            and not getattr(ctx.agent, "_bird_schema_challenge_allow_final_recheck", False)
-        ):
-            return {}
 
         text = (ctx.last_response or "").strip()
         if not text:

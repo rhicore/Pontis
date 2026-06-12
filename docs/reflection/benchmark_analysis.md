@@ -26,7 +26,7 @@ train 和 dev 数据库不重叠，所以 train 中的具体 SQL 不能直接迁
 - 常见错误规避规则
 - value / date / ratio / top-k 等 benchmark 风格经验
 
-当前默认运行关闭 BIRD global，不把 train 的具体 SQL、gold answer 或 dev 前序题结果写回给后续题。BIRD 适配只应通过外部可声明的 README/规则文档进入系统；通用 agent、guardrail、multi-report controller 不应包含 BIRD 专用表名、字段名或题号逻辑。
+当前不把 train 的具体 SQL、gold answer 或 dev 前序题结果写回给后续题。BIRD 适配只应通过外部可声明的规则文档进入系统；通用 agent、guardrail 和控制器不应包含 BIRD 专用表名、字段名或题号逻辑。
 
 ## 3. 当前运行结论
 

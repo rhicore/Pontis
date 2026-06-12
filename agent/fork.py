@@ -149,8 +149,6 @@ def _build_fork_guardrails(parent_agent, max_rounds: int):
         name = getattr(guardrail, "builder_name", None)
         if not name:
             continue
-        if name == "meta_disambig_prefetch":
-            continue
         if name not in names:
             names.append(name)
 

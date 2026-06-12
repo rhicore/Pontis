@@ -10,6 +10,7 @@ _TOOL_DESCRIPTIONS = {
     "read": "按行号回读 text file ref 的原文",
     "jd": "浏览 JSON file ref 的内部层级结构",
     "bash": "执行只读 shell 命令，适合工具无法覆盖的一次性计算",
+    "exit_plan": "计划模式结束工具；完成探索后提交 SQL 写作计划给用户审批，批准后再输出最终 SQL",
 }
 
 
