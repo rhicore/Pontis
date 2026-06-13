@@ -300,15 +300,15 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "title": {
                             "type": "string",
-                            "description": "Short label for the SQL writing plan.",
+                            "description": "Short label for the plan.",
                         },
                         "plan": {
                             "type": "string",
-                            "description": "The SQL writing plan based on completed exploration.",
+                            "description": "Plan text to submit for approval.",
                         },
                         "reason": {
                             "type": "string",
-                            "description": "Why this plan should be approved.",
+                            "description": "Optional reason why this plan should be approved.",
                         },
                     },
                     "required": ["title", "plan"],

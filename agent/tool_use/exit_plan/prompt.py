@@ -1,10 +1,10 @@
 def get_description() -> str:
-    return """Exit plan mode and request approval for the SQL writing plan.
+    return """Exit plan mode and request approval for a plan.
 
-Use this tool only after you have completed the database exploration needed to write the
-SQL: relevant tables, columns, joins, values, aggregation grain, output columns, and any
-important ambiguity should already be checked. Do not call this tool before exploration.
+Use this tool only after you have enough information to propose a concrete next-step
+plan. The plan can be a SQL candidate, an implementation plan, an analysis plan, or any
+other task-specific plan requested by the active workflow.
 
-The tool submits the plan to the user/evaluation agent. If approved, continue from the
-approved plan and output the final SQL. If rejected, revise according to the feedback.
+The tool submits the plan to the user or supervising agent for approval. If rejected,
+revise according to the feedback.
 """

@@ -256,6 +256,12 @@ def _local_model_env_lines(args: argparse.Namespace) -> list[str]:
     api_key = shlex.quote(args.local_model_api_key)
     lines.extend(
         [
+            "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY",
+            "if [[ -n \"${_local_model_host:-}\" ]]; then",
+            "  export NO_PROXY=\"${NO_PROXY:-},${_local_model_host}\"",
+            "else",
+            "  export NO_PROXY=\"${NO_PROXY:-},localhost,127.0.0.1\"",
+            "fi",
             "export MODEL_API_URL=\"${LOCAL_MODEL_BASE_URL}\"",
             "export OPENAI_BASE_URL=\"${LOCAL_MODEL_BASE_URL}\"",
             f"export MODEL_API_KEY={api_key}",

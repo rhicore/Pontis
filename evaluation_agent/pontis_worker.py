@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.config import AgentSpec, create_agent, default_spec
+from agent.tools import EXIT_PLAN_TOOL
 from scripts.BIRD.benchmark_runtime import TraceCollector, extract_sql, get_agent_efficiency_metrics
 
 from .models import CandidateReport
@@ -34,6 +35,35 @@ def _append_system_prompt(agent, prompt: str | None) -> None:
     agent.set_system_prompt(parts)
 
 
+def _use_sql_only_exit_plan_schema(agent) -> None:
+    schema, executor = agent.tools._tools[EXIT_PLAN_TOOL]
+    strict_schema = {
+        **schema,
+        "function": {
+            **schema["function"],
+            "description": (
+                "Submit the final SQL candidate for approval. The `plan` value must contain "
+                "exactly one fenced ```sql code block with the complete SQL. Do not include "
+                "analysis, explanations, steps, results, or rebuttal text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "string",
+                        "description": (
+                            "Exactly one fenced ```sql code block containing the complete SQL "
+                            "candidate, and no other text."
+                        ),
+                    },
+                },
+                "required": ["plan"],
+            },
+        },
+    }
+    agent.tools.register(EXIT_PLAN_TOOL, strict_schema, executor)
+
+
 class PontisSqlWorker:
     """Thin adapter around the generic Pontis agent."""
 
@@ -53,6 +83,8 @@ class PontisSqlWorker:
         callback = trace_callback or self.collector.callback
         self.agent = create_agent(str(self.db_dir), self.spec, trace_callback=callback)
         _append_system_prompt(self.agent, main_agent_prompt)
+        if main_agent_prompt and "BIRD benchmark" in main_agent_prompt:
+            _use_sql_only_exit_plan_schema(self.agent)
         self._last_exit_plan_request: dict[str, Any] | None = None
         self.main_agent_prompt = main_agent_prompt
         self.schema_challenge_count = max(0, int(schema_challenge_count))
@@ -74,11 +106,13 @@ class PontisSqlWorker:
 
     def approve(self, attempt: int, comment: str = "") -> CandidateReport:
         self._restore_last_exit_plan_if_needed()
+        fallback_sql = _extract_sql_from_exit_plan(self._last_exit_plan_request)
         if not self.agent.has_pending_approval():
             request = "批准。请继续执行。"
             if comment.strip():
                 request += f"\n\n补充要求：{comment.strip()}"
-            return self._chat_events(attempt, "approve", request, self.agent.chat_stream(request))
+            report = self._chat_events(attempt, "approve", request, self.agent.chat_stream(request))
+            return _with_fallback_sql(report, fallback_sql)
         report = self._chat_events(
             attempt,
             "approve",
@@ -86,7 +120,35 @@ class PontisSqlWorker:
             self.agent.resolve_approval_stream(True, comment),
         )
         self._last_exit_plan_request = None
-        return report
+        return _with_fallback_sql(report, fallback_sql)
+
+    def accept_plan(self, attempt: int, comment: str = "") -> CandidateReport:
+        """Accept the pending exit_plan without asking Pontis to restate it."""
+        return self.accept_candidate_plan(attempt, self._last_exit_plan_request, comment)
+
+    def accept_candidate_plan(
+        self,
+        attempt: int,
+        exit_plan_request: dict[str, Any] | None,
+        comment: str = "",
+    ) -> CandidateReport:
+        """Accept a specific reviewed exit_plan request."""
+        sql = _extract_sql_from_exit_plan(exit_plan_request)
+        raw_response = _format_exit_plan_request(exit_plan_request or {})
+        if self.agent.has_pending_approval():
+            self.agent._pending_approval = None
+        self._last_exit_plan_request = None
+        return CandidateReport(
+            attempt=attempt,
+            action="accept_plan",
+            request=comment,
+            raw_response=raw_response,
+            predicted_sql=sql,
+            elapsed=0.0,
+            efficiency=get_agent_efficiency_metrics(self.agent),
+            exit_plan_requested=True,
+            exit_plan_request=exit_plan_request,
+        )
 
     def reject(self, attempt: int, reason: str) -> CandidateReport:
         self._restore_last_exit_plan_if_needed()
@@ -168,7 +230,7 @@ class PontisSqlWorker:
                 response = _format_exit_plan_request(exit_plan_request)
                 break
         elapsed = time.time() - started
-        predicted_sql = extract_sql(response)
+        predicted_sql = None if exit_plan_request is not None else extract_sql(response)
         efficiency: dict[str, Any] = get_agent_efficiency_metrics(self.agent)
         return CandidateReport(
             attempt=attempt,
@@ -206,3 +268,21 @@ def _format_exit_plan_request(event: dict[str, Any]) -> str:
     if plan:
         parts.append(f"Plan:\n{plan}")
     return "\n\n".join(parts)
+
+
+def _extract_sql_from_exit_plan(exit_plan_request: dict[str, Any] | None) -> str | None:
+    if not exit_plan_request:
+        return None
+    args = exit_plan_request.get("arguments") or {}
+    return extract_sql(str(args.get("plan") or ""))
+
+
+def _with_fallback_sql(report: CandidateReport, fallback_sql: str | None) -> CandidateReport:
+    if report.predicted_sql or not fallback_sql:
+        return report
+    report.predicted_sql = fallback_sql
+    report.raw_response = (
+        f"{report.raw_response.rstrip()}\n\n"
+        "[Pontis fallback] 使用已批准 exit_plan 中的拟提交最终 SQL。"
+    ).strip()
+    return report

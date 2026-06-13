@@ -10,13 +10,12 @@ from typing import Any
 from openai import OpenAI
 
 from agent.utils import load_agent_config
-from scripts.BIRD.benchmark_runtime import execute_sql, find_db_file, is_correct
+from scripts.BIRD.benchmark_runtime import execute_sql, extract_sql, find_db_file, is_correct
 from utils.context_dump import dump_llm_context, reset_context_dump_meta, set_context_dump_meta
 
-from .bird_prompts import BIRD_GUIDANCE, build_business_initial_request
+from .bird_prompts import BIRD_GUIDANCE, build_business_initial_request, build_pontis_plan_request
 from .models import BirdCase, CandidateReport, EvaluationResult
 from .pontis_worker import PontisSqlWorker
-from agent.guardrail.sql_plan_multi_agent import format_challenge_reports, format_judge_report
 
 
 EVALUATION_AGENT_SYSTEM_PROMPT = """\
@@ -24,12 +23,12 @@ EVALUATION_AGENT_SYSTEM_PROMPT = """\
 
 你只能通过工具和 DBA agent 交互：
 - `plan`：一次性入口。仅在收到用户业务问题后的第一轮调用，用来让 DBA agent 探索数据库并提交 SQL plan。
-- `select_plan`：在多份候选 SQL plan 中选择一份候选报告，并决定完全接受、部分接受修改，或全部重写。
+- `select_plan`：审查候选 SQL plan，并决定接受或拒绝。
 - `reject`：最终 SQL 仍需修改时，说明具体修改原因。
 
 你的职责是提出业务请求、审查 DBA agent 的 SQL plan 和最终 SQL 是否符合 BIRD 要求。
 
-收到用户给出的数据库项目、业务问题和补充提示后，先调用一次 `plan` 工具向 DBA agent 提出数据分析请求。进入计划流程后，后续不再调用 `plan`。系统返回多份候选 SQL plan 后，请调用 `select_plan` 选定一条 schema-linking 路径。所有候选报告优先级相同，请只根据问题、证据、schema linking、过滤条件、行粒度和 SQL 输出要求裁决。路径选定后，后续修改都基于已选路径推进。最终 SQL 输出后，如满足要求可以直接回复 DONE；如需修改请调用 `reject`。
+收到用户给出的数据库项目、业务问题和补充提示后，先调用一次 `plan` 工具向 DBA agent 提出数据分析请求。进入计划流程后，后续不再调用 `plan`。系统返回候选 SQL plan 后，请调用 `select_plan` 接受或拒绝。最终 SQL 输出后，如满足要求可以直接回复 DONE；如需修改请调用 `reject`。
 
 """ + BIRD_GUIDANCE
 
@@ -57,7 +56,7 @@ EVALUATION_AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "select_plan",
-            "description": "裁决多份候选 SQL plan，并把裁决结果交给 DBA agent。",
+            "description": "审查候选 SQL plan，并接受或拒绝。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -65,18 +64,17 @@ EVALUATION_AGENT_TOOLS = [
                         "type": "string",
                         "enum": [
                             "accept_candidate",
-                            "accept_candidate_with_revision",
                             "reject_all_with_revision",
                         ],
-                        "description": "accept_candidate=完全接受某份候选；accept_candidate_with_revision=部分接受某份候选并给出修改意见；reject_all_with_revision=所有候选都不接受并给出自己的意见。",
+                        "description": "accept_candidate=接受某份候选；reject_all_with_revision=拒绝当前候选并给出修改建议。",
                     },
                     "candidate_id": {
                         "type": "integer",
-                        "description": "候选编号。1 表示 Candidate 1；2 表示 Candidate 2；3 表示 Candidate 3，依此类推。reject_all_with_revision 时填 0。",
+                        "description": "候选编号。接受时填 1；reject_all_with_revision 时填 0。",
                     },
                     "feedback": {
                         "type": "string",
-                        "description": "裁决说明。完全接受时可简短说明；部分接受或全部不接受时给出具体修改意见。",
+                        "description": "裁决说明。接受时可简短说明；拒绝时说明违反了哪条要求，并给出具体修改建议。",
                     },
                 },
                 "required": ["decision", "candidate_id", "feedback"],
@@ -207,7 +205,7 @@ class BirdEvaluationAgent:
         self.db_path = find_db_file(self.db_dir)
         if not self.db_path:
             raise FileNotFoundError(f"No SQLite database found under {self.db_dir}")
-        challenge_count = int(os.environ.get("PONTIS_SCHEMA_CHALLENGE_COUNT", "1") or "0")
+        challenge_count = int(os.environ.get("PONTIS_SCHEMA_CHALLENGE_COUNT", "0") or "0")
         self.pontis = PontisSqlWorker(
             self.db_dir,
             db_id,
@@ -240,6 +238,7 @@ class BirdEvaluationAgent:
         predicted_execution: set | str = "PARSE_ERROR"
         turn = 1
         sql_attempts = 0
+        review_rejects = 0
         plan_approved = False
 
         for _ in range(max(6, max_attempts * 4)):
@@ -251,10 +250,7 @@ class BirdEvaluationAgent:
                         "本题已经进入计划流程。请使用 `select_plan` 裁决当前 SQL plan，或使用 `reject` 修改最终 SQL。",
                     )
                     continue
-                message = str(action.arguments.get("message") or "").strip()
-                if not message:
-                    self.evaluation_agent.add_tool_result(action.tool_call_id, "plan 工具缺少 message，请重新调用工具。")
-                    continue
+                message = build_pontis_plan_request(case)
                 candidate = self.pontis.plan(turn, message)
             elif action.name == "select_plan":
                 if not candidate or not candidate.exit_plan_requested:
@@ -263,11 +259,30 @@ class BirdEvaluationAgent:
                         "当前没有待裁决的 SQL plan。请先调用 `plan`。",
                     )
                     continue
-                decision_result = self._apply_plan_decision(turn, candidate, action.arguments)
-                if isinstance(decision_result, str):
-                    self.evaluation_agent.add_tool_result(action.tool_call_id, decision_result)
-                    continue
-                candidate, plan_approved = decision_result
+                decision = str(action.arguments.get("decision") or "").strip()
+                if decision == "reject_all_with_revision" and review_rejects >= 1:
+                    fallback_sql = self._extract_sql_from_exit_plan(candidate)
+                    if fallback_sql:
+                        candidate = self._with_predicted_sql(
+                            candidate,
+                            fallback_sql,
+                            action="use_review_limited_plan",
+                        )
+                        plan_approved = True
+                    else:
+                        self.evaluation_agent.add_tool_result(
+                            action.tool_call_id,
+                            "当前候选没有可解析 SQL，请拒绝并要求 DBA agent 重新提交唯一的 ```sql 代码块。",
+                        )
+                        continue
+                else:
+                    if decision == "reject_all_with_revision":
+                        review_rejects += 1
+                    decision_result = self._apply_plan_decision(turn, candidate, action.arguments)
+                    if isinstance(decision_result, str):
+                        self.evaluation_agent.add_tool_result(action.tool_call_id, decision_result)
+                        continue
+                    candidate, plan_approved = decision_result
             elif action.name == "reject":
                 reason = str(action.arguments.get("reason") or "").strip()
                 if not reason:
@@ -296,6 +311,23 @@ class BirdEvaluationAgent:
             if candidate.predicted_sql:
                 predicted_execution = execute_sql(self.db_path, candidate.predicted_sql)
                 sql_attempts += 1
+                if isinstance(predicted_execution, str) and sql_attempts < max_attempts:
+                    feedback = (
+                        "SQL 执行失败，必须修改后重新提交一个唯一的 ```sql 代码块。\n\n"
+                        f"执行错误：{predicted_execution}"
+                    )
+                    candidate = self.pontis.reject(turn, feedback)
+                    attempts.append(candidate)
+                    turn += 1
+                    plan_approved = False
+                    self.evaluation_agent.add_tool_result(
+                        action.tool_call_id,
+                        "已批准的 SQL 执行失败，系统已要求 DBA agent 重写。\n\n"
+                        + self._format_candidate_for_evaluation_agent(
+                            case, candidate, predicted_execution, plan_approved
+                        ),
+                    )
+                    continue
                 self.evaluation_agent.add_tool_result(
                     action.tool_call_id,
                     self._format_candidate_for_evaluation_agent(case, candidate, predicted_execution, plan_approved),
@@ -313,6 +345,23 @@ class BirdEvaluationAgent:
 
         if candidate is None:
             raise RuntimeError("No candidate generated")
+        if candidate.predicted_sql is None:
+            fallback_sql = self._extract_sql_from_exit_plan(candidate)
+            if fallback_sql:
+                candidate = CandidateReport(
+                    attempt=candidate.attempt,
+                    action="use_last_unapproved_plan",
+                    request=candidate.request,
+                    raw_response=candidate.raw_response,
+                    predicted_sql=fallback_sql,
+                    elapsed=candidate.elapsed,
+                    efficiency=candidate.efficiency,
+                    exit_plan_requested=candidate.exit_plan_requested,
+                    exit_plan_request=candidate.exit_plan_request,
+                    challenge_reports=candidate.challenge_reports,
+                    judge_report=candidate.judge_report,
+                )
+                predicted_execution = execute_sql(self.db_path, candidate.predicted_sql)
 
         golden_execution = execute_sql(self.db_path, case.golden_sql) if case.golden_sql else None
         correct = bool(golden_execution is not None and is_correct(predicted_execution, golden_execution))
@@ -332,6 +381,27 @@ class BirdEvaluationAgent:
             attempts=attempts,
         )
 
+    @staticmethod
+    def _extract_sql_from_exit_plan(candidate: CandidateReport) -> str | None:
+        args = (candidate.exit_plan_request or {}).get("arguments") or {}
+        return extract_sql(str(args.get("plan") or ""))
+
+    @staticmethod
+    def _with_predicted_sql(candidate: CandidateReport, sql: str, *, action: str) -> CandidateReport:
+        return CandidateReport(
+            attempt=candidate.attempt,
+            action=action,
+            request=candidate.request,
+            raw_response=candidate.raw_response,
+            predicted_sql=sql,
+            elapsed=candidate.elapsed,
+            efficiency=candidate.efficiency,
+            exit_plan_requested=candidate.exit_plan_requested,
+            exit_plan_request=candidate.exit_plan_request,
+            challenge_reports=candidate.challenge_reports,
+            judge_report=candidate.judge_report,
+        )
+
     def _format_candidate_for_evaluation_agent(
         self,
         case: BirdCase,
@@ -341,36 +411,22 @@ class BirdEvaluationAgent:
     ) -> str:
         if candidate.exit_plan_requested:
             args = (candidate.exit_plan_request or {}).get("arguments") or {}
-            if not candidate.challenge_reports:
-                return (
-                    "DBA agent 基于已选 schema-linking 路径提交了修订 SQL plan。\n"
-                    "请审查这版 plan 是否落实了已选路径和修改意见，并逐项审查其中"
-                    "“拟提交最终 SQL”的输出列、过滤条件、聚合、排序和 LIMIT 是否符合要求。"
-                    "如果 plan 中没有完整 SQL 代码块，请要求 DBA agent 补充后重提。\n\n"
-                    "如满意，请调用 `select_plan`：decision=accept_candidate，candidate_id=1。\n"
-                    "如仍需修改，请调用 `select_plan`：decision=accept_candidate_with_revision，candidate_id=1，"
-                    "并在 feedback 中写清楚修改意见。\n\n"
-                    "# Candidate 1: Revised DBA plan\n\n"
-                    f"标题：{args.get('title') or ''}\n"
-                    f"原因：{args.get('reason') or ''}\n"
-                    f"计划：\n{args.get('plan') or ''}"
+            plan_text = str(args.get("plan") or "").strip()
+            format_note = ""
+            if "```sql" not in plan_text.lower():
+                format_note = (
+                    "\n\n格式问题：候选 SQL 没有使用唯一的 ```sql 代码块提交。"
+                    "请先拒绝，并要求 DBA agent 仅用一个 ```sql 代码块重新提交完整 SQL。"
                 )
             return (
-                "系统生成了多份候选 SQL plan。每份候选报告优先级相同。\n"
-                "请调用 `select_plan` 完成裁决。裁决时必须审查每份候选中"
-                "“拟提交最终 SQL”的输出列、过滤条件、聚合、排序和 LIMIT；"
-                "没有完整 SQL 代码块的候选不能直接接受。\n\n"
-                "可选裁决：\n"
-                "- 完全接受某份候选：decision=accept_candidate，candidate_id 填对应编号。\n"
-                "- 部分接受某份候选并给出修改意见：decision=accept_candidate_with_revision，candidate_id 填对应编号。\n"
-                "- 当前候选均需重写：decision=reject_all_with_revision，candidate_id=0。\n\n"
-                "# Candidate 1\n\n"
-                f"标题：{args.get('title') or ''}\n"
-                f"原因：{args.get('reason') or ''}\n"
-                f"计划：\n{args.get('plan') or ''}\n\n"
-                f"{format_challenge_reports(candidate.challenge_reports)}\n\n"
-                "# Independent SQL Plan Judge Report\n\n"
-                f"{format_judge_report(candidate.judge_report)}"
+                f"数据库项目：{case.db_id}\n"
+                f"业务问题：{case.question}\n"
+                f"补充提示：{case.evidence or '无额外提示'}\n\n"
+                "候选 SQL：\n"
+                f"{plan_text or '未提供 plan 内容。'}\n\n"
+                f"{format_note}"
+                "请审查候选 SQL。接受则调用 `select_plan`：decision=accept_candidate，candidate_id=1；"
+                "拒绝则调用 `select_plan`：decision=reject_all_with_revision，candidate_id=0，并给出修改建议。"
             )
         if candidate.predicted_sql:
             status = "已批准计划" if plan_approved else "尚未批准计划"
@@ -379,10 +435,12 @@ class BirdEvaluationAgent:
             else:
                 execution = "SQL 已成功执行。"
             return (
-                f"DBA agent 输出了最终 SQL（{status}）。请判断是否需要 `reject` 修改；"
-                "如果满意，可以直接回复 DONE。\n\n"
-                f"SQL:\n{candidate.predicted_sql}\n\n"
-                f"{execution}"
+                f"数据库项目：{case.db_id}\n"
+                f"业务问题：{case.question}\n"
+                f"补充提示：{case.evidence or '无额外提示'}\n\n"
+                f"最终 SQL（{status}）：\n{candidate.predicted_sql}\n\n"
+                f"{execution}\n\n"
+                "如需修改请调用 `reject`；如满意请回复 DONE。"
             )
         return (
             "DBA agent 没有提交 exit_plan，也没有输出 SQL。"
@@ -401,61 +459,19 @@ class BirdEvaluationAgent:
         except (TypeError, ValueError):
             return "select_plan 工具的 candidate_id 必须是整数。"
         feedback = str(arguments.get("feedback") or "").strip()
-        max_candidate_id = 1 + len(candidate.challenge_reports)
 
         if decision == "accept_candidate":
             if candidate_id == 1:
                 self.pontis.mark_schema_path_selected()
-                return self.pontis.approve(turn, feedback), True
-            if 2 <= candidate_id <= max_candidate_id:
-                self.pontis.mark_schema_path_selected()
-                selected = self._candidate_report_text(candidate, candidate_id)
-                reason = (
-                    f"裁决结果：完全接受候选 {candidate_id}。\n\n"
-                    "请采用该候选报告中的 schema-linking path，重新提交 SQL plan。\n\n"
-                    f"{selected}\n\n"
-                    f"裁决说明：{feedback}"
-                )
-                return self.pontis.reject(turn, reason), False
-            return f"candidate_id 超出范围。当前可选候选为 1 到 {max_candidate_id}。"
-
-        if decision == "accept_candidate_with_revision":
-            if 1 <= candidate_id <= max_candidate_id:
-                self.pontis.mark_schema_path_selected()
-                selected = self._candidate_report_text(candidate, candidate_id)
-                reason = (
-                    f"裁决结果：部分接受候选 {candidate_id}，并按反馈修改。\n\n"
-                    f"{selected}\n\n"
-                    f"修改意见：{feedback}"
-                )
-                return self.pontis.reject(turn, reason), False
-            return f"candidate_id 超出范围。当前可选候选为 1 到 {max_candidate_id}。"
+                return self.pontis.accept_candidate_plan(turn, candidate.exit_plan_request, feedback), True
+            return "candidate_id 超出范围。当前只有 candidate_id=1 可选。"
 
         if decision == "reject_all_with_revision":
             self.pontis.mark_schema_path_selected()
             reason = (
-                "裁决结果：当前候选报告均需重写。\n\n"
-                f"修改意见：{feedback}"
+                "裁决结果：拒绝当前候选 SQL plan。\n\n"
+                f"拒绝原因：{feedback}"
             )
             return self.pontis.reject(turn, reason), False
 
-        return "select_plan 工具的 decision 必须是 accept_candidate、accept_candidate_with_revision 或 reject_all_with_revision。"
-
-    @staticmethod
-    def _candidate_report_text(candidate: CandidateReport, candidate_id: int) -> str:
-        if candidate_id == 1:
-            args = (candidate.exit_plan_request or {}).get("arguments") or {}
-            return (
-                "# Candidate 1: Main DBA plan\n"
-                f"标题：{args.get('title') or ''}\n"
-                f"原因：{args.get('reason') or ''}\n"
-                f"计划：\n{args.get('plan') or candidate.raw_response or ''}"
-            )
-        challenge_index = candidate_id - 2
-        if 0 <= challenge_index < len(candidate.challenge_reports):
-            report = candidate.challenge_reports[challenge_index]
-            return (
-                f"# Candidate {candidate_id}: Schema challenger {challenge_index + 1}\n"
-                f"{report.raw_response or ''}"
-            )
-        return f"# Candidate {candidate_id}\n"
+        return "select_plan 工具的 decision 必须是 accept_candidate 或 reject_all_with_revision。"

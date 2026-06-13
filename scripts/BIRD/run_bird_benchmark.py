@@ -49,13 +49,11 @@ logger = logging.getLogger(__name__)
 BIRD_MAIN_AGENT_SYSTEM_PROMPT = """\
 ## BIRD benchmark
 
-你正在回答 BIRD Text-to-SQL benchmark 问题。当前项目就是本题数据库。
+你正在回答 BIRD Text-to-SQL benchmark 问题。
 
-流程：
-1. 先探索数据库，确认需要使用的表、列、连接、过滤值和聚合方式。
-2. 不要直接输出最终 SQL。探索完成后调用 `exit_plan`，提交 SQL 写作计划。
-3. `exit_plan` 的 plan 字段必须包含一段“拟提交最终 SQL”，并用一个 `sql` 代码块展示完整 SQL。
-4. 计划被批准后，只输出 `exit_plan` 中展示的那一条可执行 SQLite `SELECT` 查询；如收到修改意见，只输出按意见修正后的单条 SQL。
+user 会利用 plan 向你提交问题，完成数据库探索和 SQL 验证后，调用 `exit_plan` 提交结果。
+`exit_plan.plan` 只允许包含一个 `sql` 代码块，代码块内是完整 SQL；不要在 plan 中写解释、步骤、原因或查询结果。
+如被拒绝，优先按 evaluation agent 的反馈修改 SQL，并重新提交新的 SQL-only plan。
 """
 
 
