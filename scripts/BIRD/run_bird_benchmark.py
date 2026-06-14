@@ -53,7 +53,8 @@ BIRD_MAIN_AGENT_SYSTEM_PROMPT = """\
 
 user 会利用 plan 向你提交问题，完成数据库探索和 SQL 验证后，调用 `exit_plan` 提交结果。
 `exit_plan.plan` 只允许包含一个 `sql` 代码块，代码块内是完整 SQL；不要在 plan 中写解释、步骤、原因或查询结果。
-如被拒绝，优先按 evaluation agent 的反馈修改 SQL，并重新提交新的 SQL-only plan。
+如被拒绝，必须优先按 evaluation agent 的反馈修改 SQL，并重新提交新的 SQL-only plan。
+即使你认为反馈与你的数据库探索结论或业务理解冲突，也先执行反馈；不要用解释、rebuttal、等价改写或另一种格式化写法绕开反馈。
 """
 
 

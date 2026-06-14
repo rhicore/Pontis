@@ -36,8 +36,9 @@ AI_PIPELINE = [
 ]
 
 AGENT_PIPELINE = [
+    "agent_database_description_review",
     "agent_schema_prepare",
-    "agent_bird_entity_hints",
+    "agent_disambiguate",
     "agent_readme",
 ]
 
@@ -93,9 +94,8 @@ def extract_one(
         "ai_db": 0.0,
         "agent": 0.0,
         "schema_prepare": 0.0,
-        "join_detect": 0.0,
+        "description_review": 0.0,
         "disambiguate": 0.0,
-        "entity_hints": 0.0,
         "readme": 0.0,
         "embedding": 0.0,
         "preprocess_llm_calls": 0,
@@ -155,12 +155,8 @@ def extract_one(
             )
             result["schema_prepare"] = agent_timings.get("agent_schema_prepare", 0.0)
             result["agent"] = result["schema_prepare"]
-            result["join_detect"] = agent_timings.get("agent_join_detect", 0.0)
+            result["description_review"] = agent_timings.get("agent_database_description_review", 0.0)
             result["disambiguate"] = agent_timings.get("agent_disambiguate", 0.0)
-            result["entity_hints"] = (
-                agent_timings.get("agent_bird_entity_hints", 0.0)
-                or agent_timings.get("agent_entity_hints", 0.0)
-            )
             result["readme"] = agent_timings.get("agent_readme", 0.0)
 
             if result["ai_columns"]:
@@ -171,12 +167,10 @@ def extract_one(
                 logger.info(f"AI db phase done: {result['ai_db']:.1f}s")
             if result["agent"]:
                 logger.info(f"Schema prepare phase done: {result['agent']:.1f}s")
-            if result["join_detect"]:
-                logger.info(f"Join detect phase done: {result['join_detect']:.1f}s")
+            if result["description_review"]:
+                logger.info(f"Description review phase done: {result['description_review']:.1f}s")
             if result["disambiguate"]:
                 logger.info(f"Disambiguate phase done: {result['disambiguate']:.1f}s")
-            if result["entity_hints"]:
-                logger.info(f"Entity hints phase done: {result['entity_hints']:.1f}s")
             if result["readme"]:
                 logger.info(f"README phase done: {result['readme']:.1f}s")
 
@@ -319,7 +313,7 @@ def main() -> None:
     success, failed = [], []
     all_results = []
     total_static = total_ai_col = total_ai_tbl = total_ai_db = 0.0
-    total_agent = total_join = total_disambig = total_entity_hints = total_readme = 0.0
+    total_agent = total_desc_review = total_disambig = total_readme = 0.0
     total_preprocess_llm_input_tokens = 0
     total_preprocess_llm_cached_input_tokens = 0
     total_preprocess_llm_uncached_input_tokens = 0
@@ -347,9 +341,8 @@ def main() -> None:
                 "ai_db": 0.0,
                 "agent": 0.0,
                 "schema_prepare": 0.0,
-                "join_detect": 0.0,
+                        "description_review": 0.0,
                 "disambiguate": 0.0,
-                "entity_hints": 0.0,
                 "readme": 0.0,
                 "embedding": 0.0,
                 "preprocess_llm_calls": 0,
@@ -373,12 +366,8 @@ def main() -> None:
                 )
                 result["schema_prepare"] = timings.get("agent_schema_prepare", 0.0)
                 result["agent"] = result["schema_prepare"]
-                result["join_detect"] = timings.get("agent_join_detect", 0.0)
+                result["description_review"] = timings.get("agent_database_description_review", 0.0)
                 result["disambiguate"] = timings.get("agent_disambiguate", 0.0)
-                result["entity_hints"] = (
-                    timings.get("agent_bird_entity_hints", 0.0)
-                    or timings.get("agent_entity_hints", 0.0)
-                )
                 result["readme"] = timings.get("agent_readme", 0.0)
                 result["embedding"] = timings.get("semantic_embedding", 0.0)
                 if hasattr(config, "get_preprocess_token_metrics"):
@@ -399,7 +388,7 @@ def main() -> None:
 
     def record_result(result: dict) -> None:
         nonlocal total_static, total_ai_col, total_ai_tbl, total_ai_db
-        nonlocal total_agent, total_join, total_disambig, total_entity_hints, total_readme
+        nonlocal total_agent, total_desc_review, total_disambig, total_readme
         nonlocal total_preprocess_llm_input_tokens, total_preprocess_llm_cached_input_tokens
         nonlocal total_preprocess_llm_uncached_input_tokens, total_preprocess_llm_output_tokens
         nonlocal total_preprocess_llm_tokens, total_preprocess_embedding_tokens
@@ -409,9 +398,8 @@ def main() -> None:
         total_ai_tbl += result["ai_tables"]
         total_ai_db += result["ai_db"]
         total_agent += result["agent"]
-        total_join += result["join_detect"]
+        total_desc_review += result.get("description_review", 0.0)
         total_disambig += result["disambiguate"]
-        total_entity_hints += result.get("entity_hints", 0.0)
         total_readme += result["readme"]
         total_preprocess_llm_input_tokens += int(result.get("preprocess_llm_input_tokens", 0) or 0)
         total_preprocess_llm_cached_input_tokens += int(result.get("preprocess_llm_cached_input_tokens", 0) or 0)
@@ -434,12 +422,10 @@ def main() -> None:
             parts.append(f"AI DB: {result['ai_db']:.1f}s")
         if result["agent"]:
             parts.append(f"Schema: {result['agent']:.1f}s")
-        if result["join_detect"]:
-            parts.append(f"Join: {result['join_detect']:.1f}s")
+        if result.get("description_review"):
+            parts.append(f"Description: {result['description_review']:.1f}s")
         if result["disambiguate"]:
             parts.append(f"Disambig: {result['disambiguate']:.1f}s")
-        if result.get("entity_hints"):
-            parts.append(f"Hints: {result['entity_hints']:.1f}s")
         if result["readme"]:
             parts.append(f"README: {result['readme']:.1f}s")
         if result["embedding"]:
@@ -492,13 +478,13 @@ def main() -> None:
     print(f"Done: {len(success)} ok, {len(failed)} failed")
     total_all = (
         total_static + total_ai_col + total_ai_tbl + total_ai_db +
-        total_agent + total_join + total_disambig + total_entity_hints + total_readme
+        total_agent + total_desc_review + total_disambig + total_readme
     )
     print(
         f"Time: static {total_static:.1f}s, AI cols {total_ai_col:.1f}s, "
         f"AI tables {total_ai_tbl:.1f}s, AI db {total_ai_db:.1f}s, "
-        f"schema {total_agent:.1f}s, join {total_join:.1f}s, "
-        f"disambig {total_disambig:.1f}s, hints {total_entity_hints:.1f}s, "
+        f"schema {total_agent:.1f}s, description {total_desc_review:.1f}s, "
+        f"disambig {total_disambig:.1f}s, "
         f"readme {total_readme:.1f}s, "
         f"total {total_all:.1f}s"
     )
@@ -520,9 +506,8 @@ def main() -> None:
             "ai_tables": total_ai_tbl,
             "ai_db": total_ai_db,
             "schema": total_agent,
-            "join": total_join,
+            "description_review": total_desc_review,
             "disambiguate": total_disambig,
-            "entity_hints": total_entity_hints,
             "readme": total_readme,
             "total": total_all,
         },

@@ -1,8 +1,8 @@
 """Agent Schema Prepare — summarize schema and discover high-confidence joins.
 
-This module prepares the structural layer of the project graph. Decision hints
-and disambiguation entities are written by explorer.entity_hints after schema
-summaries and relation candidates are available.
+This module prepares the structural layer of the project graph. Disambiguation
+entities are written by explorer.disambiguate after schema summaries and
+relation candidates are available.
 """
 
 import logging
@@ -12,77 +12,35 @@ from storage.workspace import Workspace
 logger = logging.getLogger(__name__)
 
 PROMPT = """\
-你是数据项目的 schema preparation agent。你的任务是在一个连续流程里完成两件事：
+你是数据项目的 schema preparation agent。你的任务是维护表、列、文件、关系实体的事实性 brief/detail，并补充高置信列间 rel。
 
-1. 为数据库表、列、文件、关系实体写高质量 brief/detail
-2. 发现高置信度的列间关联，必要时创建 rel 实体
+## 原则
 
-本阶段只负责 schema summary 和高置信关系层。语义消歧、SQL 决策 hint、实体 `hints` 属性由后续 entity_hints 阶段负责。
+- 先读后写：写入前读取目标实体的 meta、样例、topk、cardinality、null_percentage 和相关 fk/overlap/rel。
+- 基于证据：只记录 schema、统计、样例、说明文件或查询观察能支持的事实。
+- 中文写作；数据库原始字段名、枚举值、代码值保持原样。
+- 表和列写入使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`。
+- 完成后直接停止，不输出总结文字。
 
-## 总体原则
+## brief/detail
 
-- **先读后写**：写或改 brief/detail 前先读取现有 meta、样例值、topk、cardinality 和相关实体。
-- **基于证据**：所有 summary、rel 都必须来自实际 schema、meta、样例值、统计、说明文件或查询观察，不要凭空猜测。
-- **宁缺毋滥**：错误的 rel 会误导下游 SQL agent。不确定就不创建。
-- **中文输出**：brief/detail 用中文，但数据库原始枚举值、代码、字段名保持原样。
-- **不要输出总结性文字**：任务完成后直接停止，不要向用户写“我已完成...”。
-- **路径式引用**：表和列写入时必须使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`。不要用 `table.column`、裸列名或自己拼的关系名做写入。
-- **避免 all=true**：默认用 `property=["brief","detail","sample","topk","cardinality","null_percentage"]` 精确读取列信息；只有排查必要时才用 `all=true`。
+- brief 不超过 50 字，概括实体的事实性角色。
+- 表 detail 记录行粒度、核心字段、主键/外键和与其他表的结构关系。
+- 列 detail 记录业务角色、值格式、范围、枚举、单位、空值和值域事实。
+- 近名字段按来源、粒度、覆盖范围、格式和值域分别描述差异。
+- 代码型列在 topk、样例或说明文件能支持时记录代码值映射。
 
-## 阶段 1：Schema summary
+## rel
 
-目标：为主要数据库实体写准确 summary。
+只在证据充分时创建 rel：
+- 两端列的名称、表角色、值重叠、外键或说明文件共同支持关联。
+- 该关联没有被已有 fk/rel 覆盖。
+- detail 记录连接依据、两端结构差异和置信度理由。
 
-流程：
-1. 读取 README / 说明文件摘要（如果存在）和数据库文件节点，只建立最小上下文。
-2. 获取表清单，不要一开始枚举全项目所有实体。
-3. 逐张读取表级 meta，先理解核心表，再理解依赖表。
-4. 对单张表，读取该表列、fk、overlap、已有 rel。
-5. 为缺失、低质量或明显错误的 table/column/fk/rel/file brief/detail 做更新。
+创建前读取所有 fk、overlap、rel，并用 find 检查正反向 rel 是否已存在。
 
-brief 要求：不超过 50 字，概括用途和业务含义，不堆具体行数。
+## 读取入口
 
-detail 要求：
-- 表：说明结构特征、业务用途、主键/外键、与其他表关系、数据质量注意点。
-- 列：说明业务含义、值格式/范围/枚举、与相似列的客观差异。
-- 代码型列：如果 topk 或说明文件能解释代码值，必须记录关键代码值到含义的映射。
-- 关系实体：说明连接依据、置信度、使用限制。
-
-不要为了写某张表的 summary 顺手展开所有其他表的所有列。需要处理大表时，可以调用子智能体按表分块。
-
-## 阶段 2：High-confidence relation detection
-
-目标：只创建真正有用且高置信的 rel 实体。
-
-创建 rel 前必须先读取：
-- 所有 fk 实体，建立确定外键关系图
-- overlap 实体，作为候选线索
-- 两端表/列的 meta、样例值、cardinality/topk
-
-应该创建 rel：
-- 两列业务语义明确相同，并且数据或 schema 支持它们可连接
-- 值高度重叠，且不会与已有 fk/rel 冲突
-- 业务逻辑上常用于 JOIN，且 fk 没有覆盖
-
-不应该创建 rel：
-- 已有 fk 已覆盖同一关系
-- 只是值域偶然重叠
-- 两列语义相似但含义不同
-- 需要很强假设才能成立
-- 直接关系只是已有路径的传递冗余
-
-rel 创建规范：
-- ref: `[表1].[列1]->[表2].[列2]`
-- labels: `["rel"]`
-- brief: `[高/中]置信度：简要描述关系`
-- detail: 包含推断依据、使用注意事项、不确定性声明、置信度理由
-- edges: 连接到两个表或关键列，引用必须使用路径 ref
-
-创建前先用 find 检查正向和反向是否已存在。
-
-## 发现入口
-
-优先使用：
 - `find({"ref": "*:file:db"})`
 - `find({"ref": "<db>:db/*:table"})` 或 `find({"ref": "<db>/*:table"})`
 - `find({"ref": "<db>/<table>/*:col"})`
@@ -90,14 +48,7 @@ rel 创建规范：
 - `find({"ref": "*:overlap"})`
 - `find({"ref": "*:rel"})`
 
-禁止把 `find({"ref":"<project>::*"})` 当成全量 inventory 起点。
-
-## 收尾自检
-
-结束前做一次轻量检查：
-- 主要表和关键列是否有非占位 brief/detail
-- 新建 rel 是否都是高置信且没有覆盖已有 fk
-- 没有把辅助 CSV 当成主数据库表来写错误 summary
+结束前轻量检查主要表、关键列和新建 rel 的 brief/detail。
 """
 
 
@@ -117,7 +68,7 @@ def generate(workspace: Workspace) -> None:
     spec = explorer_writer_spec(
         workspace,
         tools=[
-            "find", "meta", "query", "agent",
+            "find", "meta", "read", "query",
             "create_entity", "update_meta", "add_edge", "delete",
         ],
         include_readme=True,

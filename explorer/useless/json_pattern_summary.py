@@ -84,7 +84,7 @@ update_meta({"ref": "<pattern ref>", "fields": {"brief": "...", "detail": "..."}
 
 如果 pattern 数量很多，可以启动子智能体分批处理 pattern。
 
-子智能体只负责阅读 `jd/meta` 并返回建议的 brief/detail JSON；最终 `update_meta` 由你统一执行。
+子智能体只负责阅读 `jd/meta` 并返回候选 brief/detail JSON；最终 `update_meta` 由你统一执行。
 
 ## 完成条件
 

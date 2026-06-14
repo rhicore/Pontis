@@ -20,6 +20,7 @@ from .models import CandidateReport
 def build_worker_spec(db_id: str) -> AgentSpec:
     spec = default_spec("")
     spec.projects = [db_id]
+    spec.tools = [tool for tool in spec.tools if tool != "bash"]
     return spec
 
 

@@ -31,19 +31,33 @@ def _json_value(value):
 
 COL_MAX_WORKERS = 4
 TABLE_MAX_WORKERS = 4
+_STYLE_RETRY_MESSAGE = """\
+上一版包含操作指导或等同归纳措辞。请改写为数据库事实陈述：
+- 只描述列的业务角色、值格式、值域、枚举、空值和粒度事实。
+- 近名字段只描述差异。
+- 不写操作步骤、使用处方、清理动作或字段替代关系。"""
+
+_ADVICE_MARKERS = (
+    "建议", "推荐", "应该", "应当", "需", "需要", "必须", "避免", "清洗", "可用于",
+)
+_AMBIGUOUS_EQUIVALENCE_MARKERS = (
+    "含义相同", "语义对应", "同一概念", "等价", "可替代",
+)
 
 _ANALYSIS_INSTRUCTIONS = """\
-请用中文分析这个数据库列，重点关注以下方面：
+请用中文为数据库列写事实性摘要。
 
-1. **业务含义**：这个列在业务中代表什么，它的作用和定位
-2. **值特征**：值的格式、枚举模式（如是否为固定枚举、是否有编码规则）
-3. **数据质量**：空值情况、是否有格式不一致、是否有明显的脏数据
+关注内容：
+1. 业务角色：列名、表语境和样例共同支持的含义。
+2. 值特征：格式、单位、枚举代码、文本模式、空值和值域事实。
+3. 实体边界：与同表或近名字段的来源、粒度、覆盖范围、格式和值域差异。
 
-要求：
-- **brief 只写语义描述**（如"学校类型分类"），不要包含统计信息（行数、空值比例、区分度等）
-- detail 可以包含定性描述（如"高区分度"、"低基数"），但不要写具体数字
-- 输出纯文本，不要 markdown 格式
-- brief 控制在 20 字以内，精炼概括列的用途"""
+写作要求：
+- brief 控制在 20 字以内，只概括列的事实性角色。
+- detail 使用陈述句记录可观察事实，不写具体行数、比例或基数数字。
+- 代码型列在 topk 或样例能支持时记录代码值含义。
+- 近名字段只写差异，不归纳为同一含义。
+- 输出纯文本，不使用 markdown。"""
 
 
 def generate(workspace: Workspace, config=None) -> None:
@@ -157,6 +171,13 @@ def _process_column(col_ref: str, col_block: str,
                     shared_prefix: list, llm, workspace: Workspace) -> bool:
     messages = shared_prefix + [{"role": "user", "content": col_block}]
     detail, brief = generate_with_prefix(llm, messages)
+    if _has_metadata_style_violation(detail) or _has_metadata_style_violation(brief):
+        retry_messages = messages + [{"role": "user", "content": _STYLE_RETRY_MESSAGE}]
+        detail, brief = generate_with_prefix(llm, retry_messages)
+
+    if _has_metadata_style_violation(detail) or _has_metadata_style_violation(brief):
+        logger.info(f"  AI col skip: {col_ref} (style violation)")
+        return False
 
     updates = {}
     if detail:
@@ -168,6 +189,12 @@ def _process_column(col_ref: str, col_block: str,
         set_entity_meta(workspace, col_ref, updates)
         return True
     return False
+
+
+def _has_metadata_style_violation(text: str) -> bool:
+    if not text:
+        return False
+    return any(marker in text for marker in _ADVICE_MARKERS + _AMBIGUOUS_EQUIVALENCE_MARKERS)
 
 
 def _build_table_info(db_ref: str, table_ref: str, workspace: Workspace) -> str:

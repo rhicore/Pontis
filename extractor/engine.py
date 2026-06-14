@@ -82,34 +82,15 @@ def get_registry() -> Dict[str, object]:
         "semantic_embedding": semantic_embedding,
     }
 
-    # Explorer 模块（需要 agent API key）
-    try:
-        from explorer.analyze import generate as agent_analyze
-        _REGISTRY["agent_analyze"] = agent_analyze
-    except ImportError:
-        pass
-
     # Explorer 模块 — 独立版（可单独调用）
     try:
         from explorer.schema_prepare import generate as agent_schema_prepare
-        from explorer.join_detect import generate as agent_join_detect
         from explorer.disambiguate import generate as agent_disambiguate
-        from explorer.entity_hints import generate as agent_entity_hints
-        from explorer.bird_entity_hints import generate as agent_bird_entity_hints
         from explorer.readme import generate as agent_readme
-        from explorer.text_chunk import generate as agent_text_chunk
-        from explorer.json_pattern_summary import generate as agent_json_pattern_summary
-        from explorer.csv_summary import generate as agent_csv_summary
         from explorer.database_description_review import generate as agent_database_description_review
         _REGISTRY["agent_schema_prepare"] = agent_schema_prepare
-        _REGISTRY["agent_join_detect"] = agent_join_detect
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
-        _REGISTRY["agent_entity_hints"] = agent_entity_hints
-        _REGISTRY["agent_bird_entity_hints"] = agent_bird_entity_hints
         _REGISTRY["agent_readme"] = agent_readme
-        _REGISTRY["agent_text_chunk"] = agent_text_chunk
-        _REGISTRY["agent_json_pattern_summary"] = agent_json_pattern_summary
-        _REGISTRY["agent_csv_summary"] = agent_csv_summary
         _REGISTRY["agent_database_description_review"] = agent_database_description_review
     except ImportError:
         pass

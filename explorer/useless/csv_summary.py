@@ -100,7 +100,7 @@ update_meta({"ref": "<col ref>", "fields": {"brief": "...", "detail": "..."}})
 
 如果列很多，可以启动子智能体分批阅读列 profile。
 
-子智能体只负责返回建议的 brief/detail JSON；最终 `update_meta` 由你统一执行。
+子智能体只负责返回候选 brief/detail JSON；最终 `update_meta` 由你统一执行。
 
 ## 完成条件
 
