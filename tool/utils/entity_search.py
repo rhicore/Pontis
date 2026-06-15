@@ -340,7 +340,7 @@ def _semantic_display_ref(workspace, ref: str, node_project: str | None, node_me
 
 def _bm25_search(workspace, query: str, ref: str = "",
                  k1: float = 1.5, b: float = 0.75) -> List[tuple]:
-    """BM25 检索，只搜索 brief 和 detail 字段。"""
+    """BM25 search over names, AI summaries, and official annotations."""
     query_tokens = _tokenize(query)
     if not query_tokens:
         return []
@@ -360,7 +360,12 @@ def _bm25_search(workspace, query: str, ref: str = "",
 
         brief = n.get("brief", "") or ""
         detail = n.get("detail", "") or ""
-        doc_text = f"{name} {brief} {detail}"
+        official_column_description = n.get("official_column_description", "") or ""
+        official_value_description = n.get("official_value_description", "") or ""
+        doc_text = (
+            f"{name} {brief} {detail} "
+            f"{official_column_description} {official_value_description}"
+        )
         if not doc_text.strip():
             continue
 
@@ -423,7 +428,7 @@ def search_entities_command(
     limit: Optional[int] = None,
     current_cwd: str = ""
 ) -> str:
-    """语义检索实体的 brief 和 detail。"""
+    """语义检索实体的 summary and official annotations."""
     try:
         ref = normalize_project_slash_ref(workspace, ref)
     except ValueError as exc:

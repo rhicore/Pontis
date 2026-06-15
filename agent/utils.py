@@ -8,7 +8,7 @@ from utils.llm import apply_yaml
 
 def load_agent_config(project_path: str = None) -> dict:
     """加载 agent LLM 配置，返回包含 provider/model/api_key 等的 dict。"""
-    import global_config as _defaults
+    from config import global_config as _defaults
 
     cfg = {
         "provider": _defaults.AGENT_PROVIDER,

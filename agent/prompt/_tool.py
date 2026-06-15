@@ -2,8 +2,8 @@
 
 
 _TOOL_DESCRIPTIONS = {
-    "find": "发现图谱实体；按 ref 列实体，或在实体摘要中匹配 query",
-    "meta": "读取单个实体的 brief/detail、统计、样例等元数据",
+    "find": "发现图谱实体；按 ref 列实体，或在实体摘要和官方字段中匹配 query",
+    "meta": "读取单个实体的官方字段、brief/detail、统计、样例等元数据",
     "query": "对 DB/CSV/TSV/JSON records 执行只读 SQL，支持 workspace 跨源查询",
     "cypher": "执行复杂图查询，适合 find 难以表达的关系遍历",
     "grep": "在 text file ref 的原文中定位字符串或正则模式",
@@ -32,6 +32,7 @@ def get_tool_prompt(spec=None) -> str:
 ### 工作协议
 
 - `find` 定位实体，`meta` 读取实体语义和邻接，`query` 验证原始数据和候选 SQL。
+- 列上的 `official_column_description`、`official_value_description` 是人工/官方标注，优先于 AI/agent 生成的 `brief/detail`；若二者冲突，以 official 字段为准。
 - ref 中 `/` 表示图边路径，`:` 表示当前路径段标签，`*` 表示名称通配，`project::ref` 限定项目。
 - 路径段采用 `实体名:标签` 顺序，例如 `yearmonth:table`、`Consumption:col`、`README:file`。
 - `find` 接受通配 ref，用来列实体和搜索；`meta` 接受单个实体 ref，用来读取该实体。

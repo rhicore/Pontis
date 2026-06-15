@@ -10,7 +10,7 @@ _SQL_RULES = r"""## 数据库 SQL 准则
 ### 工作流
 
 1. 用定向 `find` 找数据库、表、列和关系实体。
-2. 用 `meta` 确认关键表、列、样例值、topk、detail 和消歧信息。
+2. 用 `meta` 确认关键表、列、官方字段、样例值、topk、detail 和消歧信息。
 3. 基于 `fk` / `rel` / `overlap` / `disambig` 判断 JOIN 路径。
 4. 用 `query` 验证值域、分布、空值、计算口径和候选 SQL 结果。
 5. 根据问题和 evidence 规划输出列、所需表、JOIN 条件、WHERE 条件、聚合粒度、排序和 LIMIT。
@@ -25,9 +25,10 @@ _SQL_RULES = r"""## 数据库 SQL 准则
 ### 输出前检查
 
 1. SQL 中涉及的关键实体已经通过元数据理解。
-2. JOIN 路径与读取到的关系实体一致。
-3. SELECT、WHERE、GROUP BY、ORDER BY、DISTINCT、LIMIT 都来自问题或 evidence 的输出契约。
-4. SQL 能在当前 schema 下执行，并以题目要求的粒度返回结果。
+2. 对有 `official_column_description` 或 `official_value_description` 的列，已优先按官方字段理解其含义、值域、代码和口径；`brief/detail` 只作为辅助。
+3. JOIN 路径与读取到的关系实体一致。
+4. SELECT、WHERE、GROUP BY、ORDER BY、DISTINCT、LIMIT 都来自问题或 evidence 的输出契约。
+5. SQL 能在当前 schema 下执行，并以题目要求的粒度返回结果。
 """
 
 

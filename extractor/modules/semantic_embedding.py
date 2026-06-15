@@ -1,7 +1,8 @@
 """Semantic embedding extractor.
 
-Runs after detail-generating extractors. It embeds every graph node with a
-non-empty `detail` property and stores the vector in Neo4j for vector search.
+Runs after metadata-generating extractors. It embeds graph nodes with
+AI-authored detail and/or official annotations, then stores vectors in Neo4j
+for vector search.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ _LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def generate(workspace: Workspace, config=None) -> None:
-    logger.info("=== Semantic embedding: detail vectors ===")
+    logger.info("=== Semantic embedding: metadata vectors ===")
 
     embed_config = config.get_embedding_config() if config and hasattr(config, "get_embedding_config") else load_embedding_config()
     client = embed_config.get_client()
@@ -45,7 +46,7 @@ def generate(workspace: Workspace, config=None) -> None:
     batch_size = max(1, embed_config.batch_size)
     for offset in range(0, len(pending), batch_size):
         batch = pending[offset:offset + batch_size]
-        texts = [item["detail"] for item in batch]
+        texts = [item["text"] for item in batch]
         vectors = client.embed(texts)
         if len(vectors) != len(batch):
             logger.warning("Embedding API returned %s vectors for %s inputs", len(vectors), len(batch))
@@ -79,7 +80,10 @@ def generate(workspace: Workspace, config=None) -> None:
 def _ensure_node_ids(workspace: Workspace) -> None:
     workspace.cypher(
         "MATCH (n) "
-        "WHERE n.detail IS NOT NULL AND trim(toString(n.detail)) <> '' "
+        "WHERE "
+        "(n.detail IS NOT NULL AND trim(toString(n.detail)) <> '') OR "
+        "(n.official_column_description IS NOT NULL AND trim(toString(n.official_column_description)) <> '') OR "
+        "(n.official_value_description IS NOT NULL AND trim(toString(n.official_value_description)) <> '') "
         "SET n.id = coalesce(n.id, 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8))"
     )
 
@@ -87,20 +91,23 @@ def _ensure_node_ids(workspace: Workspace) -> None:
 def _pending_nodes(workspace: Workspace, model: str, dimensions: int) -> list[dict]:
     rows = workspace.cypher(
         "MATCH (n) "
-        "WHERE n.detail IS NOT NULL AND trim(toString(n.detail)) <> '' "
+        "WHERE "
+        "(n.detail IS NOT NULL AND trim(toString(n.detail)) <> '') OR "
+        "(n.official_column_description IS NOT NULL AND trim(toString(n.official_column_description)) <> '') OR "
+        "(n.official_value_description IS NOT NULL AND trim(toString(n.official_value_description)) <> '') "
         "RETURN n"
     )
     pending = []
     for row in rows:
         node = row.get("n") or {}
-        detail = str(node.get("detail") or "").strip()
+        text = _embedding_text(node)
         node_id = node.get("id")
-        if not detail or not node_id:
+        if not text or not node_id:
             continue
         labels = _clean_vector_labels(node.get("labels", []))
         if not labels:
             continue
-        text_hash = _hash_text(detail)
+        text_hash = _hash_text(text)
         if (
             node.get(HASH_PROPERTY) == text_hash
             and node.get(MODEL_PROPERTY) == model
@@ -110,11 +117,26 @@ def _pending_nodes(workspace: Workspace, model: str, dimensions: int) -> list[di
             continue
         pending.append({
             "id": node_id,
-            "detail": detail,
+            "text": text,
             "hash": text_hash,
             "labels": labels,
         })
     return pending
+
+
+def _embedding_text(node: dict) -> str:
+    parts = []
+    for key in (
+        "name",
+        "brief",
+        "detail",
+        "official_column_description",
+        "official_value_description",
+    ):
+        value = str(node.get(key) or "").strip()
+        if value:
+            parts.append(f"{key}: {value}")
+    return "\n".join(parts)
 
 
 def _write_vectors(workspace: Workspace, rows: list[dict]) -> None:

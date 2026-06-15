@@ -72,7 +72,7 @@ class Config:
 
 def load_config(path: Optional[str] = None) -> Config:
     """从默认值 + YAML + 环境变量加载 extractor 配置。"""
-    import global_config as _defaults
+    from config import global_config as _defaults
 
     cfg = {
         "provider": _defaults.EXTRACTOR_PROVIDER,

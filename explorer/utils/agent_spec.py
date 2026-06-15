@@ -25,7 +25,7 @@ def explorer_writer_spec(
     workspace: Workspace,
     *,
     tools: Iterable[str],
-    effort: str = "mid",
+    effort: str = "max",
     max_rounds: int | None = None,
     include_readme: bool = False,
 ) -> AgentSpec:
@@ -43,5 +43,5 @@ def explorer_writer_spec(
     )
     project_name = os.path.basename(os.path.abspath(workspace.project_path))
     spec.projects = [project_name]
-    spec.guardrails = build_guardrails(spec, ["round_limit"])
+    spec.guardrails = build_guardrails(spec, ["round_limit"]) if max_rounds else []
     return spec

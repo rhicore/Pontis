@@ -18,6 +18,7 @@ PROMPT = """\
 
 - 先读后写：写入前读取目标实体的 meta、样例、topk、cardinality、null_percentage 和相关 fk/overlap/rel。
 - 基于证据：只记录 schema、统计、样例、说明文件或查询观察能支持的事实。
+- 元数据优先级：`official_column_description`、`official_value_description` 是人工/官方标注，优先级高于你或其他 agent 写入的 `brief/detail`。如果 official 字段存在，不要用 AI 推断覆盖其含义。
 - 中文写作；数据库原始字段名、枚举值、代码值保持原样。
 - 表和列写入使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`。
 - 完成后直接停止，不输出总结文字。
@@ -27,6 +28,7 @@ PROMPT = """\
 - brief 不超过 50 字，概括实体的事实性角色。
 - 表 detail 记录行粒度、核心字段、主键/外键和与其他表的结构关系。
 - 列 detail 记录业务角色、值格式、范围、枚举、单位、空值和值域事实。
+- 如果列有 official 字段，brief/detail 必须与 official 字段一致；可以补充样例和统计事实，但不能改写出与官方说明冲突的业务含义。
 - 近名字段按来源、粒度、覆盖范围、格式和值域分别描述差异。
 - 代码型列在 topk、样例或说明文件能支持时记录代码值映射。
 

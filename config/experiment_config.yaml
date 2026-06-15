@@ -1,0 +1,233 @@
+# Central experiment configuration for BIRD baseline comparisons.
+#
+# Secrets and model endpoint values live in `.env` and are loaded by
+# `config/global_config.py`. This file only contains reproducibility and fairness
+# settings: data paths, budgets, parallelism, cache policy, and output paths.
+
+experiment:
+  name: bird_test_time_frameworks
+  seed: 42
+  notes: "Compare Bash Agent, Pontis, CHESS, Alpha-SQL, and DeepEye-SQL under shared model settings."
+
+dataset:
+  type: bird
+  split: dev
+  canonical_dev_dir: workspace/original_data/bird_dev
+  canonical_train_dir: workspace/original_data/bird_train
+  baseline_workspace_root: workspace/baselines
+  # Keep this list small for first-pass end-to-end reproducibility.
+  selected_databases:
+    - california_schools
+    - card_games
+    - codebase_community
+  selected_qids: []
+  limit_per_db: null
+
+evaluation:
+  metric: execution_accuracy
+  sql_timeout_seconds: 60
+  compare_unordered_result_sets: true
+  use_gold_sql_only_for_evaluation: true
+  output_root: workspace/baselines
+
+runtime:
+  # Main fairness runs should use cold preprocess and cold online execution.
+  cache_state: cold
+  workers: 1
+  db_workers: 1
+  log_level: INFO
+  command_timeout_seconds: 20
+  max_command_output_chars: 12000
+
+llm:
+  # The actual provider/key/model are loaded from config/global_config.py.
+  provider_from: config/global_config.py MODEL_PROVIDER
+  model_from: config/global_config.py MODEL_NAME
+  api_key_from: config/global_config.py MODEL_API_KEY
+  temperature: 0.0
+  top_p: 1.0
+  retry_limit: 5
+
+embedding:
+  # The actual provider/key/model are loaded from config/global_config.py.
+  provider_from: global_config.EMBEDDING_PROVIDER
+  model_from: global_config.EMBEDDING_MODEL
+  api_key_from: global_config.EMBEDDING_API_KEY
+  dimensions: 1024
+  batch_size: 10
+
+performance:
+  measure_preprocess_cold: true
+  measure_preprocess_warm: true
+  measure_online_cold: true
+  measure_online_resume: false
+  perf_log: workspace/baselines/perf_runs.jsonl
+  report_algorithmic_work:
+    - llm_calls
+    - prompt_tokens
+    - completion_tokens
+    - tool_calls
+    - sql_executions
+    - generated_candidates
+
+baselines:
+  bash_agent:
+    enabled: true
+    repo_dir: Bash-Agent
+    data_root: workspace/baselines/bash_agent/data
+    data_dir: workspace/baselines/bash_agent/data/bird_dev
+    output_dir: workspace/baselines/bash_agent/results
+    preprocess_log_dir: workspace/baselines/bash_agent/preprocess_logs
+    runtime_log_dir: workspace/baselines/bash_agent/runtime_logs
+    result_dir: workspace/baselines/bash_agent/results
+    evaluation_dir: workspace/baselines/bash_agent/evaluation
+    prediction_file: workspace/baselines/bash_agent/results/bird_dev/results/results.jsonl
+    max_rounds: 12
+    command_timeout_seconds: 20
+    max_command_output_chars: 12000
+    preprocess:
+      enabled: false
+    online_command:
+      - python3
+      - -m
+      - bash_agent.run_bird
+
+  pontis:
+    enabled: true
+    repo_dir: Pontis
+    data_dir: workspace/baselines/pontis/data/bird_dev
+    output_dir: workspace/baselines/pontis
+    preprocess_log_dir: workspace/baselines/pontis/preprocess_logs
+    runtime_log_dir: workspace/baselines/pontis/runtime_logs
+    result_dir: workspace/baselines/pontis/results
+    evaluation_dir: workspace/baselines/pontis/evaluation
+    prediction_file: workspace/baselines/pontis/results/results.jsonl
+    use_bird_global: true
+    reflection: false
+    max_rounds: 12
+    tools:
+      - find
+      - grep
+      - meta
+      - query
+    preprocess:
+      enabled: true
+      force_extract: true
+      with_embedding: true
+    online_command:
+      - python3
+      - -m
+      - scripts.BIRD.run_bird_benchmark
+
+  chess:
+    enabled: true
+    repo_dir: CHESS
+    data_dir: workspace/baselines/chess/data/bird_dev
+    questions_file: workspace/baselines/chess/data/bird_dev/dev.json
+    tables_file: workspace/baselines/chess/data/bird_dev/dev_tables.json
+    database_dir: workspace/baselines/chess/data/bird_dev/dev_databases
+    output_dir: workspace/baselines/chess/results
+    preprocess_log_dir: workspace/baselines/chess/preprocess_logs
+    runtime_log_dir: workspace/baselines/chess/runtime_logs
+    result_dir: workspace/baselines/chess/results
+    evaluation_dir: workspace/baselines/chess/evaluation
+    prediction_file: workspace/baselines/chess/results/predictions.json
+    config_name: CHESS_IR_CG_UT
+    run_config: run/configs/CHESS_IR_CG_UT.yaml
+    preprocess:
+      enabled: true
+      db_id: all
+      signature_size: 100
+      n_gram: 3
+      threshold: 0.01
+    online:
+      num_workers: 1
+      pick_final_sql: true
+    budgets:
+      candidate_sampling_count_per_template: 10
+      candidate_templates: 2
+      unit_test_count: 20
+      unit_test_sampling_count: 1
+      revise_sampling_count: 1
+
+  alpha_sql:
+    enabled: true
+    repo_dir: Alpha-SQL
+    data_dir: workspace/baselines/alpha_sql/data/bird_dev
+    questions_file: workspace/baselines/alpha_sql/data/bird_dev/dev.json
+    database_dir: workspace/baselines/alpha_sql/data/bird_dev/dev_databases
+    preprocess_dir: workspace/baselines/alpha_sql/preprocess
+    output_dir: workspace/baselines/alpha_sql/results
+    preprocess_log_dir: workspace/baselines/alpha_sql/preprocess_logs
+    runtime_log_dir: workspace/baselines/alpha_sql/runtime_logs
+    result_dir: workspace/baselines/alpha_sql/results
+    evaluation_dir: workspace/baselines/alpha_sql/evaluation
+    prediction_file: workspace/baselines/alpha_sql/results/pred_sqls.json
+    run_config: config/qwen32b_bird_dev.yaml
+    preprocess:
+      enabled: true
+      lsh_threshold: 0.5
+      lsh_signature_size: 128
+      lsh_n_gram: 3
+      lsh_top_k: 20
+      edit_similarity_threshold: 0.3
+      embedding_similarity_threshold: 0.6
+      n_parallel_processes: 1
+    online:
+      n_processes: 1
+      max_rollout_steps: 24
+      max_depth: 16
+      exploration_constant: 1.414
+      mcts_n: 3
+      mcts_top_p: 0.8
+      mcts_temperature: 0.8
+
+  deepeye_sql:
+    enabled: true
+    repo_dir: DeepEye-SQL
+    data_root: workspace/baselines/deepeye_sql/data
+    data_dir: workspace/baselines/deepeye_sql/data/dev
+    output_dir: workspace/baselines/deepeye_sql/results
+    preprocess_log_dir: workspace/baselines/deepeye_sql/preprocess_logs
+    runtime_log_dir: workspace/baselines/deepeye_sql/runtime_logs
+    result_dir: workspace/baselines/deepeye_sql/results
+    evaluation_dir: workspace/baselines/deepeye_sql/evaluation
+    prediction_file: workspace/baselines/deepeye_sql/results/sql_selection/bird/dev.snapshot
+    run_config: config/config-bird-example.toml
+    preprocess:
+      enabled: true
+      create_dataset_snapshot: true
+      create_vector_db: true
+      vector_db_backend: local_index
+      db_parallel: 1
+      column_parallel: 1
+    online:
+      value_retrieval_n_parallel: 1
+      schema_linking_n_parallel: 1
+      sql_generation_n_parallel: 1
+      sql_revision_n_parallel: 1
+      sql_selection_n_parallel: 1
+    budgets:
+      value_retrieval_top_k: 5
+      direct_linking_sampling_budget: 4
+      reversed_linking_sampling_budget: 4
+      dc_sampling_budget: 4
+      skeleton_sampling_budget: 4
+      icl_sampling_budget: 4
+      checker_sampling_budget: 3
+      evaluator_sampling_budget: 5
+      filter_top_k_sql: 2
+
+incremental_update:
+  enabled: true
+  scenarios:
+    - add_column
+    - update_value_distribution
+    - add_relation
+    - remove_table_or_column
+  report:
+    - update_time
+    - rebuilt_scope
+    - changed_nodes_or_index_items
+    - embedding_recomputed
+    - rerun_online_time

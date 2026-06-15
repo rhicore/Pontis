@@ -125,6 +125,7 @@ INFO_TYPE_CONFIG = {
                     "links": ", ".join(filter(None, [_c(m,'fk'), _c(m,'disambig'), _c(m,'hint')])),
                 }),
     "col":      InfoTypeConfig(info_fn=lambda m: {
+                    "brief": _first_present(m, ["brief", "official_column_description", "official_value_description"], default="-"),
                     "links": ", ".join(filter(None, [_c(m,'rel'), _c(m,'fk'), _c(m,'disambig'), _c(m,'hint')])) or "-",
                 }),
     # 关系段
@@ -212,7 +213,8 @@ META_TYPE_CONFIG = {
         adjacency_keys={"col", "fk"},
     ),
     "col": MetaTypeConfig(
-        default_keys=["cardinality", "null_count", "null_percentage",
+        default_keys=["official_column_description", "official_value_description",
+                       "cardinality", "null_count", "null_percentage",
                        "sample",
                        "min_value", "max_value", "mean_value",
                        "min_length", "max_length", "avg_length",

@@ -109,7 +109,7 @@ class EmbeddingClient:
 
 
 def load_embedding_config(path: str | None = None) -> EmbeddingConfig:
-    import global_config as defaults
+    from config import global_config as defaults
 
     cfg = {
         "provider": defaults.EMBEDDING_PROVIDER,

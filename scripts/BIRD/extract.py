@@ -35,8 +35,11 @@ AI_PIPELINE = [
     "ai_db_column_summary",
 ]
 
+OFFICIAL_DESCRIPTION_PIPELINE = [
+    "official_description_extract",
+]
+
 AGENT_PIPELINE = [
-    "agent_database_description_review",
     "agent_schema_prepare",
     "agent_disambiguate",
     "agent_readme",
@@ -128,6 +131,18 @@ def extract_one(
             result["static"] = _sum_timings(static_timings, STATIC_PIPELINE)
             logger.info(f"Static phase done: {result['static']:.1f}s")
 
+            registry = get_registry()
+            official_pipeline = [name for name in OFFICIAL_DESCRIPTION_PIPELINE if name in registry]
+            official_timings = run_modules(
+                official_pipeline,
+                workspace,
+                config=config,
+                options=RunOptions(continue_on_error=True, collect_timing=True),
+            )
+            result["description_review"] = official_timings.get("official_description_extract", 0.0)
+            if result["description_review"]:
+                logger.info(f"Official description phase done: {result['description_review']:.1f}s")
+
         if not no_ai:
             registry = get_registry()
 
@@ -155,7 +170,6 @@ def extract_one(
             )
             result["schema_prepare"] = agent_timings.get("agent_schema_prepare", 0.0)
             result["agent"] = result["schema_prepare"]
-            result["description_review"] = agent_timings.get("agent_database_description_review", 0.0)
             result["disambiguate"] = agent_timings.get("agent_disambiguate", 0.0)
             result["readme"] = agent_timings.get("agent_readme", 0.0)
 
@@ -167,8 +181,6 @@ def extract_one(
                 logger.info(f"AI db phase done: {result['ai_db']:.1f}s")
             if result["agent"]:
                 logger.info(f"Schema prepare phase done: {result['agent']:.1f}s")
-            if result["description_review"]:
-                logger.info(f"Description review phase done: {result['description_review']:.1f}s")
             if result["disambiguate"]:
                 logger.info(f"Disambiguate phase done: {result['disambiguate']:.1f}s")
             if result["readme"]:
@@ -341,7 +353,7 @@ def main() -> None:
                 "ai_db": 0.0,
                 "agent": 0.0,
                 "schema_prepare": 0.0,
-                        "description_review": 0.0,
+                "description_review": 0.0,
                 "disambiguate": 0.0,
                 "readme": 0.0,
                 "embedding": 0.0,
@@ -366,7 +378,7 @@ def main() -> None:
                 )
                 result["schema_prepare"] = timings.get("agent_schema_prepare", 0.0)
                 result["agent"] = result["schema_prepare"]
-                result["description_review"] = timings.get("agent_database_description_review", 0.0)
+                result["description_review"] = timings.get("official_description_extract", 0.0)
                 result["disambiguate"] = timings.get("agent_disambiguate", 0.0)
                 result["readme"] = timings.get("agent_readme", 0.0)
                 result["embedding"] = timings.get("semantic_embedding", 0.0)
@@ -423,7 +435,7 @@ def main() -> None:
         if result["agent"]:
             parts.append(f"Schema: {result['agent']:.1f}s")
         if result.get("description_review"):
-            parts.append(f"Description: {result['description_review']:.1f}s")
+            parts.append(f"Official Description: {result['description_review']:.1f}s")
         if result["disambiguate"]:
             parts.append(f"Disambig: {result['disambiguate']:.1f}s")
         if result["readme"]:
@@ -483,7 +495,7 @@ def main() -> None:
     print(
         f"Time: static {total_static:.1f}s, AI cols {total_ai_col:.1f}s, "
         f"AI tables {total_ai_tbl:.1f}s, AI db {total_ai_db:.1f}s, "
-        f"schema {total_agent:.1f}s, description {total_desc_review:.1f}s, "
+        f"schema {total_agent:.1f}s, official description {total_desc_review:.1f}s, "
         f"disambig {total_disambig:.1f}s, "
         f"readme {total_readme:.1f}s, "
         f"total {total_all:.1f}s"

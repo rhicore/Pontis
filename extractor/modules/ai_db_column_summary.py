@@ -38,7 +38,7 @@ _STYLE_RETRY_MESSAGE = """\
 - 不写操作步骤、使用处方、清理动作或字段替代关系。"""
 
 _ADVICE_MARKERS = (
-    "建议", "推荐", "应该", "应当", "需", "需要", "必须", "避免", "清洗", "可用于",
+    "建议", "推荐", "应该", "应当", "必须", "避免使用", "清洗", "可用于",
 )
 _AMBIGUOUS_EQUIVALENCE_MARKERS = (
     "含义相同", "语义对应", "同一概念", "等价", "可替代",
@@ -55,6 +55,8 @@ _ANALYSIS_INSTRUCTIONS = """\
 写作要求：
 - brief 控制在 20 字以内，只概括列的事实性角色。
 - detail 使用陈述句记录可观察事实，不写具体行数、比例或基数数字。
+- official_column_description 和 official_value_description 是人工/官方标注，优先级高于样本、统计值和 AI 总结；如果存在，brief/detail 必须与其一致。
+- official 字段为空时再依据列名、样本、topk 和统计信息总结。
 - 代码型列在 topk 或样例能支持时记录代码值含义。
 - 近名字段只写差异，不归纳为同一含义。
 - 输出纯文本，不使用 markdown。"""
@@ -250,6 +252,14 @@ def _build_column_block(col_name: str, meta: dict) -> str:
         f"列: {display_name}",
         f"类型: {dtype}",
     ]
+
+    official_column_description = meta.get("official_column_description")
+    if official_column_description and str(official_column_description).strip():
+        parts.append(f"官方列说明: {official_column_description}")
+
+    official_value_description = meta.get("official_value_description")
+    if official_value_description and str(official_value_description).strip():
+        parts.append(f"官方取值说明: {official_value_description}")
 
     cardinality = meta.get("cardinality")
     if cardinality is not None:

@@ -14,7 +14,7 @@ PROMPT = """\
 
 ## 目标
 
-基于当前项目中**已经存在的 AI/agent 标注**（数据库文件、表、列、外键、说明文件的 brief/detail），
+基于当前项目中已经存在的元数据（列上的 official 字段、数据库文件、表、列、外键、说明文件的 brief/detail），
 必要时补充少量探索，然后写出一个供后续使用者阅读的项目 README。
 
 README 的目标不是营销文案，而是：
@@ -25,9 +25,10 @@ README 的目标不是营销文案，而是：
 
 ## 必须遵守
 
-- **复用现有摘要**：先读已经存在的 brief/detail，不要重复劳动
+- **复用现有摘要**：先读已经存在的 official 字段和 brief/detail，不要重复劳动
+- **官方字段优先**：`official_column_description`、`official_value_description` 是人工/官方标注，高于 AI/agent 写入的 `brief/detail`；README 中的列含义、代码值和值域说明必须优先采用 official 字段
 - **只在必要时补充探索**：如果已有信息足够，就不要过度查询
-- **读取已有元数据**：用 `meta(..., property=["detail"])` 读取已有摘要；不要为了 README 再去 `cat README` 或 `cat *.csv`
+- **读取已有元数据**：用 `meta` 读取已有官方字段和摘要；不要为了 README 再去 `cat README` 或 `cat *.csv`
 - **不要把说明文件当数据库去 query**：CSV、Markdown、文本数据字典等说明文件不是业务数据表
 - **用中文写 README**
 - **不要提及内部实现概念**：不要出现 Pontis、知识图谱、.pontis、实体节点、tool contract 等内部术语

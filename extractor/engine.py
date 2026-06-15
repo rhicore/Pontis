@@ -69,6 +69,7 @@ def get_registry() -> Dict[str, object]:
     from extractor.modules.db_column_overlap import generate as db_column_overlap
     from extractor.modules.ai_db_column_summary import generate as ai_db_column_summary
     from extractor.modules.semantic_embedding import generate as semantic_embedding
+    from extractor.modules.official_description_extract import generate as official_description_extract
 
     _REGISTRY = {
         "db_column_stats_approx": db_column_stats_approx,
@@ -79,6 +80,7 @@ def get_registry() -> Dict[str, object]:
         "db_fk_validate": db_fk_validate,
         "db_column_overlap": db_column_overlap,
         "ai_db_column_summary": ai_db_column_summary,
+        "official_description_extract": official_description_extract,
         "semantic_embedding": semantic_embedding,
     }
 
@@ -87,11 +89,9 @@ def get_registry() -> Dict[str, object]:
         from explorer.schema_prepare import generate as agent_schema_prepare
         from explorer.disambiguate import generate as agent_disambiguate
         from explorer.readme import generate as agent_readme
-        from explorer.database_description_review import generate as agent_database_description_review
         _REGISTRY["agent_schema_prepare"] = agent_schema_prepare
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
         _REGISTRY["agent_readme"] = agent_readme
-        _REGISTRY["agent_database_description_review"] = agent_database_description_review
     except ImportError:
         pass
 
