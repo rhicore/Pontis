@@ -5,7 +5,7 @@ from typing import List, Optional, Set
 
 from agent.guardrail_api import Guardrail, GuardrailContext, CallVerdict
 from agent.guardrail.sql_utils import (
-    has_read, extract_tables, extract_col_refs, get_sql_from_messages,
+    has_meta_read, extract_tables, extract_col_refs, get_sql_from_messages,
 )
 
 
@@ -22,13 +22,12 @@ class SQLDisambigCheck(Guardrail):
     """SQL 语义消歧审查：展示相关消歧实体供模型参考。
 
     query 工具调用 → warn（展示消歧实体，允许执行）
-    文本 SQL 输出 → block 展示未展示过的消歧实体（展示过就不再 block）
-    不强制 meta 读取，展示过一次即可。
+    文本 SQL 输出 → block，直到相关消歧实体被 meta 实际读取
+    find 展示或历史 warning 不算读取。
     """
 
     def __init__(self):
         self._disambig_cache: Optional[List[_DisambigEntry]] = None
-        self._shown: set = set()  # 已展示过的消歧实体 ref
 
     def check(self, ctx: GuardrailContext) -> dict:
         result = {}
@@ -64,25 +63,22 @@ class SQLDisambigCheck(Guardrail):
         table_columns_lower = {(t.lower(), c.lower()) for t, c in col_refs}
         history = ctx.tool_history
 
-        # 找出所有未读且未展示过的消歧实体，平铺展示。
+        # 找出所有未通过 meta 实际读取的消歧实体，平铺展示。
         disambigs: Set[str] = set()
 
         for entry in cache:
-            if has_read(history, entry.ref):
-                continue
-            if entry.ref in self._shown:
+            if has_meta_read(history, entry.ref):
                 continue
 
             if self._matches_entry(entry, sql, tables_lower, columns_lower, table_columns_lower):
                 disambigs.add(entry.ref)
-                self._shown.add(entry.ref)
 
         if not disambigs:
             return ""
 
-        return ("⚠️ SQL 中涉及以下语义消歧实体，请读取后再确认表、列、值、JOIN 和聚合选择：\n"
+        return ("⚠️ SQL 中涉及以下语义消歧实体；最终 SQL 前必须用 meta 读取它们，再确认表、列、值、JOIN 和聚合选择：\n"
                 + _format_disambig_list(ctx.workspace, sorted(disambigs))
-                + "\n\n读取消歧实体后，比较候选实体含义并选择与当前问题最匹配的实体。")
+                + "\n\n只看到 find 结果或 guardrail 提示不算读取；请调用 meta 读取相关 disambig。")
 
     def _matches_entry(
         self,

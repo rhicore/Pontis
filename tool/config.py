@@ -244,7 +244,7 @@ META_TYPE_CONFIG = {
         default_keys=["brief", "detail"],
     ),
     "overlap": MetaTypeConfig(
-        default_keys=["stats", "brief", "detail"],
+        default_keys=["table_scope", "sources", "stats", "brief", "detail"],
         folded_keys={"stats"},
     ),
     "disambig": MetaTypeConfig(

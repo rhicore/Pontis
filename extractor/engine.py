@@ -87,9 +87,11 @@ def get_registry() -> Dict[str, object]:
     # Explorer 模块 — 独立版（可单独调用）
     try:
         from explorer.schema_prepare import generate as agent_schema_prepare
+        from explorer.relation_disambiguation_review import generate as agent_relation_disambiguation_review
         from explorer.disambiguate import generate as agent_disambiguate
         from explorer.readme import generate as agent_readme
         _REGISTRY["agent_schema_prepare"] = agent_schema_prepare
+        _REGISTRY["agent_relation_disambiguation_review"] = agent_relation_disambiguation_review
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
         _REGISTRY["agent_readme"] = agent_readme
     except ImportError:

@@ -253,6 +253,7 @@ def model_env_lines(args: argparse.Namespace) -> list[str]:
         model_name = shlex.quote(args.remote_model)
         lines.extend(
             [
+                "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY",
                 f"export MODEL_API_URL={base_url}",
                 f"export OPENAI_BASE_URL={base_url}",
                 f"export MODEL_NAME={model_name}",

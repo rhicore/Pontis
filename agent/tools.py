@@ -331,7 +331,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "实体引用，如 'account.id->district.id:fk' 或 'no_concat:convention'",
+                            "description": "待创建实体的名称和标签，如 'school_name_relation:rel'；不能包含路径或 project::",
                         },
                         "meta": {
                             "type": "object",
@@ -339,18 +339,21 @@ def _build_write_schemas() -> Dict[str, dict]:
                         },
                         "edges": {
                             "type": "array",
+                            "minItems": 1,
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "a": {"type": "string", "description": "节点 ref"},
-                                    "b": {"type": "string", "description": "节点 ref"},
+                                    "ref": {
+                                        "type": "string",
+                                        "description": "要连接到新实体的已有节点 ref",
+                                    }
                                 },
-                                "required": ["a", "b"],
+                                "required": ["ref"],
                             },
-                            "description": "要添加的关系边（可选）",
+                            "description": "创建实体时必须同时连接的已有实体端点，至少 1 条；不会创建端点之间的边",
                         },
                     },
-                    "required": ["ref"],
+                    "required": ["ref", "edges"],
                 },
             },
         },
@@ -372,31 +375,6 @@ def _build_write_schemas() -> Dict[str, dict]:
                         },
                     },
                     "required": ["ref", "fields"],
-                },
-            },
-        },
-        "add_edge": {
-            "type": "function",
-            "function": {
-                "name": "add_edge",
-                "description": _load_prompt("add_edge"),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "edges": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "a": {"type": "string", "description": "Node ref returned by find/meta, or a unique entity name"},
-                                    "b": {"type": "string", "description": "Node ref returned by find/meta, or a unique entity name"},
-                                },
-                                "required": ["a", "b"],
-                            },
-                            "description": "要添加的边列表",
-                        },
-                    },
-                    "required": ["edges"],
                 },
             },
         },
@@ -564,11 +542,6 @@ def _exec_update_meta(workspace, arguments: dict) -> str:
     )
 
 
-def _exec_add_edge(workspace, arguments: dict) -> str:
-    from tool.add_edge.tool import add_edge_command
-    return add_edge_command(workspace, edges=arguments["edges"])
-
-
 def _exec_delete(workspace, arguments: dict) -> str:
     from tool.delete.tool import delete_command
     return delete_command(workspace, ref=arguments["ref"])
@@ -618,7 +591,6 @@ _READONLY_EXECUTORS = {
 _WRITE_EXECUTORS = {
     "create_entity": _exec_create_entity,
     "update_meta": _exec_update_meta,
-    "add_edge": _exec_add_edge,
     "delete": _exec_delete,
 }
 

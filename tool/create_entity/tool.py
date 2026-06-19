@@ -1,9 +1,9 @@
 """Create entity tool — 统一创建入口。
 
 创建规则（类似 mkdir）：
-  - ref 必须是精确名称，不允许通配符 (*, ?, [])
-  - labels 从 ref 中的 :tag 语法提取
-  - 不自动连边，通过 edges 参数显式指定
+  - ref 只表示待创建实体的名称和标签，不承载路径或边匹配逻辑
+  - labels 从 ref 中的 :tag 语法提取，例如 name:rel
+  - 创建实体必须通过 edges 连接到至少一个已有实体
 """
 
 from tool.utils import execute_cypher
@@ -26,14 +26,13 @@ def _selector_pattern(selector: dict, var: str, prefix: str) -> tuple[str, dict]
 def _parse_ref(ref: str) -> tuple:
     """从 ref 中提取实体名和标签。
 
-    格式: [project::]name[:tag1[:tag2[...]]]
+    格式: name[:tag1[:tag2[...]]]
 
     Returns:
         (name, labels, project)
     """
     project = None
 
-    # 解析 project:: 前缀
     if "::" in ref:
         idx = ref.index("::")
         project = ref[:idx]
@@ -50,19 +49,18 @@ def _parse_ref(ref: str) -> tuple:
 def _edge_source_for_created_node(edges: list | None, name: str, ref: str) -> str | None:
     if not edges:
         return None
-    created_refs = {name, ref}
     for edge in edges:
-        a_name = edge.get("a", "")
-        b_name = edge.get("b", "")
-        if a_name in created_refs and b_name:
-            return b_name
-        if b_name in created_refs and a_name:
-            return a_name
+        if edge.get("ref"):
+            return edge["ref"]
     return None
 
 
 def _has_wildcards(ref: str) -> bool:
     return any(c in ref for c in '*?[]')
+
+
+def _has_entity_ref_structure(name: str) -> bool:
+    return "/" in name or "\\" in name
 
 
 def _link_relation_entity_to_db(workspace, *, project: str | None, node_id: str | None) -> int:
@@ -87,24 +85,79 @@ def _link_relation_entity_to_db(workspace, *, project: str | None, node_id: str 
     return int(rows[0].get("n") or 0)
 
 
+def _create_explicit_edges(
+    workspace,
+    *,
+    project: str | None,
+    name: str,
+    ref: str,
+    labels: list,
+    node_id: str | None,
+    edges: list | None,
+) -> list[str]:
+    edge_results = []
+    if not edges:
+        return edge_results
+
+    for e in edges:
+        endpoint = e.get("ref", "")
+        if not endpoint:
+            edge_results.append("  跳过: edges 项缺少 ref")
+            continue
+        if endpoint in {name, ref}:
+            edge_results.append(f"  跳过: edges.ref 不能指向正在创建的实体 '{endpoint}'")
+            continue
+
+        endpoint_selector, endpoint_err = resolve_entity_selector(workspace, endpoint)
+        if endpoint_err:
+            edge_results.append(f"  跳过: {endpoint_err}")
+            continue
+        if not endpoint_selector:
+            edge_results.append(f"  跳过: 无法解析端点 '{endpoint}'")
+            continue
+        endpoint_pat, endpoint_params = _selector_pattern(endpoint_selector, "endpoint", "endpoint")
+        rows = workspace.cypher(
+            f"MATCH (created {{id: $created_id}}), {endpoint_pat} "
+            "MERGE (endpoint)-[r:RELATED_TO]->(created) "
+            "RETURN count(r) AS created",
+            params={**endpoint_params, "created_id": node_id},
+            project=project,
+        )
+        if not rows:
+            edge_results.append(f"  跳过: 无法创建边 '{name}' / '{endpoint}'")
+            continue
+        edge_results.append(f"  {name} ↔ {endpoint}")
+
+    return edge_results
+
+
 def create_entity_command(workspace, ref: str, meta: dict = None,
                           edges: list = None) -> str:
     """创建实体节点。
 
     Args:
         workspace: Workspace 实例
-        ref: 实体引用，格式 [project::]name[:tag1[:tag2]]
+        ref: 实体引用，格式 name[:tag1[:tag2]]
         meta: 元数据
-        edges: 边列表 [{"a": "...", "b": "..."}, ...]
+        edges: 连接端点列表 [{"ref": "..."}]
     """
+    if not edges:
+        return "错误: create_entity 必须提供至少一条 edges，不能创建孤立实体"
+    if any(not isinstance(edge, dict) or not edge.get("ref") for edge in edges):
+        return '错误: create_entity.edges 每一项必须是 {"ref": "..."}'
+
     # 禁止通配符
     if _has_wildcards(ref):
         return "错误: 实体名不允许包含通配符 (*, ?, [])"
+    if "::" in ref:
+        return "错误: create_entity.ref 只能包含实体名称和标签，不能包含 project:: 前缀"
 
     name, labels, project = _parse_ref(ref)
 
     if not name:
         return "错误: 实体名不能为空"
+    if _has_entity_ref_structure(name):
+        return "错误: create_entity.ref 的实体名称不能包含 / 或 \\；路径端点请写在 edges[].ref"
     invalid_labels = [label for label in labels if not is_valid_label(label)]
     if invalid_labels:
         return f"错误: 非法标签: {', '.join(invalid_labels)}"
@@ -148,6 +201,31 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
         for row in existing_rows:
             existing_labels = set(row.get("n", {}).get("labels", []))
             if existing_labels == requested_labels:
+                existing = row.get("n", {})
+                edge_results = _create_explicit_edges(
+                    workspace,
+                    project=project,
+                    name=name,
+                    ref=ref,
+                    labels=labels or [],
+                    node_id=existing.get("id"),
+                    edges=edges,
+                )
+                db_edges = 0
+                if set(labels or []) & {"fk", "rel", "overlap"}:
+                    db_edges = _link_relation_entity_to_db(
+                        workspace,
+                        project=project,
+                        node_id=existing.get("id"),
+                    )
+                if edge_results or db_edges:
+                    lines = [f"实体已存在: {name}", "Updated existing edges"]
+                    if edge_results:
+                        lines.append(f"Edges ({len(edge_results)}):")
+                        lines.extend(edge_results)
+                    if db_edges:
+                        lines.append(f"DB relation index edges: {db_edges}")
+                    return "\n".join(lines)
                 return f"实体已存在: {name}"
 
     meta = normalize_knowledge_meta(project, labels, meta)
@@ -176,44 +254,15 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
     created_node = created[0].get("n", {}) if isinstance(created[0], dict) else {}
     created_id = created_node.get("id")
 
-    # 创建显式 edges
-    edge_results = []
-    if edges:
-        for e in edges:
-            a_name = e.get("a", "")
-            b_name = e.get("b", "")
-            if not a_name or not b_name:
-                continue
-            if a_name == name or a_name == ref:
-                a_selector = {"project": project, "name": name, "labels": labels, "id": created_id}
-                a_err = None
-            else:
-                a_selector, a_err = resolve_entity_selector(workspace, a_name)
-            if a_err:
-                edge_results.append(f"  跳过: {a_err}")
-                continue
-            if b_name == name or b_name == ref:
-                b_selector = {"project": project, "name": name, "labels": labels, "id": created_id}
-                b_err = None
-            else:
-                b_selector, b_err = resolve_entity_selector(workspace, b_name)
-            if b_err:
-                edge_results.append(f"  跳过: {b_err}")
-                continue
-            if not a_selector or not b_selector:
-                edge_results.append(f"  跳过: 无法解析端点 '{a_name}' / '{b_name}'")
-                continue
-            a_pat, a_params = _selector_pattern(a_selector, "a", "a")
-            b_pat, b_params = _selector_pattern(b_selector, "b", "b")
-            rows = workspace.cypher(
-                f"MATCH {a_pat}, {b_pat} MERGE (a)-[r:RELATED_TO]->(b) RETURN count(r) AS created",
-                params={**a_params, **b_params},
-                project=project,
-            )
-            if not rows:
-                edge_results.append(f"  跳过: 无法创建边 '{a_name}' / '{b_name}'")
-                continue
-            edge_results.append(f"  {a_name} ↔ {b_name}")
+    edge_results = _create_explicit_edges(
+        workspace,
+        project=project,
+        name=name,
+        ref=ref,
+        labels=labels or [],
+        node_id=created_id,
+        edges=edges,
+    )
 
     db_edges = 0
     if set(labels or []) & {"fk", "rel", "overlap"}:

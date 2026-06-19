@@ -139,6 +139,51 @@ def _format_neighbor_list(workspace, project_name: str, project: str | None, nei
     return "\n".join(lines)
 
 
+def _format_related_disambig_notice(
+    workspace,
+    project: str | None,
+    match: str,
+    params: dict,
+    labels: List[str],
+) -> str:
+    if "disambig" in set(labels or []):
+        return ""
+
+    rows = workspace.cypher(
+        f"MATCH {match}--(d) "
+        "WHERE 'disambig' IN coalesce(d.labels, []) "
+        "RETURN d ORDER BY d.name",
+        params=params,
+        project=project,
+    )
+    disambigs = [row.get("d") for row in rows if row.get("d")]
+    if not disambigs:
+        return ""
+
+    lines = [
+        "Guardrail",
+        "当前实体连接了消歧义实体；在使用该实体写 SQL 前必须先读取相关消歧义实体：",
+    ]
+    for meta in disambigs:
+        display_ref = display_ref_for_node(workspace, project, meta)
+        if not display_ref.endswith(":disambig"):
+            display_ref = f"{display_ref}:disambig"
+        brief = meta.get("brief")
+        line = f'  - meta({{"ref": "{display_ref}"}})'
+        if brief and str(brief).strip():
+            line += f"  # {str(brief).strip()}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _append_notice(result: str, notice: str) -> str:
+    if not notice:
+        return result
+    if not result:
+        return notice
+    return result.rstrip() + "\n\n" + notice
+
+
 def meta_command(
     workspace,
     ref: str,
@@ -173,6 +218,13 @@ def meta_command(
 
     labels = meta.get("labels", [])
     display_ref = display_ref_for_node(workspace, project, meta)
+    related_disambig_notice = _format_related_disambig_notice(
+        workspace,
+        project,
+        match,
+        selector_params(selector),
+        labels,
+    )
 
     props = None
     if property:
@@ -201,7 +253,7 @@ def meta_command(
                 if not key.startswith("_")
             )
             lines.append(f"未找到: {', '.join(missing)}. 可用字段: {', '.join(available)}")
-        return "\n".join(lines)
+        return _append_notice("\n".join(lines), related_disambig_notice)
 
     neighbor_rows = workspace.cypher(
         f"MATCH {match}--(m) RETURN m",
@@ -212,7 +264,10 @@ def meta_command(
 
     if neighbor_label:
         filtered = [m for m in neighbors if _label_matches(m.get("labels", []), neighbor_label)]
-        return _format_neighbor_list(workspace, project_name, project, filtered)
+        result = _format_neighbor_list(workspace, project_name, project, filtered)
+        if not _label_matches(["disambig"], neighbor_label):
+            result = _append_notice(result, related_disambig_notice)
+        return result
 
     raw_meta = dict(meta)
     adjacency = {}
@@ -274,7 +329,7 @@ def meta_command(
                 if not key.startswith("_")
             )
             lines.append(f"未找到: {', '.join(missing)}. 可用字段: {', '.join(available)}")
-        return "\n".join(lines)
+        return _append_notice("\n".join(lines), related_disambig_notice)
 
     header_ref = input_ref or format_entity_name(display_ref, labels)
     header_line = f"{header_ref}\nproject: {project_name}"
@@ -301,7 +356,7 @@ def meta_command(
             for key in sorted(visible_adj.keys()):
                 result += f"\n{key}:\n" + "\n".join(visible_adj[key]) + "\n"
 
-    return result
+    return _append_notice(result, related_disambig_notice)
 
 
 if __name__ == "__main__":

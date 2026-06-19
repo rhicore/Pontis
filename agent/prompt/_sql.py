@@ -18,8 +18,8 @@ _SQL_RULES = r"""## 数据库 SQL 准则
 ### 关系理解
 
 - **fk**：外键关系，实体名编码 JOIN 条件，例如 `orders.user_id->users.id` 表示 `orders.user_id = users.id`。
-- **rel**：语义关系，作为候选连接线索。
-- **overlap**：列值重叠，用于判断值域相似性。
+- **rel**：行级连接关系，作为候选 JOIN 或行级对齐线索。
+- **overlap**：列值重叠，用于判断值域重叠程度。
 - **disambig**：同名或近义实体的语义区分。
 
 ### 输出前检查

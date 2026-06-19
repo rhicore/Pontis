@@ -176,6 +176,24 @@ def has_read(tool_history: list, entity: str) -> bool:
     return False
 
 
+def has_meta_read(tool_history: list, entity: str) -> bool:
+    """检查实体是否已被 meta 工具实际读取。
+
+    Unlike has_read(), this does not count find output as a read. Use it for
+    guardrails where showing an entity in search results is not enough.
+    """
+    read = get_meta_read(tool_history)
+    targets = _normalized_ref_variants(entity)
+    if any(target in read for target in targets):
+        return True
+
+    for target in targets:
+        suffixes = (f"/{target}", f".{target}")
+        if any(r.endswith(suffixes) for r in read):
+            return True
+    return False
+
+
 def resolve_entity_ref(workspace, table: str, column: str = None) -> str:
     """从 workspace 查找实体引用路径，大小写不敏感。
 

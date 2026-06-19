@@ -62,7 +62,7 @@ def get_ontology_prompt() -> str:
 
 | 标签 | 含义 | 典型例子 | 邻接实体 | 实体命名方式 | 常见元数据 |
 |---|---|---|---|---|---|
-| `rel` | agent / extractor 推断出的语义关系 | `schools.County->satscores.cname` | 通常连接两个或多个相关的 `table`、`view`、`col`，用于表达语义上的可连接性或业务关系 | 如果没有人工命名，通常也按 `实体A->实体B` 的关系摘要方式命名，常见为 `表.列->表.列` | `brief`, `detail`, `stats`, `match_rate`, `format_hint` |
+| `rel` | agent / extractor 推断出的行级连接关系 | `schools.County->satscores.cname` | 通常连接两个或多个相关的 `table`、`view`、`col`，用于表达可作为 JOIN 条件或行级对齐依据的关系 | 如果没有人工命名，通常也按 `实体A->实体B` 的关系摘要方式命名，常见为 `表.列->表.列` | `brief`, `detail`, `stats`, `match_rate`, `format_hint` |
 | `overlap` | 列值重叠关系，不等于可直接 JOIN | `a.col1->b.col2` | 通常连接两侧的 `col`，和两侧所属的 `table`，用于提示值域重叠 | 通常按 `表.列->表.列` 这种列对形式命名，强调两侧发生重叠的列 | `brief`, `detail`, `stats` |
 | `disambig` | 消歧节点，用于提醒同名/近义但不同语义的实体 | `points`, `rating`, `status` | 通常连接两个或多个容易混淆的 `table`、`view`、`col` | 通常直接用歧义词、歧义短语或容易混淆的概念名命名，例如 `points`、`status` | `brief`, `detail` |
 
