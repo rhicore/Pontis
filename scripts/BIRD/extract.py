@@ -41,6 +41,7 @@ OFFICIAL_DESCRIPTION_PIPELINE = [
 AGENT_PIPELINE = [
     "agent_schema_prepare",
     "agent_relation_disambiguation_review",
+    "agent_description_audit",
     "agent_readme",
 ]
 
@@ -98,6 +99,7 @@ def extract_one(
         "schema_prepare": 0.0,
         "relation_review": 0.0,
         "description_review": 0.0,
+        "description_audit": 0.0,
         "disambiguate": 0.0,
         "readme": 0.0,
         "embedding": 0.0,
@@ -171,6 +173,7 @@ def extract_one(
             result["schema_prepare"] = agent_timings.get("agent_schema_prepare", 0.0)
             result["agent"] = result["schema_prepare"]
             result["relation_review"] = agent_timings.get("agent_relation_disambiguation_review", 0.0)
+            result["description_audit"] = agent_timings.get("agent_description_audit", 0.0)
             result["disambiguate"] = agent_timings.get("agent_disambiguate", 0.0)
             result["readme"] = agent_timings.get("agent_readme", 0.0)
 
@@ -184,6 +187,8 @@ def extract_one(
                 logger.info(f"Schema prepare phase done: {result['agent']:.1f}s")
             if result["relation_review"]:
                 logger.info(f"Relation/disambiguation review phase done: {result['relation_review']:.1f}s")
+            if result["description_audit"]:
+                logger.info(f"Description audit phase done: {result['description_audit']:.1f}s")
             if result["disambiguate"]:
                 logger.info(f"Disambiguate phase done: {result['disambiguate']:.1f}s")
             if result["readme"]:
@@ -328,7 +333,7 @@ def main() -> None:
     success, failed = [], []
     all_results = []
     total_static = total_ai_col = total_ai_tbl = total_ai_db = 0.0
-    total_agent = total_relation_review = total_desc_review = total_disambig = total_readme = 0.0
+    total_agent = total_relation_review = total_desc_review = total_desc_audit = total_disambig = total_readme = 0.0
     total_preprocess_llm_input_tokens = 0
     total_preprocess_llm_cached_input_tokens = 0
     total_preprocess_llm_uncached_input_tokens = 0
@@ -358,6 +363,7 @@ def main() -> None:
                 "schema_prepare": 0.0,
                 "relation_review": 0.0,
                 "description_review": 0.0,
+                "description_audit": 0.0,
                 "disambiguate": 0.0,
                 "readme": 0.0,
                 "embedding": 0.0,
@@ -384,6 +390,7 @@ def main() -> None:
                 result["agent"] = result["schema_prepare"]
                 result["relation_review"] = timings.get("agent_relation_disambiguation_review", 0.0)
                 result["description_review"] = timings.get("official_description_extract", 0.0)
+                result["description_audit"] = timings.get("agent_description_audit", 0.0)
                 result["disambiguate"] = timings.get("agent_disambiguate", 0.0)
                 result["readme"] = timings.get("agent_readme", 0.0)
                 result["embedding"] = timings.get("semantic_embedding", 0.0)
@@ -405,7 +412,7 @@ def main() -> None:
 
     def record_result(result: dict) -> None:
         nonlocal total_static, total_ai_col, total_ai_tbl, total_ai_db
-        nonlocal total_agent, total_relation_review, total_desc_review, total_disambig, total_readme
+        nonlocal total_agent, total_relation_review, total_desc_review, total_desc_audit, total_disambig, total_readme
         nonlocal total_preprocess_llm_input_tokens, total_preprocess_llm_cached_input_tokens
         nonlocal total_preprocess_llm_uncached_input_tokens, total_preprocess_llm_output_tokens
         nonlocal total_preprocess_llm_tokens, total_preprocess_embedding_tokens
@@ -417,6 +424,7 @@ def main() -> None:
         total_agent += result["agent"]
         total_relation_review += result.get("relation_review", 0.0)
         total_desc_review += result.get("description_review", 0.0)
+        total_desc_audit += result.get("description_audit", 0.0)
         total_disambig += result["disambiguate"]
         total_readme += result["readme"]
         total_preprocess_llm_input_tokens += int(result.get("preprocess_llm_input_tokens", 0) or 0)
@@ -444,6 +452,8 @@ def main() -> None:
             parts.append(f"Rel/Disambig Review: {result['relation_review']:.1f}s")
         if result.get("description_review"):
             parts.append(f"Official Description: {result['description_review']:.1f}s")
+        if result.get("description_audit"):
+            parts.append(f"Description Audit: {result['description_audit']:.1f}s")
         if result["disambiguate"]:
             parts.append(f"Disambig: {result['disambiguate']:.1f}s")
         if result["readme"]:
@@ -498,13 +508,14 @@ def main() -> None:
     print(f"Done: {len(success)} ok, {len(failed)} failed")
     total_all = (
         total_static + total_ai_col + total_ai_tbl + total_ai_db +
-        total_agent + total_relation_review + total_desc_review + total_disambig + total_readme
+        total_agent + total_relation_review + total_desc_review + total_desc_audit + total_disambig + total_readme
     )
     print(
         f"Time: static {total_static:.1f}s, AI cols {total_ai_col:.1f}s, "
         f"AI tables {total_ai_tbl:.1f}s, AI db {total_ai_db:.1f}s, "
         f"schema {total_agent:.1f}s, rel/disambig review {total_relation_review:.1f}s, "
         f"official description {total_desc_review:.1f}s, "
+        f"description audit {total_desc_audit:.1f}s, "
         f"disambig {total_disambig:.1f}s, "
         f"readme {total_readme:.1f}s, "
         f"total {total_all:.1f}s"
@@ -529,6 +540,7 @@ def main() -> None:
             "schema": total_agent,
             "relation_review": total_relation_review,
             "description_review": total_desc_review,
+            "description_audit": total_desc_audit,
             "disambiguate": total_disambig,
             "readme": total_readme,
             "total": total_all,

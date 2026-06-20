@@ -26,8 +26,8 @@ PROMPT = """\
 
 - `official_column_description` 和 `official_value_description` 是人工/官方标注，是列含义、值域、公式、可用性和口径的最高优先级事实。
 - 列存在 official 字段时，先按 official 字段确定 brief/detail 的主语义，再补充样例、topk、统计和结构事实。
-- official 字段标注 `unuseful`、`not useful`、`unused`、`ignore` 或同类含义时，brief/detail 明确写成官方标记为不用于查询语义的列；样例或 topk 只能作为原始取值事实记录，不能把该列写成推荐筛选、分组或粒度选择依据。
-- 表 detail 提到列集合时，保留 official 字段给出的可用性和口径；官方标记为不用于查询语义的列，只作为存在的原始字段说明。
+- official 字段标注 `unuseful`、`not useful`、`unused`、`ignore` 或同类含义时，该列是禁用字段：brief/detail 写明“不用于查询，禁止分析使用”；不要查询该列取值；不要记录该列枚举、代码映射、粒度含义或业务解释；不要把该列用于筛选、分组、排序、连接、行粒度判断或表 detail 推理。
+- 表 detail 提到禁用字段时，只允许写固定事实：`<列名> 官方标记为不用于查询，禁止分析使用`。
 - 当 official 字段与已有 brief/detail 或样例推断冲突时，更新 brief/detail 使其服从 official 字段。
 
 ## brief/detail

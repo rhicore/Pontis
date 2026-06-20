@@ -16,6 +16,7 @@ from utils.context_dump import dump_llm_context, reset_context_dump_meta, set_co
 from .bird_prompts import BIRD_GUIDANCE, build_business_initial_request, build_pontis_plan_request
 from .models import BirdCase, CandidateReport, EvaluationResult
 from .pontis_worker import PontisSqlWorker
+from .sql_output_guard import bird_sql_output_violations, format_bird_sql_output_guard_feedback
 
 
 EVALUATION_AGENT_SYSTEM_PROMPT = """\
@@ -263,6 +264,20 @@ class BirdEvaluationAgent:
                 if decision == "reject_all_with_revision" and review_rejects >= 1:
                     fallback_sql = self._extract_sql_from_exit_plan(candidate)
                     if fallback_sql:
+                        hard_feedback = self._hard_guard_feedback(fallback_sql)
+                        if hard_feedback:
+                            candidate = self.pontis.reject(turn, hard_feedback)
+                            attempts.append(candidate)
+                            turn += 1
+                            plan_approved = False
+                            self.evaluation_agent.add_tool_result(
+                                action.tool_call_id,
+                                "候选 SQL 命中硬拦截，系统已要求 DBA agent 修改。\n\n"
+                                + self._format_candidate_for_evaluation_agent(
+                                    case, candidate, predicted_execution, plan_approved
+                                ),
+                            )
+                            continue
                         candidate = self._with_predicted_sql(
                             candidate,
                             fallback_sql,
@@ -309,6 +324,20 @@ class BirdEvaluationAgent:
                 continue
 
             if candidate.predicted_sql:
+                hard_feedback = self._hard_guard_feedback(candidate.predicted_sql)
+                if hard_feedback:
+                    candidate = self.pontis.reject(turn, hard_feedback)
+                    attempts.append(candidate)
+                    turn += 1
+                    plan_approved = False
+                    self.evaluation_agent.add_tool_result(
+                        action.tool_call_id,
+                        "最终 SQL 命中硬拦截，系统已要求 DBA agent 修改。\n\n"
+                        + self._format_candidate_for_evaluation_agent(
+                            case, candidate, predicted_execution, plan_approved
+                        ),
+                    )
+                    continue
                 predicted_execution = execute_sql(self.db_path, candidate.predicted_sql)
                 sql_attempts += 1
                 if isinstance(predicted_execution, str) and sql_attempts < max_attempts:
@@ -347,6 +376,11 @@ class BirdEvaluationAgent:
             raise RuntimeError("No candidate generated")
         if candidate.predicted_sql is None:
             fallback_sql = self._extract_sql_from_exit_plan(candidate)
+            if fallback_sql:
+                hard_feedback = self._hard_guard_feedback(fallback_sql)
+                if hard_feedback:
+                    fallback_sql = None
+                    predicted_execution = "SQL_OUTPUT_GUARD_BLOCKED: " + hard_feedback
             if fallback_sql:
                 candidate = CandidateReport(
                     attempt=candidate.attempt,
@@ -418,6 +452,11 @@ class BirdEvaluationAgent:
                     "\n\n格式问题：候选 SQL 没有使用唯一的 ```sql 代码块提交。"
                     "请先拒绝，并要求 DBA agent 仅用一个 ```sql 代码块重新提交完整 SQL。"
                 )
+            plan_sql = extract_sql(plan_text)
+            if plan_sql:
+                hard_feedback = self._hard_guard_feedback(plan_sql)
+                if hard_feedback:
+                    format_note += "\n\n硬拦截预检：\n" + hard_feedback + "\n"
             return (
                 f"数据库项目：{case.db_id}\n"
                 f"业务问题：{case.question}\n"
@@ -462,6 +501,12 @@ class BirdEvaluationAgent:
 
         if decision == "accept_candidate":
             if candidate_id == 1:
+                sql = self._extract_sql_from_exit_plan(candidate)
+                if sql:
+                    hard_feedback = self._hard_guard_feedback(sql)
+                    if hard_feedback:
+                        self.pontis.mark_schema_path_selected()
+                        return self.pontis.reject(turn, hard_feedback), False
                 self.pontis.mark_schema_path_selected()
                 return self.pontis.accept_candidate_plan(turn, candidate.exit_plan_request, feedback), True
             return "candidate_id 超出范围。当前只有 candidate_id=1 可选。"
@@ -475,3 +520,10 @@ class BirdEvaluationAgent:
             return self.pontis.reject(turn, reason), False
 
         return "select_plan 工具的 decision 必须是 accept_candidate 或 reject_all_with_revision。"
+
+    @staticmethod
+    def _hard_guard_feedback(sql: str) -> str | None:
+        violations = bird_sql_output_violations(sql)
+        if not violations:
+            return None
+        return format_bird_sql_output_guard_feedback(violations)

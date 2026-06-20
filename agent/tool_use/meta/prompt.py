@@ -15,7 +15,8 @@ DETAIL = """\
 
 优先级：
 - 列实体上的 `official_column_description`、`official_value_description` 来自人工/官方标注，优先于 AI/agent 写入的 `brief/detail`。
-- `brief/detail` 是摘要或推断性说明；若和 official 字段冲突，以 official 字段为准，并用 `query` 验证值域。
+- `brief/detail` 是摘要或推断性说明；若和 official 字段冲突，以 official 字段为准。
+- official 字段标记 `unuseful`、`not useful`、`unused`、`ignore` 或同类含义的列不用于查询和分析，不读取该列取值分布。
 """
 
 
