@@ -76,7 +76,13 @@ def generate(workspace: Workspace) -> None:
 
 
 def _read_description_rows(path: Path) -> list[dict[str, str]]:
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            with path.open("r", encoding=encoding, newline="") as handle:
+                return list(csv.DictReader(handle))
+        except UnicodeDecodeError:
+            continue
+    with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
         return list(csv.DictReader(handle))
 
 

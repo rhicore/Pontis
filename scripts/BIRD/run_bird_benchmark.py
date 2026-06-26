@@ -55,6 +55,7 @@ user 会利用 plan 向你提交问题，完成数据库探索和 SQL 验证后�
 `exit_plan.plan` 只允许包含一个 `sql` 代码块，代码块内是完整 SQL；不要在 plan 中写解释、步骤、原因或查询结果。
 如被拒绝，必须优先按 evaluation agent 的反馈修改 SQL，并重新提交新的 SQL-only plan。
 即使你认为反馈与你的数据库探索结论或业务理解冲突，也先执行反馈；不要用解释、rebuttal、等价改写或另一种格式化写法绕开反馈。
+BIRD 中很多时间字段按原始文本存储。题面给出秒级时间但列值带毫秒或省略小时位时，优先按列中存储格式做前缀匹配，例如 `1:40%`，再基于匹配行回答。
 """
 
 
@@ -399,7 +400,6 @@ def run_database(
             result = run_eval_case(
                 case,
                 train=args.train,
-                max_attempts=args.max_attempts,
                 main_agent_prompt=BIRD_MAIN_AGENT_SYSTEM_PROMPT,
             )
             elapsed = time.time() - started
@@ -472,7 +472,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, help="per-database case limit")
     parser.add_argument("--workers", type=int, default=1, help="parallel cases per database")
     parser.add_argument("--db-workers", type=int, default=1, help="parallel databases")
-    parser.add_argument("--max-attempts", type=int, default=2, help="Pontis attempts per case")
     parser.add_argument("--reflection", action="store_true", help="classify failed cases into reflection categories")
     parser.add_argument("--reflection-rounds", type=int, default=1, help="retry rounds for reflection JSON output")
     parser.add_argument("--run-id", help="output run id")
@@ -505,7 +504,7 @@ def main() -> None:
     print(f"=== BIRD {mode_label} Benchmark ===")
     print(f"Databases: {len(by_db)}, Queries: {total_queries}")
     print(f"DB workers: {args.db_workers}, Query workers/db: {args.workers}")
-    print(f"Max attempts/query: {args.max_attempts}")
+    print("Review policy: hard guard until fixed; warn once; LLM review up to 2 rounds")
     print(f"Reflection: {'on' if args.reflection else 'off'}")
     print(f"Run id: {get_run_id()}")
     print(f"Runtime logs: {PONTIS_WORKSPACE_ROOT / 'runtime_logs' / get_run_name(args.train)}")

@@ -28,7 +28,6 @@ def main() -> None:
     parser.add_argument("--db", help="Database id or comma-separated database ids.")
     parser.add_argument("--qids", help="Comma-separated question ids.")
     parser.add_argument("--limit", type=int, help="Maximum number of cases after filtering.")
-    parser.add_argument("--max-attempts", type=int, default=2, help="Pontis rewrite attempts per case.")
     args = parser.parse_args()
 
     qids = None
@@ -41,7 +40,7 @@ def main() -> None:
         sys.exit(1)
 
     for case in cases:
-        result = run_case(case, train=args.train, max_attempts=args.max_attempts)
+        result = run_case(case, train=args.train)
         row = {
             "db_id": result.case.db_id,
             "question_id": result.case.question_id,

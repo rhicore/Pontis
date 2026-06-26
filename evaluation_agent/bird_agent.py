@@ -2,114 +2,55 @@
 
 from __future__ import annotations
 
-import json
 import os
+import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
 
 from agent.utils import load_agent_config
-from scripts.BIRD.benchmark_runtime import execute_sql, extract_sql, find_db_file, is_correct
+from scripts.BIRD.benchmark_runtime import execute_sql, extract_sql, find_db_file, format_execution_result, is_correct
 from utils.context_dump import dump_llm_context, reset_context_dump_meta, set_context_dump_meta
 
-from .bird_prompts import BIRD_GUIDANCE, build_business_initial_request, build_pontis_plan_request
+from .bird_prompts import (
+    BIRD_REVIEW_PROMPT,
+    SELECT_RESULT_TABLE_REVIEW_PROMPT,
+    build_business_initial_request,
+    build_pontis_plan_request,
+    build_select_result_table_review_request,
+    build_sql_output_review_request,
+)
 from .models import BirdCase, CandidateReport, EvaluationResult
 from .pontis_worker import PontisSqlWorker
-from .sql_output_guard import bird_sql_output_violations, format_bird_sql_output_guard_feedback
+from .sql_output_guard import (
+    bird_sql_output_guard,
+    format_bird_sql_output_guard_feedback,
+    format_bird_sql_output_guard_warning,
+)
 
 
 EVALUATION_AGENT_SYSTEM_PROMPT = """\
-你是 BIRD evaluation agent。你代表业务员和 DBA agent 对话。
+你是 BIRD SQL 输出审查员。
 
-你只能通过工具和 DBA agent 交互：
-- `plan`：一次性入口。仅在收到用户业务问题后的第一轮调用，用来让 DBA agent 探索数据库并提交 SQL plan。
-- `select_plan`：审查候选 SQL plan，并决定接受或拒绝。
-- `reject`：最终 SQL 仍需修改时，说明具体修改原因。
+你的职责是事后审查 DBA agent 的候选 SQL 是否符合 BIRD 要求。
 
-你的职责是提出业务请求、审查 DBA agent 的 SQL plan 和最终 SQL 是否符合 BIRD 要求。
+如果候选 SQL 符合要求，只输出 OK，不要解释。
+如果候选 SQL 不符合要求，不要输出 OK，直接给出拒绝理由和修改建议。
 
-收到用户给出的数据库项目、业务问题和补充提示后，先调用一次 `plan` 工具向 DBA agent 提出数据分析请求。进入计划流程后，后续不再调用 `plan`。系统返回候选 SQL plan 后，请调用 `select_plan` 接受或拒绝。最终 SQL 输出后，如满足要求可以直接回复 DONE；如需修改请调用 `reject`。
-
-""" + BIRD_GUIDANCE
+""" + BIRD_REVIEW_PROMPT
 
 
-EVALUATION_AGENT_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "plan",
-            "description": "一次性入口：向 DBA agent 发送业务问题，让它探索数据库并提交 SQL plan。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "发给 DBA agent 的自然语言消息。",
-                    }
-                },
-                "required": ["message"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "select_plan",
-            "description": "审查候选 SQL plan，并接受或拒绝。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "decision": {
-                        "type": "string",
-                        "enum": [
-                            "accept_candidate",
-                            "reject_all_with_revision",
-                        ],
-                        "description": "accept_candidate=接受某份候选；reject_all_with_revision=拒绝当前候选并给出修改建议。",
-                    },
-                    "candidate_id": {
-                        "type": "integer",
-                        "description": "候选编号。接受时填 1；reject_all_with_revision 时填 0。",
-                    },
-                    "feedback": {
-                        "type": "string",
-                        "description": "裁决说明。接受时可简短说明；拒绝时说明违反了哪条要求，并给出具体修改建议。",
-                    },
-                },
-                "required": ["decision", "candidate_id", "feedback"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "reject",
-            "description": "驳回 DBA agent 的 plan 或 SQL，并要求其修改。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "reason": {
-                        "type": "string",
-                        "description": "具体、可执行的驳回原因。",
-                    }
-                },
-                "required": ["reason"],
-                "additionalProperties": False,
-            },
-        },
-    },
-]
+SELECT_RESULT_TABLE_REVIEW_SYSTEM_PROMPT = """\
+你是 BIRD SELECT 结果表审查员。
 
+你的职责是审查候选 SQL 的 SELECT 结果表是否符合题面要求。只审查 SELECT 列、列顺序、答案对象、额外输出列、漏选列和结果表形状。
 
-class EvaluationToolCall:
-    def __init__(self, name: str | None, arguments: dict[str, Any], tool_call_id: str | None, content: str):
-        self.name = name
-        self.arguments = arguments
-        self.tool_call_id = tool_call_id
-        self.content = content
+如果 SELECT 结果表符合要求，只输出 OK，不要解释。
+如果 SELECT 结果表不符合要求，不要输出 OK，直接给出拒绝理由和修改建议。
+
+""" + SELECT_RESULT_TABLE_REVIEW_PROMPT
 
 
 class BirdEvaluationLLM:
@@ -124,53 +65,6 @@ class BirdEvaluationLLM:
             base_url=self.config["provider"],
             timeout=120.0,
         )
-        self.messages: list[dict[str, Any]] = [
-            {"role": "system", "content": EVALUATION_AGENT_SYSTEM_PROMPT}
-        ]
-
-    def start(self, request: str) -> None:
-        self.messages.append({"role": "user", "content": request})
-
-    def next_action(self) -> EvaluationToolCall:
-        kwargs: dict[str, Any] = {
-            "model": self.config["model"],
-            "messages": self.messages,
-            "tools": EVALUATION_AGENT_TOOLS,
-        }
-        if self.config.get("thinking", False):
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-            kwargs["reasoning_effort"] = self.config.get("thinking_effort", "high")
-        else:
-            kwargs["temperature"] = self.config.get("temperature", 0.3)
-        dump_llm_context("evaluation_agent", kwargs)
-        response = self.client.chat.completions.create(**kwargs)
-        msg = response.choices[0].message
-        self.messages.append(msg.to_dict())
-        tool_calls = msg.tool_calls or []
-        if not tool_calls:
-            return EvaluationToolCall(None, {}, None, msg.content or "")
-        for skipped in tool_calls[1:]:
-            self.messages.append({
-                "role": "tool",
-                "tool_call_id": skipped.id,
-                "content": "本轮只执行第一个 evaluation agent 工具调用；此工具调用已跳过，请等待下一轮。",
-            })
-        call = tool_calls[0]
-        try:
-            arguments = json.loads(call.function.arguments or "{}")
-        except json.JSONDecodeError:
-            arguments = {}
-        return EvaluationToolCall(call.function.name, arguments, call.id, msg.content or "")
-
-    def add_tool_result(self, tool_call_id: str | None, content: str) -> None:
-        if tool_call_id:
-            self.messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": content,
-            })
-        else:
-            self.messages.append({"role": "user", "content": content})
 
     def answer_judge_question(self, question: str, context: str) -> str:
         kwargs: dict[str, Any] = {
@@ -196,6 +90,52 @@ class BirdEvaluationLLM:
         response = self.client.chat.completions.create(**kwargs)
         return response.choices[0].message.content or ""
 
+    def review_sql_output(self, case: BirdCase, sql: str, execution_preview: str | None = None) -> str | None:
+        kwargs: dict[str, Any] = {
+            "model": self.config["model"],
+            "messages": [
+                {"role": "system", "content": EVALUATION_AGENT_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": build_sql_output_review_request(case, sql, execution_preview=execution_preview),
+                },
+            ],
+        }
+        if self.config.get("thinking", False):
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["reasoning_effort"] = self.config.get("thinking_effort", "high")
+        else:
+            kwargs["temperature"] = self.config.get("temperature", 0.3)
+        dump_llm_context("evaluation_agent", kwargs)
+        response = self.client.chat.completions.create(**kwargs)
+        feedback = (response.choices[0].message.content or "").strip()
+        if not feedback or feedback.upper().startswith("OK"):
+            return None
+        return feedback
+
+    def review_select_result_table(self, case: BirdCase, sql: str, execution_preview: str | None = None) -> str | None:
+        kwargs: dict[str, Any] = {
+            "model": self.config["model"],
+            "messages": [
+                {"role": "system", "content": SELECT_RESULT_TABLE_REVIEW_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": build_select_result_table_review_request(case, sql, execution_preview=execution_preview),
+                },
+            ],
+        }
+        if self.config.get("thinking", False):
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["reasoning_effort"] = self.config.get("thinking_effort", "high")
+        else:
+            kwargs["temperature"] = self.config.get("temperature", 0.3)
+        dump_llm_context("select_result_table_evaluation_agent", kwargs)
+        response = self.client.chat.completions.create(**kwargs)
+        feedback = (response.choices[0].message.content or "").strip()
+        if not feedback or feedback.upper().startswith("OK"):
+            return None
+        return feedback
+
 
 class BirdEvaluationAgent:
     """Dataset-level agent that asks Pontis questions and reviews the answers."""
@@ -215,11 +155,13 @@ class BirdEvaluationAgent:
             judge_question_callback=self._answer_judge_question,
         )
         self.evaluation_agent = BirdEvaluationLLM(self.db_dir)
+        self._current_case: BirdCase | None = None
+        self._warned_guard_messages: set[str] = set()
 
     def _answer_judge_question(self, question: str, context: str) -> str:
         return self.evaluation_agent.answer_judge_question(question, context)
 
-    def run_case(self, case: BirdCase, *, max_attempts: int = 2) -> EvaluationResult:
+    def run_case(self, case: BirdCase) -> EvaluationResult:
         """Run one BIRD case by conversing with the generic Pontis agent."""
         token = set_context_dump_meta(
             run_id=os.environ.get("PONTIS_CONTEXT_RUN_ID"),
@@ -227,175 +169,99 @@ class BirdEvaluationAgent:
             question_id=case.question_id,
         )
         try:
-            return self._run_case(case, max_attempts=max_attempts)
+            return self._run_case(case)
         finally:
             reset_context_dump_meta(token)
 
-    def _run_case(self, case: BirdCase, *, max_attempts: int = 2) -> EvaluationResult:
-        """Run one BIRD case by conversing with the generic Pontis agent."""
+    def _run_case(self, case: BirdCase) -> EvaluationResult:
+        """Run one BIRD case with Pontis first, then post-hoc SQL reviewers."""
         attempts: list[CandidateReport] = []
         candidate: CandidateReport | None = None
-        self.evaluation_agent.start(build_business_initial_request(case))
+        self._current_case = case
+        self._warned_guard_messages = set()
         predicted_execution: set | str = "PARSE_ERROR"
         turn = 1
-        sql_attempts = 0
-        review_rejects = 0
-        plan_approved = False
+        llm_review_rounds = 0
+        max_llm_review_rounds = 2
 
-        for _ in range(max(6, max_attempts * 4)):
-            action = self.evaluation_agent.next_action()
-            if action.name == "plan":
-                if candidate is not None:
-                    self.evaluation_agent.add_tool_result(
-                        action.tool_call_id,
-                        "本题已经进入计划流程。请使用 `select_plan` 裁决当前 SQL plan，或使用 `reject` 修改最终 SQL。",
-                    )
-                    continue
-                message = build_pontis_plan_request(case)
-                candidate = self.pontis.plan(turn, message)
-            elif action.name == "select_plan":
-                if not candidate or not candidate.exit_plan_requested:
-                    self.evaluation_agent.add_tool_result(
-                        action.tool_call_id,
-                        "当前没有待裁决的 SQL plan。请先调用 `plan`。",
-                    )
-                    continue
-                decision = str(action.arguments.get("decision") or "").strip()
-                if decision == "reject_all_with_revision" and review_rejects >= 1:
-                    fallback_sql = self._extract_sql_from_exit_plan(candidate)
-                    if fallback_sql:
-                        hard_feedback = self._hard_guard_feedback(fallback_sql)
-                        if hard_feedback:
-                            candidate = self.pontis.reject(turn, hard_feedback)
-                            attempts.append(candidate)
-                            turn += 1
-                            plan_approved = False
-                            self.evaluation_agent.add_tool_result(
-                                action.tool_call_id,
-                                "候选 SQL 命中硬拦截，系统已要求 DBA agent 修改。\n\n"
-                                + self._format_candidate_for_evaluation_agent(
-                                    case, candidate, predicted_execution, plan_approved
-                                ),
-                            )
-                            continue
-                        candidate = self._with_predicted_sql(
-                            candidate,
-                            fallback_sql,
-                            action="use_review_limited_plan",
-                        )
-                        plan_approved = True
-                    else:
-                        self.evaluation_agent.add_tool_result(
-                            action.tool_call_id,
-                            "当前候选没有可解析 SQL，请拒绝并要求 DBA agent 重新提交唯一的 ```sql 代码块。",
-                        )
-                        continue
-                else:
-                    if decision == "reject_all_with_revision":
-                        review_rejects += 1
-                    decision_result = self._apply_plan_decision(turn, candidate, action.arguments)
-                    if isinstance(decision_result, str):
-                        self.evaluation_agent.add_tool_result(action.tool_call_id, decision_result)
-                        continue
-                    candidate, plan_approved = decision_result
-            elif action.name == "reject":
-                reason = str(action.arguments.get("reason") or "").strip()
-                if not reason:
-                    self.evaluation_agent.add_tool_result(action.tool_call_id, "reject 工具缺少 reason，请重新调用工具。")
-                    continue
-                candidate = self.pontis.reject(turn, reason)
-            elif candidate and candidate.predicted_sql and not isinstance(predicted_execution, str):
-                break
+        request = build_pontis_plan_request(case)
+        while True:
+            if candidate is None:
+                candidate = self.pontis.plan(turn, request)
             else:
-                self.evaluation_agent.add_tool_result(
-                    action.tool_call_id,
-                    "请调用 `plan`、`select_plan` 或 `reject` 继续评测流程。",
-                )
-                continue
-
+                candidate = self.pontis.reject(turn, request)
             attempts.append(candidate)
             turn += 1
 
-            if candidate.exit_plan_requested and not plan_approved:
-                self.evaluation_agent.add_tool_result(
-                    action.tool_call_id,
-                    self._format_candidate_for_evaluation_agent(case, candidate, predicted_execution, plan_approved),
+            sql = self._candidate_sql(candidate)
+            if not sql:
+                request = self._combine_review_feedback(
+                    evaluation_feedback="",
+                    select_feedback=None,
+                    guard_feedback=(
+                        "SQL 输出硬拦截：候选结果没有可解析 SQL；"
+                        "修改方式：重新提交唯一的 ```sql 代码块。"
+                    ),
                 )
                 continue
 
-            if candidate.predicted_sql:
-                hard_feedback = self._hard_guard_feedback(candidate.predicted_sql)
-                if hard_feedback:
-                    candidate = self.pontis.reject(turn, hard_feedback)
-                    attempts.append(candidate)
-                    turn += 1
-                    plan_approved = False
-                    self.evaluation_agent.add_tool_result(
-                        action.tool_call_id,
-                        "最终 SQL 命中硬拦截，系统已要求 DBA agent 修改。\n\n"
-                        + self._format_candidate_for_evaluation_agent(
-                            case, candidate, predicted_execution, plan_approved
-                        ),
-                    )
-                    continue
-                predicted_execution = execute_sql(self.db_path, candidate.predicted_sql)
-                sql_attempts += 1
-                if isinstance(predicted_execution, str) and sql_attempts < max_attempts:
-                    feedback = (
-                        "SQL 执行失败，必须修改后重新提交一个唯一的 ```sql 代码块。\n\n"
-                        f"执行错误：{predicted_execution}"
-                    )
-                    candidate = self.pontis.reject(turn, feedback)
-                    attempts.append(candidate)
-                    turn += 1
-                    plan_approved = False
-                    self.evaluation_agent.add_tool_result(
-                        action.tool_call_id,
-                        "已批准的 SQL 执行失败，系统已要求 DBA agent 重写。\n\n"
-                        + self._format_candidate_for_evaluation_agent(
-                            case, candidate, predicted_execution, plan_approved
-                        ),
-                    )
-                    continue
-                self.evaluation_agent.add_tool_result(
-                    action.tool_call_id,
-                    self._format_candidate_for_evaluation_agent(case, candidate, predicted_execution, plan_approved),
+            hard_guard_feedback = self._guard_feedback(sql, include_warnings=False)
+            if hard_guard_feedback:
+                request = self._combine_review_feedback(
+                    evaluation_feedback="",
+                    select_feedback=None,
+                    guard_feedback=hard_guard_feedback,
                 )
-                if not isinstance(predicted_execution, str):
-                    break
-                if isinstance(predicted_execution, str) and sql_attempts >= max_attempts:
-                    break
                 continue
 
-            self.evaluation_agent.add_tool_result(
-                action.tool_call_id,
-                self._format_candidate_for_evaluation_agent(case, candidate, predicted_execution, plan_approved),
+            candidate_execution = execute_sql(self.db_path, sql)
+            if isinstance(candidate_execution, str):
+                request = (
+                    "SQL 执行失败，必须修改后重新提交一个唯一的 ```sql 代码块。\n\n"
+                    f"执行错误：{candidate_execution}"
+                )
+                continue
+            execution_preview = format_execution_result(candidate_execution, limit=8)
+
+            review_feedback = None
+            if llm_review_rounds < max_llm_review_rounds:
+                evaluation_feedback = (
+                    None if self._count_distinct_warning_was_resolved(sql)
+                    else self._sql_output_feedback(sql, execution_preview=execution_preview)
+                )
+                select_feedback = self._select_result_table_feedback(sql, execution_preview=execution_preview)
+                if evaluation_feedback or select_feedback:
+                    llm_review_rounds += 1
+                    review_feedback = self._combine_review_feedback(
+                        evaluation_feedback=evaluation_feedback or "",
+                        select_feedback=select_feedback,
+                        guard_feedback=None,
+                    )
+
+            warning_feedback = self._guard_feedback(sql, include_warnings=True)
+            if review_feedback and warning_feedback:
+                review_feedback = review_feedback + "\n\n确定性 SQL 输出检查：\n" + warning_feedback
+            elif warning_feedback:
+                review_feedback = self._combine_review_feedback(
+                    evaluation_feedback="",
+                    select_feedback=None,
+                    guard_feedback=warning_feedback,
+                )
+
+            if review_feedback:
+                request = review_feedback
+                continue
+
+            candidate = self._with_predicted_sql(
+                candidate,
+                sql,
+                action="review_approved_sql",
             )
+            predicted_execution = candidate_execution
+            break
 
         if candidate is None:
             raise RuntimeError("No candidate generated")
-        if candidate.predicted_sql is None:
-            fallback_sql = self._extract_sql_from_exit_plan(candidate)
-            if fallback_sql:
-                hard_feedback = self._hard_guard_feedback(fallback_sql)
-                if hard_feedback:
-                    fallback_sql = None
-                    predicted_execution = "SQL_OUTPUT_GUARD_BLOCKED: " + hard_feedback
-            if fallback_sql:
-                candidate = CandidateReport(
-                    attempt=candidate.attempt,
-                    action="use_last_unapproved_plan",
-                    request=candidate.request,
-                    raw_response=candidate.raw_response,
-                    predicted_sql=fallback_sql,
-                    elapsed=candidate.elapsed,
-                    efficiency=candidate.efficiency,
-                    exit_plan_requested=candidate.exit_plan_requested,
-                    exit_plan_request=candidate.exit_plan_request,
-                    challenge_reports=candidate.challenge_reports,
-                    judge_report=candidate.judge_report,
-                )
-                predicted_execution = execute_sql(self.db_path, candidate.predicted_sql)
 
         golden_execution = execute_sql(self.db_path, case.golden_sql) if case.golden_sql else None
         correct = bool(golden_execution is not None and is_correct(predicted_execution, golden_execution))
@@ -436,94 +302,294 @@ class BirdEvaluationAgent:
             judge_report=candidate.judge_report,
         )
 
-    def _format_candidate_for_evaluation_agent(
-        self,
-        case: BirdCase,
-        candidate: CandidateReport,
-        predicted_execution: set | str,
-        plan_approved: bool,
-    ) -> str:
-        if candidate.exit_plan_requested:
-            args = (candidate.exit_plan_request or {}).get("arguments") or {}
-            plan_text = str(args.get("plan") or "").strip()
-            format_note = ""
-            if "```sql" not in plan_text.lower():
-                format_note = (
-                    "\n\n格式问题：候选 SQL 没有使用唯一的 ```sql 代码块提交。"
-                    "请先拒绝，并要求 DBA agent 仅用一个 ```sql 代码块重新提交完整 SQL。"
-                )
-            plan_sql = extract_sql(plan_text)
-            if plan_sql:
-                hard_feedback = self._hard_guard_feedback(plan_sql)
-                if hard_feedback:
-                    format_note += "\n\n硬拦截预检：\n" + hard_feedback + "\n"
-            return (
-                f"数据库项目：{case.db_id}\n"
-                f"业务问题：{case.question}\n"
-                f"补充提示：{case.evidence or '无额外提示'}\n\n"
-                "候选 SQL：\n"
-                f"{plan_text or '未提供 plan 内容。'}\n\n"
-                f"{format_note}"
-                "请审查候选 SQL。接受则调用 `select_plan`：decision=accept_candidate，candidate_id=1；"
-                "拒绝则调用 `select_plan`：decision=reject_all_with_revision，candidate_id=0，并给出修改建议。"
-            )
+    def _candidate_sql(self, candidate: CandidateReport) -> str | None:
         if candidate.predicted_sql:
-            status = "已批准计划" if plan_approved else "尚未批准计划"
-            if isinstance(predicted_execution, str):
-                execution = f"SQL 执行失败：{predicted_execution}"
-            else:
-                execution = "SQL 已成功执行。"
-            return (
-                f"数据库项目：{case.db_id}\n"
-                f"业务问题：{case.question}\n"
-                f"补充提示：{case.evidence or '无额外提示'}\n\n"
-                f"最终 SQL（{status}）：\n{candidate.predicted_sql}\n\n"
-                f"{execution}\n\n"
-                "如需修改请调用 `reject`；如满意请回复 DONE。"
-            )
-        return (
-            "DBA agent 没有提交 exit_plan，也没有输出 SQL。"
-            "请调用 `reject` 要求它先探索数据库并提交 SQL plan。"
-        )
-
-    def _apply_plan_decision(
-        self,
-        turn: int,
-        candidate: CandidateReport,
-        arguments: dict[str, Any],
-    ) -> tuple[CandidateReport, bool] | str:
-        decision = str(arguments.get("decision") or "").strip()
-        try:
-            candidate_id = int(arguments.get("candidate_id"))
-        except (TypeError, ValueError):
-            return "select_plan 工具的 candidate_id 必须是整数。"
-        feedback = str(arguments.get("feedback") or "").strip()
-
-        if decision == "accept_candidate":
-            if candidate_id == 1:
-                sql = self._extract_sql_from_exit_plan(candidate)
-                if sql:
-                    hard_feedback = self._hard_guard_feedback(sql)
-                    if hard_feedback:
-                        self.pontis.mark_schema_path_selected()
-                        return self.pontis.reject(turn, hard_feedback), False
-                self.pontis.mark_schema_path_selected()
-                return self.pontis.accept_candidate_plan(turn, candidate.exit_plan_request, feedback), True
-            return "candidate_id 超出范围。当前只有 candidate_id=1 可选。"
-
-        if decision == "reject_all_with_revision":
-            self.pontis.mark_schema_path_selected()
-            reason = (
-                "裁决结果：拒绝当前候选 SQL plan。\n\n"
-                f"拒绝原因：{feedback}"
-            )
-            return self.pontis.reject(turn, reason), False
-
-        return "select_plan 工具的 decision 必须是 accept_candidate 或 reject_all_with_revision。"
+            return candidate.predicted_sql
+        if candidate.exit_plan_requested:
+            return self._extract_sql_from_exit_plan(candidate)
+        return extract_sql(candidate.raw_response)
 
     @staticmethod
-    def _hard_guard_feedback(sql: str) -> str | None:
-        violations = bird_sql_output_violations(sql)
-        if not violations:
+    def _combine_review_feedback(
+        *,
+        evaluation_feedback: str,
+        select_feedback: str | None,
+        guard_feedback: str | None,
+    ) -> str:
+        sections = ["裁决结果：拒绝当前候选 SQL plan。"]
+        if evaluation_feedback:
+            sections.append("SQL 输出审查：\n" + evaluation_feedback)
+        if select_feedback:
+            sections.append("SELECT 结果表审查：\n" + select_feedback)
+        if guard_feedback:
+            sections.append("确定性 SQL 输出检查：\n" + guard_feedback)
+        return "\n\n".join(sections)
+
+    def _select_result_table_feedback(self, sql: str, execution_preview: str | None = None) -> str | None:
+        case = self._current_case
+        if not case:
             return None
-        return format_bird_sql_output_guard_feedback(violations)
+        return self.evaluation_agent.review_select_result_table(case, sql, execution_preview=execution_preview)
+
+    def _sql_output_feedback(self, sql: str, execution_preview: str | None = None) -> str | None:
+        case = self._current_case
+        if not case:
+            return None
+        return self.evaluation_agent.review_sql_output(case, sql, execution_preview=execution_preview)
+
+    def _guard_feedback(
+        self,
+        sql: str,
+        *,
+        include_warnings: bool = True,
+        mark_warnings: bool = True,
+    ) -> str | None:
+        case = self._current_case
+        result = bird_sql_output_guard(
+            sql,
+            question=case.question if case else "",
+            evidence=case.evidence if case else "",
+        )
+        hard = [*result.hard]
+        if case:
+            hard.extend(self._literal_value_feedback(sql))
+        if hard:
+            return format_bird_sql_output_guard_feedback(hard)
+        if not include_warnings:
+            return None
+        unseen_warnings = [
+            warning for warning in result.warnings
+            if warning not in self._warned_guard_messages
+        ]
+        if not unseen_warnings:
+            return None
+        if mark_warnings:
+            self._warned_guard_messages.update(unseen_warnings)
+        return format_bird_sql_output_guard_warning(unseen_warnings)
+
+    def _count_distinct_warning_was_resolved(self, sql: str) -> bool:
+        warned = any("COUNT(DISTINCT" in message for message in self._warned_guard_messages)
+        if not warned:
+            return False
+        return not re.search(r"\bCOUNT\s*\(\s*DISTINCT\b", sql, re.IGNORECASE)
+
+    _TABLE_ALIAS_RE = re.compile(
+        r"\b(?:FROM|JOIN)\s+(?P<table>[`\"\[]?[A-Za-z_][\w]*[`\"\]]?)"
+        r"(?:\s+(?:AS\s+)?(?P<alias>[A-Za-z_][\w]*))?",
+        re.IGNORECASE,
+    )
+    _STRING_EQ_RE = re.compile(
+        r"(?P<ref>(?:[A-Za-z_][\w]*\.)?[`\"\[]?[A-Za-z_][\w]*[`\"\]]?)\s*=\s*'(?P<value>[^']*)'",
+        re.IGNORECASE,
+    )
+
+    def _literal_value_feedback(self, sql: str) -> list[str]:
+        aliases = self._sql_table_aliases(sql)
+        if not aliases:
+            return []
+        messages: list[str] = []
+        try:
+            conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        except sqlite3.Error:
+            return []
+        try:
+            schema = self._table_columns(conn, set(aliases.values()))
+            for match in self._STRING_EQ_RE.finditer(sql):
+                ref = match.group("ref")
+                value = match.group("value")
+                resolved = self._resolve_column_ref(ref, aliases, schema)
+                if not resolved or not value:
+                    continue
+                table, column = resolved
+                replacement = self._existing_value_suggestion(conn, table, column, value)
+                if not replacement:
+                    continue
+                if replacement.endswith("%"):
+                    messages.append(
+                        f"`{table}.{column} = '{value}'` 使用了该列中不存在的时间字符串；修改方式：按数据库存储格式改为 `{table}.{column} LIKE '{replacement}'`。"
+                    )
+                    continue
+                messages.append(
+                    f"`{table}.{column} = '{value}'` 使用了该列中不存在的字符串值；修改方式：使用数据库中的实际值 `'{replacement}'`。"
+                )
+        finally:
+            conn.close()
+        return self._dedupe_messages(messages)
+
+    def _sql_table_aliases(self, sql: str) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        for match in self._TABLE_ALIAS_RE.finditer(sql):
+            table = self._strip_identifier_quotes(match.group("table"))
+            alias = match.group("alias")
+            aliases[table] = table
+            if alias and alias.upper() not in {"ON", "WHERE", "JOIN", "INNER", "LEFT", "GROUP", "ORDER", "LIMIT"}:
+                aliases[self._strip_identifier_quotes(alias)] = table
+        return aliases
+
+    @staticmethod
+    def _table_columns(conn: sqlite3.Connection, tables: set[str]) -> dict[str, set[str]]:
+        schema: dict[str, set[str]] = {}
+        for table in tables:
+            try:
+                rows = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+            except sqlite3.Error:
+                continue
+            schema[table] = {str(row[1]) for row in rows}
+        return schema
+
+    def _resolve_column_ref(
+        self,
+        ref: str,
+        aliases: dict[str, str],
+        schema: dict[str, set[str]],
+    ) -> tuple[str, str] | None:
+        clean = self._strip_identifier_quotes(ref)
+        if "." in clean:
+            alias, column = clean.split(".", 1)
+            table = aliases.get(alias)
+            if table and column in schema.get(table, set()):
+                return table, column
+            return None
+        matches = [(table, clean) for table, columns in schema.items() if clean in columns]
+        return matches[0] if len(matches) == 1 else None
+
+    def _existing_value_suggestion(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        value: str,
+    ) -> str | None:
+        if self._value_exists(conn, table, column, value):
+            return None
+        exact_case = self._single_value(
+            conn,
+            table,
+            column,
+            f'LOWER("{column}") = LOWER(?)',
+            (value,),
+        )
+        if exact_case:
+            return exact_case
+        time_prefix = self._time_literal_prefix_suggestion(conn, table, column, value)
+        if time_prefix:
+            return time_prefix
+        if ":" in value or len(value) < 3:
+            return None
+        distinct_count = self._distinct_count(conn, table, column)
+        if distinct_count is None or distinct_count > 500:
+            return None
+        return self._shortest_prefix_value(conn, table, column, value)
+
+    @staticmethod
+    def _value_exists(conn: sqlite3.Connection, table: str, column: str, value: str) -> bool:
+        try:
+            row = conn.execute(
+                f'SELECT 1 FROM "{table}" WHERE "{column}" = ? LIMIT 1',
+                (value,),
+            ).fetchone()
+        except sqlite3.Error:
+            return True
+        return row is not None
+
+    @staticmethod
+    def _single_value(
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        where_sql: str,
+        params: tuple[str, ...],
+    ) -> str | None:
+        try:
+            rows = conn.execute(
+                f'SELECT DISTINCT "{column}" FROM "{table}" WHERE {where_sql} AND "{column}" IS NOT NULL LIMIT 2',
+                params,
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+        if len(rows) == 1 and rows[0][0] is not None:
+            return str(rows[0][0])
+        return None
+
+    @staticmethod
+    def _distinct_count(conn: sqlite3.Connection, table: str, column: str) -> int | None:
+        try:
+            row = conn.execute(f'SELECT COUNT(DISTINCT "{column}") FROM "{table}"').fetchone()
+        except sqlite3.Error:
+            return None
+        return int(row[0]) if row else None
+
+    @staticmethod
+    def _shortest_prefix_value(
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        value: str,
+    ) -> str | None:
+        try:
+            rows = conn.execute(
+                f'''
+                SELECT DISTINCT "{column}"
+                FROM "{table}"
+                WHERE LOWER("{column}") LIKE LOWER(?) AND "{column}" IS NOT NULL
+                ORDER BY LENGTH("{column}") ASC, "{column}" ASC
+                LIMIT 2
+                ''',
+                (value + "%",),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+        if not rows or rows[0][0] is None:
+            return None
+        if len(rows) == 1:
+            return str(rows[0][0])
+        first = str(rows[0][0])
+        second = str(rows[1][0])
+        return first if len(first) < len(second) else None
+
+    @staticmethod
+    def _time_literal_prefix_suggestion(
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        value: str,
+    ) -> str | None:
+        match = re.fullmatch(r"0+:(\d{1,2}):(\d{2})", value)
+        if not match:
+            return None
+        prefix = f"{int(match.group(1))}:{match.group(2)}"
+        try:
+            rows = conn.execute(
+                f'''
+                SELECT DISTINCT "{column}"
+                FROM "{table}"
+                WHERE "{column}" LIKE ? AND "{column}" IS NOT NULL
+                ORDER BY "{column}" ASC
+                LIMIT 2
+                ''',
+                (prefix + "%",),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
+        if not rows or rows[0][0] is None:
+            return None
+        if len(rows) == 1:
+            return prefix + "%"
+        first = str(rows[0][0])
+        second = str(rows[1][0])
+        return prefix + "%" if first.startswith(prefix) and second.startswith(prefix) else None
+
+    @staticmethod
+    def _strip_identifier_quotes(identifier: str) -> str:
+        return identifier.strip().strip("`\"[]")
+
+    @staticmethod
+    def _dedupe_messages(messages: list[str]) -> list[str]:
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for message in messages:
+            if message in seen:
+                continue
+            seen.add(message)
+            deduped.append(message)
+        return deduped

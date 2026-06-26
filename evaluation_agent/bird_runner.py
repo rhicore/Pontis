@@ -47,9 +47,8 @@ def run_case(
     case: BirdCase,
     *,
     train: bool = False,
-    max_attempts: int = 2,
     main_agent_prompt: str | None = None,
 ) -> EvaluationResult:
     db_dir = get_db_base(train) / case.db_id
     agent = BirdEvaluationAgent(Path(db_dir), case.db_id, main_agent_prompt=main_agent_prompt)
-    return agent.run_case(case, max_attempts=max_attempts)
+    return agent.run_case(case)

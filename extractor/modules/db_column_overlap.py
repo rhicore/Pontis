@@ -91,7 +91,7 @@ def _generate_for_database(path: str, workspace: Workspace) -> bool:
                 'entity_name': col_ref,
                 'table': table_ref,
                 'column': col_name,
-                'data_type': col_meta.get("col_type", ""),
+                'data_type': _column_type_from_labels(col_meta),
                 'cardinality': cardinality,
             })
     if not columns_info:
@@ -264,6 +264,18 @@ def _column_payload(col: Dict) -> Dict:
         "column": col["column"],
         "type": col.get("data_type", ""),
     }
+
+
+def _column_type_from_labels(col_meta: Dict) -> str:
+    labels = col_meta.get("labels") or []
+    if isinstance(labels, str):
+        labels = [labels]
+    for label in labels:
+        label_text = str(label or "").strip()
+        if not label_text or label_text.lower() == "col":
+            continue
+        return label_text
+    return ""
 
 
 def _merge_overlap_evidence(overlaps: List[Dict]) -> List[Dict]:
