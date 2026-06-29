@@ -1,4 +1,4 @@
-"""Agent Text Chunk — 让 writer agent 为长文本创建 chunk 实体。
+"""Agent Text Chunk — 为长文本创建 chunk 实体。
 
 独立执行:
     python -m explorer.text_chunk ./my_data --file context/doc/report.md
@@ -98,7 +98,7 @@ update_meta({
 })
 ```
 
-源文件 summary 的读者是后续解题 agent：读完它应该知道这篇文档讲什么、哪些字段和规则重要、遇到歧义时该按什么口径解释。
+源文件 summary 的读者是后续数据分析流程：读完它应该知道这篇文档讲什么、哪些字段和规则重要、遇到歧义时该按什么口径解释。
 
 ## 子智能体任务模板
 
@@ -175,7 +175,7 @@ def generate(
     force: bool = False,
     **_: object,
 ) -> None:
-    """启动 writer agent，为文本文件生成 chunk 实体。"""
+    """启动 agent，为文本文件生成 chunk 实体。"""
     from agent.utils import load_agent_config
 
     config = load_agent_config(workspace.project_path)

@@ -13,7 +13,7 @@ DEFAULT_READONLY_PROMPTS = [
     "guardrail", "project", "readme",
 ]
 DEFAULT_READONLY_GUARDRAILS = [
-    "round_limit", "exploration_check", "query_abuse",
+    "round_limit", "exploration_check",
     "sql_check", "bridge_check", "disambig_check",
 ]
 
@@ -32,6 +32,7 @@ class AgentSpec:
     tools: List[str] = field(default_factory=list)
     prompts: List[str] = field(default_factory=list)
     guardrails: List[Guardrail] = field(default_factory=list)
+    query_mode: str = ""
 
 
 def create_agent(project_path: str, spec: AgentSpec = None,

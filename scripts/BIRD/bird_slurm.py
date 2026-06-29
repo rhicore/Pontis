@@ -43,15 +43,6 @@ TASKS = {
         "mem": "64G",
         "time": "1-00:00:00",
     },
-    "evaluation-agent": {
-        "module": "evaluation_agent.cli",
-        "default_job_name": "bird-eval-agent",
-        "args_name": "evaluation_agent_args",
-        "label": "BIRD evaluation agent",
-        "cpus": 16,
-        "mem": "64G",
-        "time": "1-00:00:00",
-    },
     "extract": {
         "module": "scripts.BIRD.extract",
         "default_job_name": "bird-extract",
@@ -141,7 +132,7 @@ def _selected_projects(args: argparse.Namespace) -> list[str]:
 
     config_path = Path(args.config).expanduser()
     task_args = _task_args(args)
-    if args.task in {"benchmark", "evaluation-agent"}:
+    if args.task == "benchmark":
         selected = _benchmark_db_filter(task_args)
         projects = selected or _configured_bird_dev_projects(config_path)
     else:

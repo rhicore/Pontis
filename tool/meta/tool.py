@@ -161,8 +161,8 @@ def _format_related_disambig_notice(
         return ""
 
     lines = [
-        "Guardrail",
-        "当前实体连接了消歧义实体；在使用该实体写 SQL 前必须先读取相关消歧义实体：",
+        "相关字段边界",
+        "当前实体连接了消歧义实体；相关字段边界见以下实体：",
     ]
     for meta in disambigs:
         display_ref = display_ref_for_node(workspace, project, meta)

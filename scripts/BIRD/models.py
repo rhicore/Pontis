@@ -1,4 +1,4 @@
-"""Typed data containers for dataset-level evaluation agents."""
+"""Typed data containers for BIRD benchmark runs."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ class BirdCase:
 
 @dataclass
 class CandidateReport:
-    """Pontis output for one attempt."""
+    """One Pontis SQL attempt."""
 
     attempt: int
     action: str
@@ -40,20 +40,19 @@ class CandidateReport:
     predicted_sql: str | None
     elapsed: float
     efficiency: dict[str, Any] = field(default_factory=dict)
-    exit_plan_requested: bool = False
-    exit_plan_request: dict[str, Any] | None = None
-    challenge_reports: list[Any] = field(default_factory=list)
-    judge_report: Any | None = None
 
 
 @dataclass
-class EvaluationResult:
-    """Final result for one externally supervised case."""
+class BirdRunResult:
+    """Final result for one BIRD case."""
 
     case: BirdCase
     candidate: CandidateReport
     result: str
     correct: bool
-    predicted_execution: set | str
-    golden_execution: set | str | None = None
+    predicted_execution: Any
+    golden_execution: Any = None
     attempts: list[CandidateReport] = field(default_factory=list)
+    strict_correct: bool = False
+    business_correct: bool = False
+    match_type: str = "not_compared"

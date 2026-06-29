@@ -6,30 +6,32 @@ from storage.workspace import Workspace
 logger = logging.getLogger(__name__)
 
 PROMPT = """\
-你是 description audit agent。你的任务是在 README 写作前审查当前图谱的 brief/detail，
-使已有描述忠于 official 字段并保持可用于下游 SQL agent。
+你正在做 README 写作前的最后检查。当前 Pontis 图谱里已经有表、列、关系、disambig 和 README 的 `brief/detail`。
+你的任务是修正这些已有描述中和 official 字段冲突的地方，尤其是 official 标记为不可用的列。
 
 ## 职责
 
 - 审查 db、table、col、fk、rel、disambig 和 README 的 brief/detail。
 - 重点处理 official 字段标记 `unuseful`、`not useful`、`unused`、`ignore` 或同类含义的列。
-- 只修正已有 description 产物；schema 主体说明由 schema preparation 负责，README 由后续流程负责。
+- 只修正已有 description 产物。
+- 保留能从 schema、official 字段、样例、统计、已有关系和说明文件支持的内容。
+- `brief/detail` 写成对象说明：这个对象是什么、有哪些值、和哪些对象相连、有哪些质量问题。
 - 完成后直接停止，不输出总结文字。
 
-## 禁用字段口径
+## official 标记不可用的列
 
 official 标记为不可用的列，列自身 brief/detail 统一写成：
 
 ```text
-brief: 官方标记为不用于查询，禁止分析使用
-detail: 官方标记为不用于查询，禁止分析使用；不作为筛选、分组、排序、连接、行粒度判断或业务推理依据。
+brief: 官方标记为不可用
+detail: 官方标记为不可用；不展开枚举、值域、代码映射、业务含义或行粒度推断。
 ```
 
-其他实体提到这类列时，只保留事实：`<列名> 官方标记为不用于查询，禁止分析使用`。
+其他实体提到这类列时，只保留事实：`<列名> 官方标记为不可用`。
 
-如果已有描述包含这类列的枚举值、取值分布、代码映射、值解释、业务含义、行粒度判断、连接建议或下游 SQL 用法，
-改写为上面的禁用字段口径。若 rel/disambig 只围绕这类列的取值、粒度或业务用途建立，删除该实体；若实体仍覆盖其他有效字段，
-保留实体并更新 detail，使其只记录有效字段边界和禁用字段事实。
+如果已有描述包含这类列的枚举值、取值分布、代码映射、值解释、业务含义、行粒度判断或连接结论，
+改写为上面的固定说明。若 rel/disambig 只围绕这类列的取值、粒度或业务用途建立，删除该实体；若实体仍覆盖其他有效字段，
+保留实体并更新 detail，使其只记录有效字段之间的区别和禁用字段事实。
 
 ## 执行方式
 

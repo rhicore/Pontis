@@ -27,7 +27,7 @@ PROMPT = """\
 
 2. 给这个 JSON 文件下的每个 `pattern` 实体写 summary：
    - brief：最多 50 字，概括该 JSON path 对应的结构片段。
-   - detail：说明该 JSON path 的结构、字段含义、数组/map 形态、关键约束、与父子结构的关系，以及后续解题时怎样使用它。
+   - detail：说明该 JSON path 的结构、字段含义、数组/map 形态、关键约束、与父子结构的关系，以及后续数据分析流程需要的结构事实。
 
 ## 必须使用 jd
 
@@ -138,7 +138,7 @@ def generate(
     *,
     force: bool = False,
 ) -> None:
-    """启动 writer agent，为 JSON 文件和 pattern 节点写 summary。"""
+    """启动 agent，为 JSON 文件和 pattern 节点写 summary。"""
     from agent.utils import load_agent_config
 
     config = load_agent_config(workspace.project_path)

@@ -66,7 +66,7 @@ class AgentExecutor:
         )
         sub_spec.guardrails = build_guardrails(
             sub_spec,
-            ["round_limit", "exploration_check", "query_abuse", "sql_check", "bridge_check", "disambig_check"],
+            ["round_limit", "exploration_check", "sql_check", "bridge_check", "disambig_check"],
         )
         sub_prompt = build_prompt_messages(sub_spec)
 

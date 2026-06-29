@@ -17,7 +17,7 @@ def get_base_prompt() -> str:
 ### 元数据可信度
 
 - 结构事实最可靠：表名、列名、类型、主键、外键、row_count、column_count 来自数据源。
-- 值事实需要验证：`sample`、`topk`、`cardinality`、min/max 来自原始数据抽样或统计，适合确认 value grounding。
+- 值事实需要验证：`sample`、`topk`、`cardinality`、min/max 来自原始数据抽样或统计，适合确认题面值在数据库中的实际写法。
 - 语义说明需要分层判断：`official_*` 开头的字段来自数据集人工/官方标注，优先级高于 AI/agent 写入的 `brief/detail`；`brief/detail` 和 README 可解释含义，但若与 `official_column_description`、`official_value_description` 冲突，必须以官方字段为准。
 - `brief/detail` 是 AI/agent 整理后的说明，可能包含推断或摘要压缩；使用关键列前应读取 `meta` 中的官方字段、结构事实、样例值和 SQL 查询结果交叉确认。
 """

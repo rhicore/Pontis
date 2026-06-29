@@ -15,6 +15,8 @@ import threading
 import time
 from pathlib import Path
 
+from scripts.BIRD.result_match import ExecutionResult
+
 
 DB_EXTS = (".sqlite", ".db", ".sqlite3", ".duckdb")
 
@@ -36,7 +38,7 @@ def extract_sql(text: str) -> str | None:
     return None
 
 
-def execute_sql(db_path: str, sql: str) -> set | str:
+def execute_sql(db_path: str, sql: str) -> ExecutionResult | str:
     timeout_sec = float(os.environ.get("PONTIS_BIRD_SQL_TIMEOUT_SEC", "30") or 30)
     first = _execute_sql_once(db_path, sql, timeout_sec)
     if not _is_sql_timeout(first):
@@ -50,7 +52,7 @@ def execute_sql(db_path: str, sql: str) -> set | str:
     return first
 
 
-def _execute_sql_once(db_path: str, sql: str, timeout_sec: float) -> set | str:
+def _execute_sql_once(db_path: str, sql: str, timeout_sec: float) -> ExecutionResult | str:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         if timeout_sec > 0:
@@ -61,14 +63,15 @@ def _execute_sql_once(db_path: str, sql: str, timeout_sec: float) -> set | str:
 
             conn.set_progress_handler(progress, 10000)
         cursor = conn.execute(sql)
-        rows = cursor.fetchall()
+        rows = tuple(tuple(r) for r in cursor.fetchall())
+        columns = tuple(item[0] for item in cursor.description or ())
         conn.close()
-        return set(tuple(r) for r in rows)
+        return ExecutionResult(columns=columns, rows=rows)
     except Exception as e:
         return f"ERROR: {e}"
 
 
-def _is_sql_timeout(result: set | str) -> bool:
+def _is_sql_timeout(result: ExecutionResult | str) -> bool:
     return isinstance(result, str) and "interrupted" in result.lower()
 
 
@@ -132,17 +135,17 @@ def _source_alias(source: str) -> str:
     return parts[-1].strip('"') if parts else ""
 
 
-def is_correct(predicted: set | str, golden: set | str) -> bool:
+def is_correct(predicted: ExecutionResult | str, golden: ExecutionResult | str) -> bool:
     if isinstance(predicted, str) or isinstance(golden, str):
         return False
-    return predicted == golden
+    return predicted.row_set == golden.row_set
 
 
-def format_execution_result(result: set | str, limit: int = 20) -> str:
+def format_execution_result(result: ExecutionResult | str, limit: int = 20) -> str:
     """Compact execution result for reflection prompts."""
     if isinstance(result, str):
         return result
-    rows = sorted(result, key=lambda row: tuple(str(item) for item in row))
+    rows = sorted(result.row_set, key=lambda row: tuple(str(item) for item in row))
     shown = rows[:limit]
     text = json.dumps(shown, ensure_ascii=False, default=str)
     if len(rows) > limit:

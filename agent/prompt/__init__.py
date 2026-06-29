@@ -13,6 +13,7 @@ from agent.prompt._tool import get_tool_prompt
 from agent.prompt._ontology import get_ontology_prompt
 from agent.prompt._effort import get_effort_prompt, VALID_EFFORTS
 from agent.prompt._sql import get_sql_rules
+from agent.prompt._bird import get_bird_sql_prompt
 from agent.prompt._guardrail import get_guardrail_guidance
 from agent.prompt._project import build_project_context
 from agent.prompt._README import build_readme_context
@@ -64,13 +65,17 @@ def build_prompt_parts(spec) -> list[str]:
         if guardrail:
             _append_part(parts, guardrail)
 
-    # 7. 当前项目上下文
+    # 7. BIRD benchmark 专用 SQL 风格；只由 BIRD runner 显式加载
+    if "bird" in spec.prompts:
+        _append_part(parts, get_bird_sql_prompt())
+
+    # 8. 当前项目上下文
     if "project" in spec.prompts:
         project = build_project_context(spec.project_path, spec=spec)
         if project:
             _append_part(parts, project)
 
-    # 8. 当前项目 README
+    # 9. 当前项目 README
     if "readme" in spec.prompts:
         readme = build_readme_context(spec.project_path, spec=spec)
         if readme:

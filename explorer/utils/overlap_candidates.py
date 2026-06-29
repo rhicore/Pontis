@@ -126,13 +126,10 @@ def _with_disambig_links(workspace: Workspace, columns: tuple[ColumnInfo, ...]) 
         WHERE 'col' IN coalesce(dc.labels, [])
         OPTIONAL MATCH (dt)--(dc)
         WHERE any(table_label IN coalesce(dt.labels, []) WHERE table_label IN ['table', 'view', 'csv_table'])
-        WITH col_ref, d, collect(DISTINCT coalesce(dt.name, '?') + '.' + dc.name) AS linked_cols
+        WITH col_ref, d
         WHERE d IS NOT NULL
         RETURN col_ref AS ref,
-               collect(DISTINCT {
-                 name: d.name,
-                 linked_cols: linked_cols
-               }) AS links
+               collect(DISTINCT d.name) AS links
         """,
         params={"refs": refs},
     )
@@ -140,10 +137,9 @@ def _with_disambig_links(workspace: Workspace, columns: tuple[ColumnInfo, ...]) 
     for row in rows:
         links = []
         for link in row.get("links") or []:
-            name = str(link.get("name") or "")
-            linked_cols = sorted(str(col) for col in (link.get("linked_cols") or []) if col)
-            if name and linked_cols:
-                links.append(f"{name}[{', '.join(linked_cols)}]"[:500])
+            name = str(link or "")
+            if name:
+                links.append(name)
         links_by_ref[str(row.get("ref") or "")] = tuple(sorted(set(links)))
 
     return tuple(

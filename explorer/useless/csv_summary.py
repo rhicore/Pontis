@@ -165,7 +165,7 @@ def generate(
     force: bool = False,
     profile: bool = True,
 ) -> None:
-    """启动 writer agent，为 CSV/TSV 文件和列节点写 summary。"""
+    """启动 agent，为 CSV/TSV 文件和列节点写 summary。"""
     from agent.utils import load_agent_config
 
     if profile:

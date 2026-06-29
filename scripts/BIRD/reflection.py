@@ -1,4 +1,4 @@
-"""Reflection classification for BIRD evaluation failures."""
+"""Reflection classification for BIRD SQL failures."""
 
 from __future__ import annotations
 
@@ -10,8 +10,7 @@ from openai import OpenAI
 
 from agent.utils import load_agent_config
 from scripts.BIRD.benchmark_runtime import format_execution_result
-
-from .models import BirdCase, EvaluationResult
+from scripts.BIRD.models import BirdCase, BirdRunResult
 
 
 REFLECTION_CATEGORIES = {
@@ -22,9 +21,9 @@ REFLECTION_CATEGORIES = {
 
 
 REFLECTION_SYSTEM_PROMPT = """\
-你是 BIRD Text-to-SQL 错误反思分类器。只做错误归因，不修改 SQL。
+你是 BIRD Text-to-SQL 错误反思分类器。任务是给失败样本做错误归因。
 
-只能选择一个 primary_category：
+primary_category 从以下三类中选择一个：
 - DB_EXPLORATION_FIXABLE：通过更充分的数据库探索、字段比较、值验证、连接路径检查可以修复。
 - DB_PRIOR_REQUIRED：需要 BIRD 数据集隐含标注偏好或题面没有给出的先验；数据库证据下存在多个合理解释。
 - BIRD_STYLE：主要违反 BIRD 输出口径或 SQL 风格，包括多余/缺失 SELECT 列、列顺序、DISTINCT、额外聚合、额外排序、额外过滤、数值格式化、题面公式尺度。
@@ -39,8 +38,7 @@ REFLECTION_SYSTEM_PROMPT = """\
 """
 
 
-def reflect_result(result: EvaluationResult, db_dir: Path, *, rounds: int = 1) -> dict[str, Any]:
-    case = result.case
+def reflect_result(result: BirdRunResult, db_dir: Path, *, rounds: int = 1) -> dict[str, Any]:
     prompt = _build_result_prompt(result)
     return _call_reflection_llm(db_dir, prompt, rounds=rounds)
 
@@ -61,7 +59,7 @@ def reflect_error(case: BirdCase, db_dir: Path, error: BaseException, *, rounds:
     return _call_reflection_llm(db_dir, prompt, rounds=rounds)
 
 
-def _build_result_prompt(result: EvaluationResult) -> str:
+def _build_result_prompt(result: BirdRunResult) -> str:
     case = result.case
     return "\n".join(
         [
@@ -113,7 +111,7 @@ def _call_reflection_llm(db_dir: Path, prompt: str, *, rounds: int = 1) -> dict[
         if parsed:
             return parsed
         messages.append({"role": "assistant", "content": last_text})
-        messages.append({"role": "user", "content": "请只输出符合要求的 JSON。"})
+        messages.append({"role": "user", "content": "输出符合要求的 JSON。"})
         kwargs["messages"] = messages
 
     return _fallback_reflection(last_text)

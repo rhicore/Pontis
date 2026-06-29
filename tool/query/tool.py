@@ -9,6 +9,9 @@ import sqlite3
 import tempfile
 import time
 
+import sqlglot
+from sqlglot import exp
+
 from tool.utils.workspace_access import resolve_file_sources, workspace_allows_direct_fs
 
 logger = logging.getLogger(__name__)
@@ -784,3 +787,199 @@ def query_command(workspace, sql: str, ref: str = "", limit: int = _DEFAULT_LIMI
             conn.close()
 
     return _format_query_result(columns, display_rows, has_more, limit)
+
+
+def single_table_fact_query_command(
+    workspace,
+    sql: str,
+    ref: str = "",
+    limit: int = _DEFAULT_LIMIT,
+) -> str:
+    """Execute a query after validating it is a single-table fact check."""
+
+    error = _single_table_fact_query_error(sql)
+    if error:
+        return error
+    return query_command(workspace, sql=sql, ref=ref, limit=limit)
+
+
+def structured_single_table_fact_query_command(
+    workspace,
+    *,
+    ref: str = "",
+    table: str,
+    operation: str,
+    column: str | None = None,
+    value=None,
+    order: str = "asc",
+    limit: int = _DEFAULT_LIMIT,
+) -> str:
+    """Build and execute a simple single-table fact check from structured args."""
+
+    table_sql = _quote_ident(table)
+    col_sql = _quote_ident(column) if column else None
+    limit = max(1, min(int(limit or _DEFAULT_LIMIT), _DEFAULT_LIMIT))
+
+    if operation == "count_rows":
+        sql = f"SELECT COUNT(*) AS row_count FROM {table_sql}"
+    elif operation == "distinct_values":
+        if not col_sql:
+            return "错误：distinct_values 需要 column。"
+        sql = (
+            f"SELECT DISTINCT {col_sql} AS value FROM {table_sql} "
+            f"WHERE {col_sql} IS NOT NULL ORDER BY {col_sql} LIMIT {limit}"
+        )
+    elif operation == "value_exists":
+        if not col_sql:
+            return "错误：value_exists 需要 column。"
+        sql = (
+            f"SELECT DISTINCT {col_sql} AS value FROM {table_sql} "
+            f"WHERE {col_sql} = {_sql_literal(value)} LIMIT {limit}"
+        )
+    elif operation == "count_where":
+        if not col_sql:
+            return "错误：count_where 需要 column。"
+        sql = (
+            f"SELECT COUNT(*) AS row_count FROM {table_sql} "
+            f"WHERE {col_sql} = {_sql_literal(value)}"
+        )
+    elif operation == "sample_values":
+        if not col_sql:
+            return "错误：sample_values 需要 column。"
+        sql = (
+            f"SELECT {col_sql} AS value FROM {table_sql} "
+            f"WHERE {col_sql} IS NOT NULL LIMIT {limit}"
+        )
+    elif operation == "extreme_values":
+        if not col_sql:
+            return "错误：extreme_values 需要 column。"
+        direction = "DESC" if str(order).lower() == "desc" else "ASC"
+        sql = (
+            f"SELECT {col_sql} AS value FROM {table_sql} "
+            f"WHERE {col_sql} IS NOT NULL ORDER BY {col_sql} {direction} LIMIT {limit}"
+        )
+    else:
+        return f"错误：未知 operation：{operation}"
+
+    return single_table_fact_query_command(workspace, sql=sql, ref=ref, limit=limit)
+
+
+def _sql_literal(value) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _single_table_fact_query_error(sql: str) -> str:
+    prefix = "错误：当前 query 仅用于单表局部事实验证。"
+    try:
+        parsed = sqlglot.parse_one(sql, read="sqlite")
+    except Exception as exc:
+        return f"{prefix} SQL 解析失败：{exc}"
+
+    if not isinstance(parsed, exp.Select):
+        return f"{prefix} 请使用单条 SELECT。"
+    if parsed.args.get("with"):
+        return f"{prefix} 请使用直接 SELECT。"
+    if parsed.args.get("joins"):
+        return f"{prefix} 请使用单表查询。"
+    for key in ("group", "having", "qualify", "cluster", "distribute", "sort"):
+        if parsed.args.get(key):
+            return f"{prefix} 请使用取值、去重、计数或少量样例查询。"
+    if parsed.args.get("offset"):
+        return f"{prefix} 请使用 LIMIT 查看少量样例。"
+    if (
+        list(parsed.find_all(exp.Subquery))
+        or list(parsed.find_all(exp.Union))
+        or list(parsed.find_all(exp.Window))
+    ):
+        return f"{prefix} 请使用单层查询。"
+
+    tables = list(parsed.find_all(exp.Table))
+    if len(tables) != 1:
+        return f"{prefix} 请引用一个表。"
+
+    expressions = list(parsed.expressions or [])
+    if not expressions:
+        return f"{prefix} SELECT 需要返回列或 COUNT。"
+    if len(expressions) > 3:
+        return f"{prefix} SELECT 最多返回 3 个字段用于样例核对。"
+
+    projected_columns = set()
+    count_columns = set()
+    count_exprs = 0
+    for expr0 in expressions:
+        if isinstance(expr0, exp.Alias):
+            expr0 = expr0.this
+        if isinstance(expr0, exp.Column):
+            projected_columns.add(_column_key(expr0))
+            continue
+        if isinstance(expr0, exp.Count):
+            count_exprs += 1
+            target = expr0.this
+            if isinstance(target, exp.Distinct):
+                distinct_cols = list(target.find_all(exp.Column))
+                if len(distinct_cols) != 1:
+                    return f"{prefix} COUNT(DISTINCT ...) 只支持单个列。"
+                count_columns.add(_column_key(distinct_cols[0]))
+            elif isinstance(target, exp.Column):
+                count_columns.add(_column_key(target))
+            elif not isinstance(target, exp.Star):
+                return f"{prefix} COUNT 只支持 COUNT(*)、COUNT(column) 或 COUNT(DISTINCT column)。"
+            continue
+        return f"{prefix} SELECT 只支持列和 COUNT。"
+
+    if count_exprs and len(expressions) > 1:
+        return f"{prefix} COUNT 查询只返回一个 COUNT。"
+
+    where = parsed.args.get("where")
+    if where:
+        if list(where.find_all(exp.And)) or list(where.find_all(exp.Or)):
+            return f"{prefix} WHERE 只用于单个局部条件验证，不组合多个业务条件。"
+        where_columns = {
+            _column_key(col)
+            for col in where.find_all(exp.Column)
+            if _column_key(col)
+        }
+        if len(where_columns) > 1:
+            return f"{prefix} WHERE 只引用一个字段做局部事实验证。"
+        if not count_exprs and len(expressions) > 1:
+            return f"{prefix} 带 WHERE 的样例查询只返回一个字段，避免形成多字段结果集合。"
+        if not count_exprs and projected_columns and not projected_columns.issubset(where_columns):
+            return f"{prefix} 带 WHERE 的样例查询只返回 WHERE 字段本身。"
+
+    referenced_columns = {
+        _column_key(col)
+        for col in parsed.find_all(exp.Column)
+        if _column_key(col)
+    }
+    if not referenced_columns and not count_exprs:
+        return f"{prefix} 请引用表中的字段。"
+
+    order = parsed.args.get("order")
+    if order:
+        if where:
+            return f"{prefix} ORDER BY 样例查询不和 WHERE 条件组合。"
+        if not parsed.args.get("limit"):
+            return f"{prefix} ORDER BY 搭配 LIMIT 查看少量样例。"
+        order_columns = {
+            _column_key(col)
+            for col in order.find_all(exp.Column)
+            if _column_key(col)
+        }
+        if not order_columns:
+            return f"{prefix} ORDER BY 使用字段。"
+        if projected_columns and not projected_columns.issubset(order_columns):
+            return f"{prefix} ORDER BY 样例查询只返回排序字段本身。"
+
+    return ""
+
+
+def _column_key(column: exp.Column) -> str:
+    table = column.table or ""
+    name = column.name or ""
+    return f"{table}.{name}" if table else name

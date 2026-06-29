@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Run BIRD through the external evaluation-agent flow.
+"""Run BIRD through a single Pontis agent.
 
 This script is only an orchestration layer: it loads BIRD cases, schedules
-workers, writes logs, and evaluates SQL execution equality.  BIRD-specific
-business rules live under ``evaluation_agent``; Pontis core remains a generic
-database agent.
+workers, writes logs, and evaluates SQL execution equality. BIRD-specific SQL
+style is loaded as a benchmark-only prompt section on the Pontis agent.
 """
 
 from __future__ import annotations
@@ -15,16 +14,16 @@ import logging
 import os
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+PONTIS_ROOT = Path(__file__).resolve().parents[2]
+TEXT2SQL_ROOT = PONTIS_ROOT.parent
+for _path in (PONTIS_ROOT, TEXT2SQL_ROOT / "tools"):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
-from evaluation_agent.bird_runner import load_bird_cases, run_case as run_eval_case
-from evaluation_agent.models import BirdCase, EvaluationResult
-from evaluation_agent.reflection import reflect_error, reflect_result
 from scripts.BIRD.benchmark_runtime import (
     ProgressTracker,
     aggregate_efficiency,
@@ -41,22 +40,12 @@ from scripts.BIRD.common import (
     get_run_name,
     set_run_id,
 )
+from scripts.BIRD.bird_runner import load_bird_cases, run_case
+from scripts.BIRD.models import BirdCase, BirdRunResult
+from scripts.BIRD.reflection import reflect_error, reflect_result
 
 
 logger = logging.getLogger(__name__)
-
-
-BIRD_MAIN_AGENT_SYSTEM_PROMPT = """\
-## BIRD benchmark
-
-你正在回答 BIRD Text-to-SQL benchmark 问题。
-
-user 会利用 plan 向你提交问题，完成数据库探索和 SQL 验证后，调用 `exit_plan` 提交结果。
-`exit_plan.plan` 只允许包含一个 `sql` 代码块，代码块内是完整 SQL；不要在 plan 中写解释、步骤、原因或查询结果。
-如被拒绝，必须优先按 evaluation agent 的反馈修改 SQL，并重新提交新的 SQL-only plan。
-即使你认为反馈与你的数据库探索结论或业务理解冲突，也先执行反馈；不要用解释、rebuttal、等价改写或另一种格式化写法绕开反馈。
-BIRD 中很多时间字段按原始文本存储。题面给出秒级时间但列值带毫秒或省略小时位时，优先按列中存储格式做前缀匹配，例如 `1:40%`，再基于匹配行回答。
-"""
 
 
 def parse_qids(raw: str | None) -> set[int] | None:
@@ -89,11 +78,22 @@ def cleanup_logs(db_map: dict[str, list[BirdCase]], *, train: bool) -> None:
     print("Cleanup done\n")
 
 
-def result_to_row(result: EvaluationResult, elapsed: float) -> dict:
+def _selected_correct(result: BirdRunResult, eval_mode: str) -> bool:
+    if eval_mode == "business":
+        return result.business_correct
+    return result.strict_correct
+
+
+def result_to_row(result: BirdRunResult, elapsed: float, *, eval_mode: str = "strict") -> dict:
     case = result.case
     efficiency = dict(result.candidate.efficiency or {})
+    selected_correct = _selected_correct(result, eval_mode)
+    selected_result = result.result
+    if selected_correct and not result.strict_correct:
+        selected_result = "BUSINESS_CORRECT"
     return {
         "run_id": get_run_id(),
+        "eval_mode": eval_mode,
         "db_id": case.db_id,
         "question_id": case.question_id,
         "difficulty": case.difficulty,
@@ -101,12 +101,14 @@ def result_to_row(result: EvaluationResult, elapsed: float) -> dict:
         "evidence": case.evidence,
         "golden_sql": case.golden_sql,
         "predicted_sql": result.candidate.predicted_sql,
-        "correct": result.correct,
-        "result": result.result,
+        "correct": selected_correct,
+        "strict_correct": result.strict_correct,
+        "business_correct": result.business_correct,
+        "relaxed_match_type": result.match_type,
+        "result": selected_result,
         "elapsed": round(elapsed, 1),
         "attempts": len(result.attempts),
         "final_action": result.candidate.action,
-        "final_exit_plan_requested": result.candidate.exit_plan_requested,
         **efficiency,
     }
 
@@ -118,9 +120,10 @@ def apply_reflection_to_row(row: dict, reflection: dict | None) -> dict:
     return row
 
 
-def error_row(case: BirdCase, elapsed: float, error: BaseException) -> dict:
+def error_row(case: BirdCase, elapsed: float, error: BaseException, *, eval_mode: str = "strict") -> dict:
     return {
         "run_id": get_run_id(),
+        "eval_mode": eval_mode,
         "db_id": case.db_id,
         "question_id": case.question_id,
         "difficulty": case.difficulty,
@@ -129,6 +132,9 @@ def error_row(case: BirdCase, elapsed: float, error: BaseException) -> dict:
         "golden_sql": case.golden_sql,
         "predicted_sql": None,
         "correct": False,
+        "strict_correct": False,
+        "business_correct": False,
+        "relaxed_match_type": "error",
         "result": "ERROR",
         "elapsed": round(elapsed, 1),
         "attempts": 0,
@@ -138,7 +144,7 @@ def error_row(case: BirdCase, elapsed: float, error: BaseException) -> dict:
 
 def write_case_log(
     bench_dir: Path,
-    result: EvaluationResult,
+    result: BirdRunResult,
     elapsed: float,
     reflection: dict | None = None,
 ) -> None:
@@ -148,6 +154,12 @@ def write_case_log(
         f"Database: {case.db_id}",
         f"Question: {case.question}",
         f"Evidence: {case.evidence or '(none)'}",
+        (
+            "Comparison: "
+            f"strict={result.strict_correct}, "
+            f"business={result.business_correct}, "
+            f"match_type={result.match_type}"
+        ),
         "",
         "Predicted SQL:",
         result.candidate.predicted_sql or "PARSE_ERROR",
@@ -176,7 +188,6 @@ def write_case_log(
                 "",
                 f"--- Attempt {attempt.attempt}",
                 f"Action: {attempt.action}",
-                f"Exit plan requested: {attempt.exit_plan_requested}",
                 f"Elapsed: {attempt.elapsed:.1f}s",
                 f"Efficiency: {json.dumps(attempt.efficiency, ensure_ascii=False, sort_keys=True)}",
                 "Request:",
@@ -219,6 +230,9 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]) -> None:
     correct = sum(1 for row in results if row.get("correct"))
     total = len(results)
     pct = correct / total * 100 if total else 0.0
+    strict = sum(1 for row in results if row.get("strict_correct"))
+    business = sum(1 for row in results if row.get("business_correct"))
+    match_types = Counter(str(row.get("relaxed_match_type") or "unknown") for row in results)
 
     by_diff: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     for row in results:
@@ -230,10 +244,19 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]) -> None:
     lines = [
         f"=== {db_id} Summary ===",
         f"Total: {correct}/{total} ({pct:.1f}%)",
+        f"Strict: {strict}/{total} ({strict / total * 100 if total else 0.0:.1f}%)",
+        f"Business relaxed: {business}/{total} ({business / total * 100 if total else 0.0:.1f}%)",
         format_efficiency_line(results),
         "",
-        "By difficulty:",
+        "Relaxed match types:",
     ]
+    for name, count in sorted(match_types.items()):
+        lines.append(f"  {name}: {count}")
+
+    lines.extend([
+        "",
+        "By difficulty:",
+    ])
     for diff in ["simple", "moderate", "challenging", "?"]:
         c, t = by_diff.get(diff, [0, 0])
         if t:
@@ -245,6 +268,7 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]) -> None:
         lines.append(
             f"  Q{row['question_id']} [{row.get('difficulty', '?')}] {status} "
             f"{row.get('elapsed', 0):.1f}s attempts={row.get('attempts', 0)} "
+            f"match={row.get('relaxed_match_type', 'unknown')} "
             f"rounds={row.get('llm_rounds', 0)} "
             f"cached_in={row.get('cached_input_tokens', 0)} "
             f"uncached_in={row.get('uncached_input_tokens', 0)} "
@@ -265,16 +289,33 @@ def write_total_summary(output_dir: Path, all_results: list[dict]) -> None:
     lines = ["=== BIRD Benchmark Summary ===", ""]
     total_correct = 0
     total_count = 0
+    total_strict = 0
+    total_business = 0
+    total_match_types: Counter[str] = Counter()
     for db_id in sorted(by_db):
         rows = by_db[db_id]
         correct = sum(1 for row in rows if row.get("correct"))
+        strict = sum(1 for row in rows if row.get("strict_correct"))
+        business = sum(1 for row in rows if row.get("business_correct"))
         total = len(rows)
         total_correct += correct
+        total_strict += strict
+        total_business += business
         total_count += total
+        total_match_types.update(str(row.get("relaxed_match_type") or "unknown") for row in rows)
         lines.append(f"Database: {db_id} - {correct}/{total} ({correct / total * 100:.1f}%)")
     pct = total_correct / total_count * 100 if total_count else 0.0
     lines.append(f"\nTotal: {total_correct}/{total_count} ({pct:.1f}%)")
+    lines.append(f"Strict: {total_strict}/{total_count} ({total_strict / total_count * 100 if total_count else 0.0:.1f}%)")
+    lines.append(
+        f"Business relaxed: {total_business}/{total_count} "
+        f"({total_business / total_count * 100 if total_count else 0.0:.1f}%)"
+    )
     lines.append(format_efficiency_line(all_results))
+
+    lines.append("\nRelaxed match types:")
+    for name, count in sorted(total_match_types.items()):
+        lines.append(f"  {name}: {count}")
 
     by_diff: dict[str, list[dict]] = defaultdict(list)
     for row in all_results:
@@ -295,11 +336,28 @@ def write_total_summary(output_dir: Path, all_results: list[dict]) -> None:
     print(f"\n{text}")
 
 
-def write_structured_outputs(output_dir: Path, all_results: list[dict]) -> None:
+def _metric_counts(rows: list[dict]) -> dict:
+    total = len(rows)
+    selected = sum(1 for row in rows if row.get("correct"))
+    strict = sum(1 for row in rows if row.get("strict_correct"))
+    business = sum(1 for row in rows if row.get("business_correct"))
+    return {
+        "total": total,
+        "correct": selected,
+        "accuracy": selected / total if total else 0.0,
+        "strict_correct": strict,
+        "strict_accuracy": strict / total if total else 0.0,
+        "business_correct": business,
+        "business_accuracy": business / total if total else 0.0,
+        "match_types": dict(sorted(Counter(str(row.get("relaxed_match_type") or "unknown") for row in rows).items())),
+    }
+
+
+def write_structured_outputs(output_dir: Path, all_results: list[dict], *, eval_mode: str) -> None:
     results_dir = output_dir / "results"
-    evaluation_dir = output_dir / "evaluation"
+    pontis_dir = output_dir / "pontis_agent"
     results_dir.mkdir(parents=True, exist_ok=True)
-    evaluation_dir.mkdir(parents=True, exist_ok=True)
+    pontis_dir.mkdir(parents=True, exist_ok=True)
 
     (results_dir / "results.jsonl").write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in all_results),
@@ -315,48 +373,39 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict]) -> None:
         encoding="utf-8",
     )
 
-    total = len(all_results)
-    correct = sum(1 for row in all_results if row.get("correct"))
     by_db: dict[str, list[dict]] = defaultdict(list)
     by_diff: dict[str, list[dict]] = defaultdict(list)
     for row in all_results:
         by_db[row.get("db_id", "unknown")].append(row)
         by_diff[row.get("difficulty") or "unknown"].append(row)
 
+    totals = _metric_counts(all_results)
     summary = {
         "run_id": get_run_id(),
-        "total": total,
-        "correct": correct,
-        "accuracy": correct / total if total else 0.0,
+        "eval_mode": eval_mode,
+        **totals,
         "performance": aggregate_efficiency(all_results),
         "by_database": {
-            db_id: {
-                "total": len(rows),
-                "correct": sum(1 for row in rows if row.get("correct")),
-                "accuracy": sum(1 for row in rows if row.get("correct")) / len(rows) if rows else 0.0,
-                "performance": aggregate_efficiency(rows),
-            }
+            db_id: {**_metric_counts(rows), "performance": aggregate_efficiency(rows)}
             for db_id, rows in sorted(by_db.items())
         },
         "by_difficulty": {
-            diff: {
-                "total": len(rows),
-                "correct": sum(1 for row in rows if row.get("correct")),
-                "accuracy": sum(1 for row in rows if row.get("correct")) / len(rows) if rows else 0.0,
-                "performance": aggregate_efficiency(rows),
-            }
+            diff: {**_metric_counts(rows), "performance": aggregate_efficiency(rows)}
             for diff, rows in sorted(by_diff.items())
         },
     }
-    (evaluation_dir / "evaluation.json").write_text(
+    (pontis_dir / "results.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
     lines = [
-        "# Pontis BIRD Evaluation",
+        "# Pontis BIRD Single Agent",
         "",
-        f"Total: {correct}/{total} ({summary['accuracy'] * 100:.2f}%)",
+        f"Eval Mode: {eval_mode}",
+        f"Total: {summary['correct']}/{summary['total']} ({summary['accuracy'] * 100:.2f}%)",
+        f"Strict: {summary['strict_correct']}/{summary['total']} ({summary['strict_accuracy'] * 100:.2f}%)",
+        f"Business Relaxed: {summary['business_correct']}/{summary['total']} ({summary['business_accuracy'] * 100:.2f}%)",
         "",
         "## Efficiency",
         "",
@@ -376,11 +425,20 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict]) -> None:
         ]
     )
     for db_id, item in summary["by_database"].items():
-        lines.append(f"- {db_id}: {item['correct']}/{item['total']} ({item['accuracy'] * 100:.2f}%)")
+        lines.append(
+            f"- {db_id}: {item['correct']}/{item['total']} ({item['accuracy'] * 100:.2f}%), "
+            f"strict={item['strict_correct']}, business={item['business_correct']}"
+        )
     lines.extend(["", "## By Difficulty"])
     for diff, item in summary["by_difficulty"].items():
-        lines.append(f"- {diff}: {item['correct']}/{item['total']} ({item['accuracy'] * 100:.2f}%)")
-    (evaluation_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        lines.append(
+            f"- {diff}: {item['correct']}/{item['total']} ({item['accuracy'] * 100:.2f}%), "
+            f"strict={item['strict_correct']}, business={item['business_correct']}"
+        )
+    lines.extend(["", "## Relaxed Match Types"])
+    for name, count in summary["match_types"].items():
+        lines.append(f"- {name}: {count}")
+    (pontis_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def run_database(
@@ -397,13 +455,9 @@ def run_database(
     def run_one(case: BirdCase) -> dict:
         started = time.time()
         try:
-            result = run_eval_case(
-                case,
-                train=args.train,
-                main_agent_prompt=BIRD_MAIN_AGENT_SYSTEM_PROMPT,
-            )
+            result = run_case(case, train=args.train)
             elapsed = time.time() - started
-            row = result_to_row(result, elapsed)
+            row = result_to_row(result, elapsed, eval_mode=args.eval_mode)
             reflection = None
             if args.reflection and not result.correct:
                 reflection = reflect_result(
@@ -440,7 +494,7 @@ def run_database(
                     }
             write_error_log(bench_dir, case, elapsed, exc, reflection=reflection)
             print(f"  Q{case.question_id} [{case.difficulty}] ERROR: {exc}")
-            return apply_reflection_to_row(error_row(case, elapsed, exc), reflection)
+            return apply_reflection_to_row(error_row(case, elapsed, exc, eval_mode=args.eval_mode), reflection)
 
     results: list[dict] = []
     correct_so_far = 0
@@ -465,7 +519,7 @@ def run_database(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run BIRD through the Pontis evaluation agent")
+    parser = argparse.ArgumentParser(description="Run BIRD through the single Pontis agent")
     parser.add_argument("--train", action="store_true", help="run BIRD train split; default is dev")
     parser.add_argument("--db", help="comma-separated database ids to run")
     parser.add_argument("--qids", help="comma-separated question ids to run")
@@ -474,6 +528,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db-workers", type=int, default=1, help="parallel databases")
     parser.add_argument("--reflection", action="store_true", help="classify failed cases into reflection categories")
     parser.add_argument("--reflection-rounds", type=int, default=1, help="retry rounds for reflection JSON output")
+    parser.add_argument(
+        "--eval-mode",
+        choices=["strict", "business"],
+        default="strict",
+        help="which correctness field drives summary correct; strict is official-style EX, business is relaxed matching",
+    )
     parser.add_argument("--run-id", help="output run id")
     parser.add_argument("--output-dir", type=Path, help="directory for structured results")
     return parser
@@ -504,7 +564,8 @@ def main() -> None:
     print(f"=== BIRD {mode_label} Benchmark ===")
     print(f"Databases: {len(by_db)}, Queries: {total_queries}")
     print(f"DB workers: {args.db_workers}, Query workers/db: {args.workers}")
-    print("Review policy: hard guard until fixed; warn once; LLM review up to 2 rounds")
+    print("Pipeline: Pontis single agent -> SQL execution retry")
+    print(f"Eval mode: {args.eval_mode}")
     print(f"Reflection: {'on' if args.reflection else 'off'}")
     print(f"Run id: {get_run_id()}")
     print(f"Runtime logs: {PONTIS_WORKSPACE_ROOT / 'runtime_logs' / get_run_name(args.train)}")
@@ -530,8 +591,8 @@ def main() -> None:
 
     if all_results:
         all_results.sort(key=lambda row: (row["db_id"], row["question_id"]))
-        write_total_summary(output_dir / "evaluation", all_results)
-        write_structured_outputs(output_dir, all_results)
+        write_total_summary(output_dir / "pontis_agent", all_results)
+        write_structured_outputs(output_dir, all_results, eval_mode=args.eval_mode)
 
 
 if __name__ == "__main__":

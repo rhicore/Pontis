@@ -4,6 +4,7 @@ Uses ToolRegistry pattern: tools are registered with (schema, executor) pairs,
 allowing each agent instance to use an explicit tool set.
 """
 import importlib
+import copy
 from typing import Callable, Dict, List, Tuple
 
 
@@ -505,6 +506,20 @@ def _exec_query(workspace, arguments: dict) -> str:
     )
 
 
+def _exec_single_table_fact_query(workspace, arguments: dict) -> str:
+    from tool.query.tool import structured_single_table_fact_query_command
+    return structured_single_table_fact_query_command(
+        workspace,
+        ref=arguments.get("ref", ""),
+        table=arguments["table"],
+        operation=arguments["operation"],
+        column=arguments.get("column"),
+        value=arguments.get("value"),
+        order=arguments.get("order", "asc"),
+        limit=arguments.get("limit", 20),
+    )
+
+
 def _exec_cypher(workspace, arguments: dict) -> str:
     from tool.cypher.tool import cypher_command
     return cypher_command(
@@ -614,7 +629,58 @@ def build_registry(spec) -> ToolRegistry:
             registry.register("agent", _get_agent_schema(),
                               AgentExecutor(registry, writable=writable_agent))
         elif name in readonly_schemas:
-            registry.register(name, readonly_schemas[name], _READONLY_EXECUTORS[name])
+            schema = readonly_schemas[name]
+            executor = _READONLY_EXECUTORS[name]
+            if name == "query" and getattr(spec, "query_mode", "") == "single_table_fact_check":
+                executor = _exec_single_table_fact_query
+                schema = copy.deepcopy(schema)
+                schema["function"]["description"] = (
+                    "执行结构化单表局部事实验证。适用范围：行数、字段枚举、值存在性、"
+                    "单字段条件计数、少量样例和极值样例。"
+                )
+                schema["function"]["parameters"] = {
+                    "type": "object",
+                    "properties": {
+                        "ref": {
+                            "type": "string",
+                            "description": "DB/CSV/TSV file graph ref, e.g. 'data.db:file:db'",
+                        },
+                        "table": {
+                            "type": "string",
+                            "description": "Single table name to inspect",
+                        },
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "count_rows",
+                                "distinct_values",
+                                "value_exists",
+                                "count_where",
+                                "sample_values",
+                                "extreme_values",
+                            ],
+                            "description": "Structured fact check operation",
+                        },
+                        "column": {
+                            "type": "string",
+                            "description": "Column name for column-based operations",
+                        },
+                        "value": {
+                            "description": "Literal value for value_exists or count_where",
+                        },
+                        "order": {
+                            "type": "string",
+                            "enum": ["asc", "desc"],
+                            "description": "Order for extreme_values",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max rows to return, default 20",
+                        },
+                    },
+                    "required": ["ref", "table", "operation"],
+                }
+            registry.register(name, schema, executor)
         elif name in write_schemas:
             registry.register(name, write_schemas[name], _WRITE_EXECUTORS[name])
 

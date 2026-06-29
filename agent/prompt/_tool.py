@@ -16,12 +16,50 @@ _TOOL_DESCRIPTIONS = {
 
 def get_tool_prompt(spec=None) -> str:
     tool_names = list(getattr(spec, "tools", []) or _TOOL_DESCRIPTIONS.keys())
+    query_mode = getattr(spec, "query_mode", "")
     lines = []
     for name in tool_names:
         desc = _TOOL_DESCRIPTIONS.get(name)
+        if name == "query" and query_mode == "single_table_fact_check":
+            desc = "执行结构化单表局部事实验证；用于行数、枚举、值存在性、单字段条件计数、少量样例和极值样例"
         if desc:
             lines.append(f"- **{name}**：{desc}")
     tool_list = "\n".join(lines)
+    if query_mode == "single_table_fact_check":
+        workflow_lines = [
+            "- `find` 定位实体，`meta` 读取实体语义和邻接，`query` 用结构化参数验证单表局部数据事实。",
+            "- ref 中 `/` 表示图边路径，`:` 表示当前路径段标签，`*` 表示名称通配，`project::ref` 限定项目。",
+            "- 路径段采用 `实体名:标签` 顺序，例如 `yearmonth:table`、`Consumption:col`、`status:col`。",
+            "- `find` 接受通配 ref，用来列实体和搜索；`meta` 接受单个实体 ref，用来读取该实体。",
+            "- `table` 只表示数据库表；CSV/TSV 表状摘要使用 `csv_table`。",
+            "- `find` 返回的第一列可直接给 `meta`；`meta` 的 Related 按标签分组，访问时用 `主节点ref/邻接名称:分组标签`。",
+            "- 列实体从表实体访问，形如 `db.sqlite:db/yearmonth:table/Consumption:col`；关系列实体和知识实体也遵循同一套图路径。",
+            "- 复用已有工具事实；新查询用于确认单表内的局部事实。",
+        ]
+        exploration_lines = [
+            "- 结构入口：`find` 找 db/table/col/fk/rel/knowledge/disambig，`meta` 读目标实体。",
+            "- 值验证：先用 `meta` 查看列语义、统计、样例和提示，再用 `query` 补充单表内的值事实。",
+            "- 常规实体定位和字段边界核对使用 `find`/`meta`。",
+        ]
+    else:
+        workflow_lines = [
+            "- `find` 定位实体，`meta` 读取实体语义和邻接，`query` 验证原始数据事实、局部条件行数、跨表匹配基数和值分布。",
+            "- ref 中 `/` 表示图边路径，`:` 表示当前路径段标签，`*` 表示名称通配，`project::ref` 限定项目。",
+            "- 路径段采用 `实体名:标签` 顺序，例如 `yearmonth:table`、`Consumption:col`、`status:col`。",
+            "- `find` 接受通配 ref，用来列实体和搜索；`meta` 接受单个实体 ref，用来读取该实体。",
+            "- `table` 只表示数据库表；CSV/TSV 表状摘要使用 `csv_table`。",
+            "- `find` 返回的第一列可直接给 `meta`；`meta` 的 Related 按标签分组，访问时用 `主节点ref/邻接名称:分组标签`。",
+            "- 列实体从表实体访问，形如 `db.sqlite:db/yearmonth:table/Consumption:col`；关系列实体和知识实体也遵循同一套图路径。",
+            "- 复用已有工具事实；新查询应验证新信息或排除具体疑点。",
+        ]
+        exploration_lines = [
+            "- 结构入口：`find` 找 db/table/col/fk/rel/knowledge/disambig，`meta` 读目标实体。",
+            "- 值验证：先用 `meta` 查看列语义、统计、样例和提示，再用 `query` 验证值是否存在、局部条件行数、连接前后行数和字段统计值。",
+            "- 文本证据：`grep` 定位，`read` 回读上下文；JSON 层级用 `jd` 展开。",
+            "- 图关系：复杂多跳关系用 `cypher`；常规实体定位和字段边界核对使用 `find`/`meta`。",
+        ]
+    workflow = "\n".join(workflow_lines)
+    exploration = "\n".join(exploration_lines)
 
     return f"""## 工具使用
 
@@ -31,22 +69,11 @@ def get_tool_prompt(spec=None) -> str:
 
 ### 工作协议
 
-- `find` 定位实体，`meta` 读取实体语义和邻接，`query` 验证原始数据和候选 SQL。
-- 列上的 `official_column_description`、`official_value_description` 是人工/官方标注，优先于 AI/agent 生成的 `brief/detail`；若二者冲突，以 official 字段为准。
-- ref 中 `/` 表示图边路径，`:` 表示当前路径段标签，`*` 表示名称通配，`project::ref` 限定项目。
-- 路径段采用 `实体名:标签` 顺序，例如 `yearmonth:table`、`Consumption:col`、`README:file`。
-- `find` 接受通配 ref，用来列实体和搜索；`meta` 接受单个实体 ref，用来读取该实体。
-- `table` 只表示数据库表；CSV/TSV 表状摘要使用 `csv_table`。
-- `find` 返回的第一列可直接给 `meta`；`meta` 的 Related 按标签分组，访问时用 `主节点ref/邻接名称:分组标签`。
-- 列实体从表实体访问，形如 `db.sqlite:db/yearmonth:table/Consumption:col`；关系列实体和知识实体也遵循同一套图路径。
-- 复用已有工具事实；新查询应验证新信息或排除具体疑点。
+{workflow}
 
 ### 探索主线
 
-- 结构入口：`find` 找 db/table/col/fk/rel/knowledge/disambig，`meta` 读目标实体。
-- 值验证：先用 `meta` 查看列语义、统计、样例和提示，再用 `query` 验证候选过滤、JOIN 和聚合。
-- 文本证据：`grep` 定位，`read` 回读上下文；JSON 层级用 `jd` 展开。
-- 图关系：复杂多跳关系用 `cypher`；常规 schema linking 优先用 `find`/`meta`。
+{exploration}
 
 ### 常用入口
 

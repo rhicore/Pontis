@@ -17,68 +17,52 @@ from explorer.utils.overlap_candidates import (
 logger = logging.getLogger(__name__)
 
 
-TEXT_NORMALIZATION_RULES = (
-    (("数据范围不值域重叠",), "数据范围不同"),
-    (("不值域重叠",), "不一致"),
-    (("值域高度值域重叠",), "值域高度重叠"),
-    (("<->", "↔"), " 与 "),
-    (("->",), " 到 "),
-    (("含义相同", "描述相同", "本质相同", "本质是同一", "同一概念"), "属于共同选择维度但字段边界不同"),
-    (("内容一致", "值一致", "值域完全相同", "值域完全一致", "完全一致", "基本一致", "高度一致"), "值域高度重叠但字段边界不同"),
-    (("相同值",), "重叠值"),
-    (("等价", "同义", "近似"), "需要按字段边界区分"),
-    (("可替代", "可互换", "互换", "任选", "任意选"), "需要按字段边界区分"),
-    (("一一对应", "对应关系"), "稳定映射"),
-    (("选任一字段均可", "选任一均可", "任一字段均可", "任一均可", "选任一"), "需要按输出和过滤语境选择字段"),
-    (("无差异", "不影响"), "差异较小但仍需按字段角色确认"),
-    (("可安全", "可无条件"), "经验证后"),
-    (("替代 JOIN", "绕过主键"), "候选连接"),
-)
-
-REVIEW_TEXT_MARKERS = tuple(marker for markers, _ in TEXT_NORMALIZATION_RULES for marker in markers)
-
-
 PROMPT = """\
-你的任务是把 overlap 候选整理成可复用的字段关系知识。常规产物是 `disambig`；候选列本身构成独立、稳定的行级连接键时写 `rel`。
+你是新来的数据分析师。当前 Pontis 图谱里已经有 `overlap` 候选，它们表示一些列的取值有交集。
+你的任务是逐组审查这些候选，并在需要时创建或更新 `disambig` / `rel` 实体。
 
-`overlap` 是候选证据，不是结论。字段名、official 描述和值域证据共同决定候选应成为字段选择边界、行级连接关系，还是保留为普通 overlap 线索。
+- `disambig` 用来记录容易混淆的表或列之间有什么不同。
+- `rel` 用来记录两个列可以稳定匹配同一批行或同一类对象。
+- 如果 overlap 只能说明值有交集，不能说明字段含义相近或行能稳定匹配，就保留为普通 overlap 线索。
 
 ## 判断原则
 
-- `disambig` 记录字段事实差异，帮助下游按自然语言语境选择正确字段。
-- `rel` 记录候选列自身提供的行级连接关系，适用于主键、外键、唯一标识或稳定业务编号。
-- 属性列、低基数枚举、bool、分类文本、描述文本、短代码和统计值重叠，优先作为字段选择边界审查。
+- `disambig` 记录相似字段的区别：来源表、每行代表什么、覆盖哪些行、编码和值格式、空值和值域。
+- `rel` 记录候选列自身提供的行级匹配关系，常见证据包括主键、外键、唯一标识或稳定业务编号。
+- 属性列、低基数枚举、bool、分类文本、描述文本、短代码和统计值重叠时，先比较这些字段各自是什么。
 - 已有主键、外键或更强连接能解释两表行级关系时，普通属性列 overlap 进入 `disambig` 审查。
-- 多个字段属于同一选择维度时，维护一个 group `disambig`，连接该维度下全部相关字段；独立二元选择使用 pair `disambig`。
-- 同结构槽位字段属于同一字段族，完整 group 包含全部槽位；低质量、空值多或官方标注不可用的槽位也进入 group，并在字段边界中写明使用风险。
-- 候选列的 `linked_disambig` 表示当前实际边覆盖；detail 文字只解释字段边界，覆盖范围由连接列决定。
+- 多个字段属于同一组容易混淆字段时，维护一个 group `disambig`，连接这一组里的全部相关字段；独立二元选择使用 pair `disambig`。
+- 同结构槽位字段属于同一字段族，完整 group 包含全部槽位；低质量、空值多或官方标注不可用的槽位也进入 group，并写明空值率、覆盖范围和官方可用性。
+- 候选列的 `linked_disambig` 表示当前实际边覆盖；detail 文字只解释已连接字段，覆盖范围由连接列决定。
 - 候选组出现“部分字段已连接到同一 disambig、其余字段未连接”的覆盖缺口时，优先整理成完整 group。
 
-## 审查口径
+## 要比较的内容
 
-- 优先使用 `official_column_description` 和 `official_value_description`，再参考 agent 写入的 `brief/detail`。
-- 字段差异包括来源表、行粒度、覆盖范围、编码体系、值域、空值、行过滤、输出角色、连接后果和统计口径。
-- 代码列、名称列、类型列、状态列、范围端点列、同结构槽位列、跨表同名/近名列，按字段选择维度审查。
-- 数值范围偶然相交且自然语言入口、输出角色、过滤角色和连接后果均不相交的候选，保留为 overlap 线索。
-- `rel` 需要元数据或查询结果证明等值连接能保持正确行级基数，并且连接语义独立于已有更强键。
+- 字段说明来源包括 `official_column_description`、`official_value_description`、brief/detail、样例值和统计事实。
+- 字段差异包括来源表、行粒度、覆盖范围、编码体系、值域、空值、行过滤、存储类别、连接后的行数变化和统计含义。
+- 代码列、名称列、类型列、状态列、范围端点列、同结构槽位列、跨表同名/近名列，按它们在数据库里的实际含义比较。
+- 数值范围偶然相交且来源表、行粒度、覆盖范围、存储类别和值域事实均不相交的候选，保留为 overlap 线索。
+- `rel` 需要元数据或查询结果证明候选列之间存在稳定行级匹配，并且这个匹配关系不是已有主键/外键的重复说明。
+- 写入内容聚焦数据库对象本身：字段含义、值域证据、来源表、覆盖行数、空值、行粒度、稳定匹配关系或外键引用。
+- 两个字段值集相同或高度重叠时，仍按来源表、存储类别、覆盖行集合、空值和连接基数分别记录。
 
 ## 写入格式
 
-`disambig` detail 写成固定结构：选择维度、字段边界、选择规则、错误后果、值域证据。
+`disambig` detail 写成固定结构：比较主题、各字段区别、混用会改变哪些行或值、值域证据。
 
-brief/detail 只写数据库事实：每个字段是什么、差异维度是什么、什么语境选哪个字段、错误选择会造成什么 SQL 后果。
+brief/detail 写清每个字段是什么、它们在哪些地方相似、主要区别是什么、各自覆盖哪些行和值、连接后行数是否会变化。
 
-输出统一使用字段边界口径。多个字段共享值域或业务维度时，写成“共同选择维度下的不同字段边界”，并列出每个字段的来源、覆盖范围、适用语境和错误后果。
+多个字段共享值域或业务维度时，写成“同一主题下的不同字段”，并列出每个字段的来源、覆盖范围和值域证据。`rel` 写成行级匹配关系，说明匹配列、覆盖范围、唯一性和基数证据。
 
-已有 `disambig` 能承载当前选择维度时，整理成完整 group；连接列不完整时删除旧实体并用 `create_entity.edges` 重建。创建实体时只连接涉及字段，edge ref 使用列路径。
+已有 `disambig` 能说明当前这组容易混淆字段时，整理成完整 group；连接列不完整时删除旧实体并用 `create_entity.edges` 重建。创建实体时只连接涉及字段，edge ref 使用列路径。
 
-实体 ref 使用简短 snake_case 名称加标签，例如 `school_name_choice:disambig`、`stable_identifier_join:rel`。中文写 brief/detail，措辞强调边界和差异，使下游按事实选择字段。
+实体 ref 使用简短 snake_case 名称加标签，例如 `school_name_boundary:disambig`、`stable_identifier_join:rel`。中文写 brief/detail，措辞强调边界和差异。
 """
 
 
 CANDIDATE_PROMPT_HEADER = (
     "## 待审查 relation/disambiguation 候选\n\n"
-    "逐组判断候选应写为完整 group disambig、pair disambig、rel，或保留为 overlap 线索。\n"
+    "逐组整理候选事实，决定写为完整 group disambig、pair disambig、rel，或保留为 overlap 线索。\n"
     "`linked_disambig` 展示当前实际边覆盖；候选字段缺少对应覆盖时，整理或重建相关 disambig。\n"
 )
 
@@ -203,68 +187,9 @@ def generate(workspace: Workspace) -> dict:
             len(batch),
         )
         batch_agent.chat(f"{PROMPT}\n\n{candidate_prompt}")
-        _normalize_review_entities(workspace)
         _add_metrics(total_metrics, _preprocess_metrics(batch_agent))
-    _normalize_review_entities(workspace)
     logger.info("=== Agent Relation/Disambiguation Review done ===")
     return total_metrics
-
-
-def _normalize_review_entities(workspace: Workspace) -> None:
-    """Keep rel/disambig writeback safe for downstream schema linking."""
-    _delete_misleading_rel_entities(workspace)
-    _rewrite_misleading_disambig_text(workspace)
-
-
-def _delete_misleading_rel_entities(workspace: Workspace) -> None:
-    workspace.cypher(
-        """
-        MATCH (n)
-        WHERE 'rel' IN coalesce(n.labels, [])
-          AND any(marker IN $markers WHERE
-            coalesce(n.name, '') CONTAINS marker
-            OR coalesce(n.brief, '') CONTAINS marker
-            OR coalesce(n.detail, '') CONTAINS marker
-        )
-        DETACH DELETE n
-        """,
-        params={"markers": list(REVIEW_TEXT_MARKERS)},
-    )
-
-
-def _rewrite_misleading_disambig_text(workspace: Workspace) -> None:
-    rows = workspace.cypher(
-        """
-        MATCH (n)
-        WHERE 'disambig' IN coalesce(n.labels, [])
-        RETURN id(n) AS id, n.brief AS brief, n.detail AS detail
-        """
-    )
-    for row in rows:
-        fields = {}
-        brief = _rewrite_text(str(row.get("brief") or ""))
-        detail = _rewrite_text(str(row.get("detail") or ""))
-        if brief != str(row.get("brief") or ""):
-            fields["brief"] = brief
-        if detail != str(row.get("detail") or ""):
-            fields["detail"] = detail
-        if not fields:
-            continue
-        workspace.cypher(
-            """
-            MATCH (n)
-            WHERE id(n) = $id
-            SET n += $fields
-            """,
-            params={"id": row["id"], "fields": fields},
-        )
-
-
-def _rewrite_text(text: str) -> str:
-    for markers, replacement in TEXT_NORMALIZATION_RULES:
-        for marker in markers:
-            text = text.replace(marker, replacement)
-    return text
 
 
 def _preprocess_metrics(agent) -> dict:

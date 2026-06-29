@@ -8,7 +8,6 @@ from agent.guardrail_api import CallVerdict, GuardrailContext, Guardrail, PostTo
 def build_guardrails(spec, builder_names: list = None) -> list:
     """根据 builder 名称列表构建 guardrail 列表。"""
     from agent.guardrail.round_limit import RoundLimit
-    from agent.guardrail.tool_abuse import ToolAbuse
     from agent.guardrail.exploration_check import ExplorationCheck
     from agent.guardrail.sql_check import SQLEntityCheck
     from agent.guardrail.sql_final_validity_check import FinalSQLValidityCheck
@@ -20,7 +19,6 @@ def build_guardrails(spec, builder_names: list = None) -> list:
         "round_limit": lambda: RoundLimit(
             spec.max_rounds or get_effort_max_rounds(spec.effort)
         ),
-        "query_abuse": lambda: ToolAbuse("query", total_limit=5, consecutive_limit=3),
         "exploration_check": lambda: ExplorationCheck(),
         "sql_check": lambda: SQLEntityCheck(),
         "final_sql_validity_check": lambda: FinalSQLValidityCheck(),
