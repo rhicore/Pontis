@@ -132,7 +132,7 @@ def _relation_detail_fallback(meta_dict: Dict[str, Any], labels: List[str]) -> O
                 parts.append(f"{key}={value}")
         if parts:
             lines.append("重叠统计: " + ", ".join(parts))
-        lines.append("该关系仅表示值域重叠，不应直接当作 JOIN 条件；需结合 fk/rel/disambig 再判断。")
+        lines.append("该关系记录列值集合的交集；行级匹配关系由 fk/rel/disambig 等其他实体记录。")
 
     if not lines:
         return None

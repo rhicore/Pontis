@@ -1,5 +1,6 @@
 """Query tool — execute read-only SQL over DB or tabular file refs."""
 import csv
+import difflib
 import hashlib
 import json
 import logging
@@ -68,11 +69,357 @@ def _is_readonly_sql(sql: str) -> bool:
     return False
 
 
-def _sqlite_error_hint(sql: str, error: Exception) -> str:
+def _sqlite_compatible_sql(sql: str) -> str:
+    try:
+        parsed = sqlglot.parse_one(sql, read="sqlite")
+    except Exception:
+        return sql
+    if not parsed.args.get("offset") or parsed.args.get("limit"):
+        return sql
+    normalized = parsed.sql(dialect="sqlite")
+    return re.sub(
+        r"\bOFFSET\s+(.+?)\s*;?\s*$",
+        r"LIMIT -1 OFFSET \1",
+        normalized,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+
+def _sqlite_quote_unquoted_schema_columns(conn: sqlite3.Connection, sql: str) -> str:
+    rewritten = sql
+    special_columns = sorted(
+        {
+            col
+            for _, col in _sqlite_columns(conn)
+            if re.search(r"[\s()%-]", col)
+        },
+        key=len,
+        reverse=True,
+    )
+    for column in special_columns:
+        token_pattern = r"\s+".join(re.escape(part) for part in column.split())
+        pattern = re.compile(
+            rf"(?<![\"'`\[])\b{token_pattern}\b(?![\"'`\]])",
+            flags=re.IGNORECASE,
+        )
+        rewritten = pattern.sub(_quote_ident(column), rewritten)
+    return rewritten
+
+
+def _sqlite_table_names(conn: sqlite3.Connection) -> list[str]:
+    names: list[str] = []
+    for catalog in ("sqlite_master", "sqlite_temp_master"):
+        try:
+            rows = conn.execute(
+                f"SELECT name FROM {catalog} "
+                "WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        except sqlite3.Error:
+            continue
+        for (name,) in rows:
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def _sqlite_columns(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    columns: list[tuple[str, str]] = []
+    for table in _sqlite_table_names(conn):
+        try:
+            rows = conn.execute(f"PRAGMA table_info({_quote_ident(table)})").fetchall()
+        except sqlite3.Error:
+            continue
+        for row in rows:
+            if len(row) > 1:
+                columns.append((table, str(row[1])))
+    return columns
+
+
+def _close_schema_matches(
+    missing: str,
+    candidates: list[tuple[str, str]],
+    *,
+    limit: int = 8,
+) -> list[str]:
+    wanted = (missing or "").split(".")[-1].strip('"`[] ')
+    if not wanted:
+        return []
+    by_lower = {col.lower(): (table, col) for table, col in candidates}
+    exact = by_lower.get(wanted.lower())
+    if exact:
+        return [f"{exact[0]}.{exact[1]}"]
+    matches = difflib.get_close_matches(
+        wanted.lower(),
+        list(by_lower.keys()),
+        n=limit,
+        cutoff=0.55,
+    )
+    return [f"{by_lower[key][0]}.{by_lower[key][1]}" for key in matches]
+
+
+def _referenced_tables(sql: str) -> set[str]:
+    try:
+        parsed = sqlglot.parse_one(sql, read="sqlite")
+    except Exception:
+        return set()
+    return {
+        table.name
+        for table in parsed.find_all(exp.Table)
+        if table.name
+    }
+
+
+def _sqlite_schema_hint(conn: sqlite3.Connection | None, sql: str, error: Exception) -> str:
+    if conn is None:
+        return ""
+    message = str(error)
+    lower = message.lower()
+    if "no such column" in lower:
+        missing = message.split(":", 1)[-1].strip()
+        all_columns = _sqlite_columns(conn)
+        referenced = _referenced_tables(sql)
+        scoped_columns = [
+            item for item in all_columns
+            if item[0] in referenced or item[0].split("__")[-1] in referenced
+        ]
+        matches = _close_schema_matches(missing, scoped_columns or all_columns)
+        if scoped_columns:
+            global_matches = [
+                item for item in _close_schema_matches(missing, all_columns)
+                if item not in matches
+            ]
+            matches.extend(global_matches[: max(0, 8 - len(matches))])
+        if matches:
+            return f"找不到字段 `{missing}`；近似可用字段: {', '.join(matches)}。"
+    if "no such table" in lower:
+        missing = message.split(":", 1)[-1].strip()
+        tables = _sqlite_table_names(conn)
+        by_lower = {table.lower(): table for table in tables}
+        matches = difflib.get_close_matches(missing.lower(), list(by_lower.keys()), n=8, cutoff=0.55)
+        if matches:
+            return f"找不到表 `{missing}`；近似可用表: {', '.join(by_lower[key] for key in matches)}。"
+    return ""
+
+
+def _sqlite_unknown_column_precheck(conn: sqlite3.Connection, sql: str) -> str:
+    """Return a corrective message when a query references known-missing columns."""
+    try:
+        parsed = sqlglot.parse_one(sql, read="sqlite")
+    except Exception:
+        return ""
+
+    schema: dict[str, set[str]] = {}
+    original_columns: dict[str, dict[str, str]] = {}
+    original_table_names: dict[str, str] = {}
+    for table in _sqlite_table_names(conn):
+        try:
+            rows = conn.execute(f"PRAGMA table_info({_quote_ident(table)})").fetchall()
+        except sqlite3.Error:
+            continue
+        lowered = str(table).lower()
+        original_table_names[lowered] = str(table)
+        original_columns[lowered] = {
+            str(row[1]).lower(): str(row[1])
+            for row in rows
+            if len(row) > 1
+        }
+        schema[lowered] = set(original_columns[lowered])
+
+    if not schema:
+        return ""
+
+    alias_to_table: dict[str, str] = {}
+    referenced_tables: set[str] = set()
+    for table_exp in parsed.find_all(exp.Table):
+        table_name = table_exp.name
+        if not table_name:
+            continue
+        table_key = table_name.lower()
+        if table_key not in schema:
+            continue
+        referenced_tables.add(table_key)
+        alias_to_table[table_key] = table_key
+        alias = table_exp.alias
+        if alias:
+            alias_to_table[alias.lower()] = table_key
+
+    if not referenced_tables:
+        return ""
+
+    select_aliases = {
+        alias.lower()
+        for alias in (
+            item.alias
+            for select in parsed.find_all(exp.Select)
+            for item in select.expressions
+        )
+        if alias
+    }
+
+    all_columns = _sqlite_columns(conn)
+    missing: list[str] = []
+    for column in parsed.find_all(exp.Column):
+        if column.is_star:
+            continue
+        name = column.name
+        if not name:
+            continue
+        if not column.table and name.lower() in select_aliases:
+            continue
+        qualifier = (column.table or "").lower()
+        if qualifier:
+            table_key = alias_to_table.get(qualifier)
+            if not table_key:
+                continue
+            if name.lower() not in schema.get(table_key, set()):
+                missing.append(f"{original_table_names.get(table_key, table_key)}.{name}")
+            continue
+        if not any(name.lower() in schema.get(table_key, set()) for table_key in referenced_tables):
+            missing.append(name)
+
+    if not missing:
+        return ""
+
+    unique_missing = []
+    for item in missing:
+        if item not in unique_missing:
+            unique_missing.append(item)
+    hint_parts = []
+    for item in unique_missing[:5]:
+        matches = []
+        if "." not in item and len(referenced_tables) == 1:
+            table_key = next(iter(referenced_tables))
+            table_columns = sorted(schema.get(table_key, set()))
+            close = difflib.get_close_matches(item.lower(), table_columns, n=5, cutoff=0.35)
+            matches = [
+                f"{original_table_names.get(table_key, table_key)}.{original_columns.get(table_key, {}).get(col, col)}"
+                for col in close
+            ]
+        if not matches:
+            matches = _close_schema_matches(item, all_columns, limit=5)
+        if matches:
+            hint_parts.append(f"{item} -> {', '.join(matches)}")
+        else:
+            hint_parts.append(item)
+    return (
+        "查询未执行：SQL 引用了当前表中不存在的字段。"
+        f"请复制 schema 里的精确字段名；可参考: {'; '.join(hint_parts)}。"
+    )
+
+
+def _sqlite_non_numeric_aggregate_precheck(conn: sqlite3.Connection, sql: str) -> str:
+    try:
+        parsed = sqlglot.parse_one(sql, read="sqlite")
+    except Exception:
+        return ""
+
+    aggregates = [
+        node for node in parsed.walk()
+        if isinstance(node, (exp.Avg, exp.Min, exp.Max))
+        and isinstance(node.this, exp.Column)
+    ]
+    if not aggregates:
+        return ""
+
+    schema_tables = {table.lower(): table for table in _sqlite_table_names(conn)}
+    alias_to_table: dict[str, str] = {}
+    referenced_tables: list[str] = []
+    for table_exp in parsed.find_all(exp.Table):
+        table_name = table_exp.name
+        if not table_name:
+            continue
+        table_key = table_name.lower()
+        if table_key not in schema_tables:
+            continue
+        original = schema_tables[table_key]
+        referenced_tables.append(original)
+        alias_to_table[table_key] = original
+        if table_exp.alias:
+            alias_to_table[table_exp.alias.lower()] = original
+
+    unique_tables = list(dict.fromkeys(referenced_tables))
+    for aggregate in aggregates:
+        column = aggregate.this
+        column_name = column.name
+        if not column_name:
+            continue
+        table_name = None
+        if column.table:
+            table_name = alias_to_table.get(column.table.lower())
+        elif len(unique_tables) == 1:
+            table_name = unique_tables[0]
+        if not table_name:
+            continue
+
+        samples = _sqlite_non_null_samples(conn, table_name, column_name)
+        if not samples:
+            continue
+        text_kind = _non_numeric_text_kind(samples)
+        if text_kind:
+            return (
+                f"查询未执行：字段 {table_name}.{column_name} 的样例是 {text_kind}，"
+                "不适合 MIN/MAX/AVG。请改查非空数量、样例值、distinct/topk 或格式特征；"
+                "不要把 SQLite 对文本聚合得到的数值当作字段事实。"
+            )
+        if isinstance(aggregate, exp.Avg) and not _samples_are_numeric(samples):
+            return (
+                f"查询未执行：字段 {table_name}.{column_name} 的样例不是数值，不能 AVG。"
+                "请改查非空数量、样例值、distinct/topk 或格式特征。"
+            )
+    return ""
+
+
+def _sqlite_non_null_samples(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    limit: int = 20,
+) -> list[str]:
+    try:
+        rows = conn.execute(
+            f"SELECT {_quote_ident(column_name)} FROM {_quote_ident(table_name)} "
+            f"WHERE {_quote_ident(column_name)} IS NOT NULL LIMIT {int(limit)}"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    return [
+        str(row[0]).strip()
+        for row in rows
+        if row and row[0] is not None and str(row[0]).strip()
+    ]
+
+
+def _samples_are_numeric(samples: list[str]) -> bool:
+    checked = 0
+    for value in samples[:20]:
+        checked += 1
+        if not (_INTEGER_RE.match(value) or _REAL_RE.match(value)):
+            return False
+    return checked > 0
+
+
+def _non_numeric_text_kind(samples: list[str]) -> str:
+    sample = samples[:10]
+    lowered = [value.lower() for value in sample]
+    if any(value.startswith("<") and ">" in value for value in sample):
+        return "XML/HTML 文本"
+    if any((value.startswith("{") and value.endswith("}")) or (value.startswith("[") and value.endswith("]")) for value in sample):
+        return "JSON/结构化文本"
+    if any("," in value and not (_INTEGER_RE.match(value) or _REAL_RE.match(value)) for value in sample):
+        return "列表文本"
+    if any("<html" in value or "<?xml" in value for value in lowered):
+        return "XML/HTML 文本"
+    return ""
+
+
+def _sqlite_error_hint(sql: str, error: Exception, conn: sqlite3.Connection | None = None) -> str:
     message = str(error)
     lower = message.lower()
     upper_sql = sql.upper()
     hints: list[str] = []
+    schema_hint = _sqlite_schema_hint(conn, sql, error)
+    if schema_hint:
+        hints.append(schema_hint)
     if "no such function: lpad" in lower or "LPAD(" in upper_sql:
         hints.append("SQLite 左填充可用 printf/substr 组合表达。")
     if "ambiguous column name" in lower:
@@ -388,11 +735,18 @@ def _query_csv_source(sql: str, source, limit: int) -> str:
         )
 
     try:
+        sql = _sqlite_quote_unquoted_schema_columns(conn, sql)
+        precheck_error = _sqlite_unknown_column_precheck(conn, sql)
+        if precheck_error:
+            return precheck_error
+        precheck_error = _sqlite_non_numeric_aggregate_precheck(conn, sql)
+        if precheck_error:
+            return precheck_error
         cols, rows, has_more = _fetch_rows(conn, sql, limit)
         return _format_query_result(cols, rows, has_more, limit)
     except Exception as e:
         aliases = ", ".join(table_names)
-        hint = _sqlite_error_hint(sql, e)
+        hint = _sqlite_error_hint(sql, e, conn)
         hint_line = f"\n修正方向: {hint}" if hint else ""
         return (
             f"SQL 执行错误: {type(e).__name__}: {e}{hint_line}\n"
@@ -529,11 +883,18 @@ def _query_json_source(sql: str, source, limit: int) -> str:
         _load_json_source_into(conn, source, "this")
         if alias != "this":
             conn.execute(f"CREATE VIEW {_quote_ident(alias)} AS SELECT * FROM {_quote_ident('this')}")
+        sql = _sqlite_quote_unquoted_schema_columns(conn, sql)
+        precheck_error = _sqlite_unknown_column_precheck(conn, sql)
+        if precheck_error:
+            return precheck_error
+        precheck_error = _sqlite_non_numeric_aggregate_precheck(conn, sql)
+        if precheck_error:
+            return precheck_error
         cols, rows, has_more = _fetch_rows(conn, sql, limit)
         return _format_query_result(cols, rows, has_more, limit)
     except Exception as e:
         aliases = ", ".join(table_names)
-        hint = _sqlite_error_hint(sql, e)
+        hint = _sqlite_error_hint(sql, e, conn)
         hint_line = f"\n修正方向: {hint}" if hint else ""
         return (
             f"SQL 执行错误: {type(e).__name__}: {e}{hint_line}\n"
@@ -718,10 +1079,17 @@ def _query_workspace(workspace, sql: str, limit: int, ref: str) -> str:
                 )
 
         try:
+            sql = _sqlite_quote_unquoted_schema_columns(conn, sql)
+            precheck_error = _sqlite_unknown_column_precheck(conn, sql)
+            if precheck_error:
+                return f"{precheck_error}\n{_available_tables_text(ref, tables)}"
+            precheck_error = _sqlite_non_numeric_aggregate_precheck(conn, sql)
+            if precheck_error:
+                return f"{precheck_error}\n{_available_tables_text(ref, tables)}"
             cols, rows, has_more = _fetch_rows(conn, sql, limit)
             return _format_query_result(cols, rows, has_more, limit)
         except Exception as e:
-            hint = _sqlite_error_hint(sql, e)
+            hint = _sqlite_error_hint(sql, e, conn)
             hint_line = f"\n修正方向: {hint}" if hint else ""
             return f"SQL 执行错误: {type(e).__name__}: {e}{hint_line}\n{_available_tables_text(ref, tables)}"
     finally:
@@ -750,6 +1118,8 @@ def query_command(workspace, sql: str, ref: str = "", limit: int = _DEFAULT_LIMI
     if _WRITE_PATTERN.search(stripped):
         return "错误：SQL 中包含写操作关键词，只允许 SELECT 查询。"
 
+    stripped = _sqlite_compatible_sql(stripped)
+
     if selector in {".", "*", "workspace"}:
         return _query_workspace(workspace, stripped, limit, selector)
 
@@ -777,9 +1147,16 @@ def query_command(workspace, sql: str, ref: str = "", limit: int = _DEFAULT_LIMI
             conn = db_connect(readonly=True)
         else:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        stripped = _sqlite_quote_unquoted_schema_columns(conn, stripped)
+        precheck_error = _sqlite_unknown_column_precheck(conn, stripped)
+        if precheck_error:
+            return precheck_error
+        precheck_error = _sqlite_non_numeric_aggregate_precheck(conn, stripped)
+        if precheck_error:
+            return precheck_error
         columns, display_rows, has_more = _fetch_rows(conn, stripped, limit)
     except Exception as e:
-        hint = _sqlite_error_hint(stripped, e)
+        hint = _sqlite_error_hint(stripped, e, conn)
         suffix = f"\n修正方向: {hint}" if hint else ""
         return f"SQL 执行错误: {type(e).__name__}: {e}{suffix}"
     finally:
@@ -813,42 +1190,59 @@ def structured_single_table_fact_query_command(
     value=None,
     order: str = "asc",
     limit: int = _DEFAULT_LIMIT,
+    offset: int = 0,
 ) -> str:
     """Build and execute a simple single-table fact check from structured args."""
 
+    table = _clean_structured_identifier(table)
+    column = _clean_structured_identifier(column) if column else None
     table_sql = _quote_ident(table)
     col_sql = _quote_ident(column) if column else None
     limit = max(1, min(int(limit or _DEFAULT_LIMIT), _DEFAULT_LIMIT))
+    offset = max(0, int(offset or 0))
+    page_sql = f"LIMIT {limit}" + (f" OFFSET {offset}" if offset else "")
 
     if operation == "count_rows":
         sql = f"SELECT COUNT(*) AS row_count FROM {table_sql}"
+    elif operation == "sample_rows" or (operation == "sample_values" and not col_sql):
+        sql = f"SELECT * FROM {table_sql} {page_sql}"
     elif operation == "distinct_values":
         if not col_sql:
             return "错误：distinct_values 需要 column。"
         sql = (
             f"SELECT DISTINCT {col_sql} AS value FROM {table_sql} "
-            f"WHERE {col_sql} IS NOT NULL ORDER BY {col_sql} LIMIT {limit}"
+            f"WHERE {col_sql} IS NOT NULL ORDER BY {col_sql} {page_sql}"
+        )
+        result = query_command(workspace, sql=sql, ref=ref, limit=limit)
+        return (
+            f"{result}\n\n"
+            f"注意：distinct_values 只显示按排序排列的前 {limit} 个非空不同值"
+            f"{'（offset=' + str(offset) + '）' if offset else ''}，不代表完整枚举、不同值数量、最小值或最大值。"
+            "完整不同值数量用 cardinality；范围边界用 extreme_values。"
+        )
+    elif operation == "cardinality":
+        if not col_sql:
+            return "错误：cardinality 需要 column。"
+        sql = (
+            f"SELECT COUNT(DISTINCT {col_sql}) AS distinct_count, "
+            f"COUNT({col_sql}) AS non_null_count FROM {table_sql}"
         )
     elif operation == "value_exists":
         if not col_sql:
             return "错误：value_exists 需要 column。"
-        sql = (
-            f"SELECT DISTINCT {col_sql} AS value FROM {table_sql} "
-            f"WHERE {col_sql} = {_sql_literal(value)} LIMIT {limit}"
-        )
+        predicate = _structured_value_predicate(col_sql, value)
+        sql = f"SELECT DISTINCT {col_sql} AS value FROM {table_sql} WHERE {predicate} {page_sql}"
     elif operation == "count_where":
         if not col_sql:
             return "错误：count_where 需要 column。"
-        sql = (
-            f"SELECT COUNT(*) AS row_count FROM {table_sql} "
-            f"WHERE {col_sql} = {_sql_literal(value)}"
-        )
+        predicate = _structured_value_predicate(col_sql, value)
+        sql = f"SELECT COUNT(*) AS row_count FROM {table_sql} WHERE {predicate}"
     elif operation == "sample_values":
         if not col_sql:
             return "错误：sample_values 需要 column。"
         sql = (
             f"SELECT {col_sql} AS value FROM {table_sql} "
-            f"WHERE {col_sql} IS NOT NULL LIMIT {limit}"
+            f"WHERE {col_sql} IS NOT NULL {page_sql}"
         )
     elif operation == "extreme_values":
         if not col_sql:
@@ -856,12 +1250,35 @@ def structured_single_table_fact_query_command(
         direction = "DESC" if str(order).lower() == "desc" else "ASC"
         sql = (
             f"SELECT {col_sql} AS value FROM {table_sql} "
-            f"WHERE {col_sql} IS NOT NULL ORDER BY {col_sql} {direction} LIMIT {limit}"
+            f"WHERE {col_sql} IS NOT NULL ORDER BY {col_sql} {direction} {page_sql}"
         )
     else:
         return f"错误：未知 operation：{operation}"
 
-    return single_table_fact_query_command(workspace, sql=sql, ref=ref, limit=limit)
+    return query_command(workspace, sql=sql, ref=ref, limit=limit)
+
+
+def _clean_structured_identifier(value: str) -> str:
+    text = str(value or "").strip()
+    pairs = (('"', '"'), ("`", "`"), ("[", "]"))
+    for left, right in pairs:
+        if len(text) >= 2 and text.startswith(left) and text.endswith(right):
+            return text[1:-1].strip()
+    return text
+
+
+def _structured_value_predicate(col_sql: str, value) -> str:
+    if _is_null_marker(value):
+        return f"{col_sql} IS NULL"
+    return f"{col_sql} = {_sql_literal(value)}"
+
+
+def _is_null_marker(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip().upper() in {"NULL", "NONE"}:
+        return True
+    return False
 
 
 def _sql_literal(value) -> str:

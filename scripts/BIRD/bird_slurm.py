@@ -98,7 +98,7 @@ def _benchmark_db_filter(task_args: list[str]) -> list[str]:
 def _extract_db_filter(task_args: list[str]) -> list[str]:
     dbs: list[str] = []
     index = 0
-    skip_value_for = {"--run-id", "--workers", "--column-workers", "--modules"}
+    skip_value_for = {"--run-id", "--workers", "--modules"}
     while index < len(task_args):
         arg = task_args[index]
         if arg in skip_value_for:

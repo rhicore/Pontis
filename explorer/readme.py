@@ -28,14 +28,15 @@ README 的目标是：
 
 - **复用现有摘要**：先读已经存在的 official 字段和 brief/detail
 - **官方字段优先**：`official_column_description`、`official_value_description` 是人工/官方标注，高于 AI/agent 写入的 `brief/detail`；README 中的列含义、代码值和值域说明必须优先采用 official 字段
-- **按需补充探索**：已有信息覆盖 README 内容时，直接基于现有信息写作
+- **按需补充阅读**：已有信息覆盖 README 内容时，直接基于现有信息写作；需要说明文件正文时用 `read`
 - **读取已有元数据**：用 `meta` 读取已有官方字段和摘要
-- **说明文件读取方式**：CSV、Markdown、文本数据字典等说明文件使用已有 meta 理解用途和内容
+- **说明文件读取方式**：CSV、Markdown、文本数据字典等说明文件先用 `meta` 理解用途和内容，需要正文时用 `read` 读取
 - **用中文写 README**
 - **面向数据库使用者写作**：使用数据库、表、列、说明文件、关系等用户可理解的概念
 - **关系表达保守**：`fk` 写入关键外键/主从关系；普通 `rel` 写作“已验证的行级匹配关系”
 - **相似字段说明**：易混淆字段写清来源表、每行代表什么、覆盖范围和值域差异
 - **README 内容范围**：说明数据库里有什么，不围绕某一道题写解法
+- **数据质量表达**：格式不一致、外键违规、空值等写成已观察事实
 - **路径式引用**：读表/列时使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`
 - **写入 README 文件节点**：如果项目里已经有 `README` / `README.md` 这类文件节点，就把内容写回这个文件节点的 `brief/detail`
 - **写完自检**：写入后用 `meta({"ref": "README", "property": ["detail"]})` 确认正文完整可读
@@ -46,7 +47,7 @@ README 的目标是：
 2. 读取数据库文件本身的 meta
 3. 读取主要表的 meta
 4. 读取 fk / rel / disambig（如果有）
-5. 前面信息需要补充时，查看数据字典、字段说明、schema notes 或其他说明文件的 meta
+5. 前面信息需要补充时，查看数据字典、字段说明、schema notes 或其他说明文件的 meta；需要正文时用 `read`
 
 ## README 应包含的结构
 
@@ -108,7 +109,7 @@ meta({"ref": "README", "property": ["detail"]})
 - `README` 节点已成功写入
 - 内容结构完整
 - 已验证 `meta("README")` 可读
-- 完成后直接停止
+- 完成后回复 `DONE`
 """
 
 
@@ -128,8 +129,8 @@ def generate(workspace: Workspace) -> None:
     spec = explorer_writer_spec(
         workspace,
         tools=[
-            "find", "meta", "query",
-            "create_entity", "update_meta", "delete",
+            "find", "meta", "read",
+            "create_entity", "update_meta",
         ],
         include_readme=True,
     )

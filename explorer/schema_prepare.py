@@ -11,50 +11,36 @@ from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
+MAX_COMPLETION_ROUNDS = 6
+
 PROMPT = """\
-你是新来的数据分析师。当前 Pontis 图谱里已经有数据库文件、表、列、外键、overlap/rel 等实体。
-你的任务是给表、列、文件实体维护 `brief` 和 `detail`，让后来用 `meta` 读取这些实体的人能看懂它们是什么。
+你是 Pontis 的 schema prepare agent。
+当前图谱里已经有数据库文件、表、列、外键、overlap/rel 等实体。你的任务是给数据库表和列维护 `brief` 和 `detail`。
 
-## 原则
+## 工作目标
 
-- 先读后写：写入前读取目标实体的 meta、样例、topk、cardinality、null_percentage 和相关 fk/overlap/rel。
-- 基于证据：只记录 schema、统计、样例、说明文件或查询观察能支持的事实。
-- `brief/detail` 写成对象说明：这个表/列/文件是什么、每行代表什么、有哪些值、有哪些空值、和哪些对象相连。
-- 如果需要比较相似字段，写清它们来自哪张表、覆盖哪些行、值格式和值域有什么不同。
-- 文字面向后来理解数据库的人，不围绕某一道题写解法。
-- 中文写作；数据库原始字段名、枚举值、代码值保持原样。
+后来主 agent 会通过 `meta` 读取这些说明来理解数据库。你写的内容应当让它知道：
+- 表每行代表什么。
+- 列表示什么、值长什么样、是否有枚举/范围/空值。
+- 表和列之间已有的外键、overlap 或 rel 关系是什么。
+- 相近字段分别来自哪里，粒度、覆盖范围和值格式有什么差异。
+
+## 证据
+
+写入前先读取目标实体的 `meta`。需要补充事实时，再读取所属表、相邻 fk/overlap/rel、说明文件，或用 `query` 核验局部字段事实。
+
+`official_column_description` 和 `official_value_description` 是人工/官方标注，优先级最高。列被 official 标为 `unuseful`、`not useful`、`not quite useful`、`unused`、`ignore` 或同类含义时，只记录这个官方标记本身。
+
+## 写入
+
+- `brief` 不超过 50 字，概括实体角色。
+- `detail` 写对象事实：行粒度、字段含义、值格式、枚举、范围、空值、单位、主键/外键、overlap/rel。
+- 中文写作；数据库原始表名、字段名、枚举值和代码值保持原样。
 - 表和列写入使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`。
-- 完成后直接停止，不输出总结文字。
 
-## official 字段
+## 完成检查
 
-- `official_column_description` 和 `official_value_description` 是人工/官方标注，是列含义、值域、公式和可用性的最可信来源。
-- 列存在 official 字段时，先按 official 字段确定 brief/detail 的主语义，再补充样例、topk、统计和结构事实。
-- official 字段标注 `unuseful`、`not useful`、`unused`、`ignore` 或同类含义时，只记录官方不可用标记；不要查询该列取值，不推断枚举、代码映射、粒度含义或业务解释。
-- 表 detail 提到这类列时，只写固定事实：`<列名> 官方标记为不可用`。
-- 当 official 字段与已有 brief/detail 或样例推断冲突时，更新 brief/detail 使其服从 official 字段。
-
-## brief/detail
-
-- brief 不超过 50 字，概括实体的事实性角色。
-- 表 detail 记录行粒度、核心字段、主键/外键和与其他表的结构关系。
-- 列 detail 记录存储类别、值格式、范围、枚举、单位、空值和值域事实。
-- 近名字段按来源、粒度、覆盖范围、格式和值域分别描述差异。
-- 代码型列在 topk、样例或说明文件能支持时记录代码值映射。
-- `overlap` 记录列值域的严格值交集；fk、rel、表角色、键语义和说明文件只作为结构事实描述。
-- overlap/rel/disambig 是候选或邻接事实；本脚本只用它们理解表列，不创建新的 rel 或 disambig。
-- query 用于核验少量字段事实，例如样例值、空值、基数、枚举值、值格式和简单覆盖范围；写回图谱的是观察到的字段事实。
-
-## 读取入口
-
-- `find({"ref": "*:file:db"})`
-- `find({"ref": "<db>:db/*:table"})` 或 `find({"ref": "<db>/*:table"})`
-- `find({"ref": "<db>/<table>/*:col"})`
-- `find({"ref": "*:fk"})`
-- `find({"ref": "*:overlap"})`
-- `find({"ref": "*:rel"})`
-
-结束前轻量检查主要表和关键列的 brief/detail。
+每张数据库表、每个数据库列都必须同时有非空 `brief` 和非空 `detail`。完成后回复 `DONE`。
 """
 
 
@@ -78,12 +64,97 @@ def generate(workspace: Workspace) -> None:
             "update_meta",
         ],
         include_readme=True,
+        query_mode="single_table_fact_check",
     )
     agent = create_agent(workspace.project_path, spec)
 
     agent.chat(PROMPT)
+    for round_no in range(1, MAX_COMPLETION_ROUNDS + 1):
+        missing = _missing_db_descriptions(workspace)
+        if not missing:
+            logger.info("Schema metadata completeness check passed")
+            logger.info("=== Agent Schema Prepare done ===")
+            return _preprocess_metrics(agent)
+
+        logger.info(
+            "Schema metadata check found %s missing entities; asking agent to finish (round %s/%s)",
+            len(missing),
+            round_no,
+            MAX_COMPLETION_ROUNDS,
+        )
+        agent.chat(_completion_prompt(missing, round_no))
+
+    missing = _missing_db_descriptions(workspace)
+    if missing:
+        missing_sample = "\n".join(f"- {item}" for item in missing[:50])
+        raise RuntimeError(
+            "Schema Prepare 未通过完整性校验；剩余 "
+            f"{len(missing)} 个数据库表/列缺少 brief 或 detail。\n"
+            f"缺失实体：\n{missing_sample}"
+        )
     logger.info("=== Agent Schema Prepare done ===")
     return _preprocess_metrics(agent)
+
+
+def _missing_db_descriptions(workspace: Workspace) -> list[str]:
+    rows = workspace.cypher(
+        """
+        MATCH (f:file)--(t:table)
+        WHERE f.name ENDS WITH '.sqlite'
+           OR f.name ENDS WITH '.db'
+           OR f.name ENDS WITH '.sqlite3'
+           OR f.name ENDS WITH '.duckdb'
+        WITH f, t
+        WHERE t.brief IS NULL OR t.brief = '' OR t.detail IS NULL OR t.detail = ''
+        RETURN f.name AS file_name, t.name AS table_name, null AS column_name, 'table' AS kind
+        UNION
+        MATCH (f:file)--(t:table)--(c:col)
+        WHERE f.name ENDS WITH '.sqlite'
+           OR f.name ENDS WITH '.db'
+           OR f.name ENDS WITH '.sqlite3'
+           OR f.name ENDS WITH '.duckdb'
+        WITH f, t, c
+        WHERE c.brief IS NULL OR c.brief = '' OR c.detail IS NULL OR c.detail = ''
+        RETURN f.name AS file_name, t.name AS table_name, c.name AS column_name, 'col' AS kind
+        ORDER BY kind DESC, table_name, column_name
+        """
+    )
+    missing: list[str] = []
+    for row in rows:
+        file_name = row.get("file_name")
+        table_name = row.get("table_name")
+        column_name = row.get("column_name")
+        kind = row.get("kind")
+        if kind == "table":
+            missing.append(f"{file_name}/{table_name}")
+        elif kind == "col":
+            missing.append(f"{file_name}/{table_name}/{column_name}")
+    return missing
+
+
+def _completion_prompt(missing: list[str], round_no: int) -> str:
+    max_items = 120
+    shown = missing[:max_items]
+    lines = [
+        "Schema Prepare 未完成：以下数据库表或列仍缺少 brief 或 detail。",
+        "请补齐这些实体。",
+        "",
+        "要求：",
+        "- 只处理下面列出的待办实体。",
+        "- 写入前读取目标实体 meta；必要时读取所属表、同组代表列、相关 fk/overlap/rel/disambig 或说明文件。",
+        "- brief/detail 写对象事实：含义、行粒度、值格式、枚举、空值、结构关系。",
+        "- official 标注为 not useful/not quite useful/unuseful/unused/ignore 的列，只记录这个官方标记本身。",
+        "- 每个实体都必须同时有非空 `brief` 和非空 `detail`。",
+        "- 完成后回复 `DONE`。",
+        "",
+        f"待办轮次：{round_no}",
+    ]
+    if shown:
+        lines.append("待办实体：")
+        lines.extend(f"- {item}" for item in shown)
+    if len(missing) > max_items:
+        lines.append(f"- 还有 {len(missing) - max_items} 个未列出；先完成已列出的实体。")
+    return "\n".join(lines)
 
 
 def _preprocess_metrics(agent) -> dict:

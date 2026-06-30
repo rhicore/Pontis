@@ -127,13 +127,14 @@ def resolve_entity(workspace, ref: str) -> tuple[dict | None, str | None]:
     is_path_like = "/" in local_ref
     looks_structured = is_path_like or ("." in local_ref and "->" not in local_ref)
 
-    if not has_wildcards and not looks_structured:
+    if not is_path_like:
         nodes = _lookup_exact_named_nodes(workspace, project, local_ref)
-        if not nodes:
-            return None, f"未找到匹配的实体: {ref}"
+        if len(nodes) == 1:
+            return nodes[0], None
         if len(nodes) > 1:
             return None, f"匹配到多个实体: {ref}"
-        return nodes[0], None
+        if not has_wildcards and not looks_structured:
+            return None, f"未找到匹配的实体: {ref}"
 
     if not has_wildcards and looks_structured:
         node, err = _resolve_exact_path(workspace, project, local_ref)
@@ -156,12 +157,13 @@ def resolve_entity_selector(workspace, ref: str) -> tuple[dict | None, str | Non
         return None, err
     return {
         "project": node.get("__project") or None,
-        "id": node.get("id"),
+        "id": None,
         "name": node.get("name", ref),
         "labels": list(node.get("labels", [])),
         "path": node.get("path"),
         "ref": node.get("_ref") or node.get("ref"),
         "ref_key": "_ref" if node.get("_ref") else ("ref" if node.get("ref") else None),
+        "meta": dict(node),
     }, None
 
 
@@ -276,6 +278,11 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
             return None, f"匹配到多个实体: {local_ref}"
 
     parts = _split_structured_path(local_ref)
+    parts = _repair_repeated_file_label(parts)
+    parts = _repair_missing_table_column_segment(parts)
+    label_err = _validate_display_labels(parts, local_ref)
+    if label_err:
+        return None, label_err
     normalized_parts = [_normalize_display_segment(p) for p in parts]
     normalized_ref = "/".join(normalized_parts)
     requested_labels = _display_labels_from_last_segment(parts[-1] if parts else "")
@@ -325,6 +332,11 @@ def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple
             return None, f"匹配到多个实体: {local_ref}"
 
     if len(normalized_parts) == 2:
+        if requested_labels and not (requested_labels & {"file", "db", "table", "view", "csv_table"}):
+            return None, (
+                f"ref 路径结构不合法: {local_ref}；列路径应写为 "
+                "db.sqlite:db/table_name:table/column_name:col"
+            )
         file_name, table_name = normalized_parts
         rows = _run_cypher_projects(
             workspace,
@@ -525,6 +537,48 @@ def _display_labels_from_last_segment(segment: str) -> set[str]:
         return set()
     parts = [p for p in segment.split(":")[1:] if p]
     return set(parts)
+
+
+def _validate_display_labels(parts: list[str], local_ref: str) -> str | None:
+    for segment in parts:
+        if ":" not in segment:
+            continue
+        raw_parts = [p for p in segment.split(":") if p]
+        if len(raw_parts) < 2:
+            continue
+        name = _strip_outer_quotes(raw_parts[0].strip())
+        labels = {_strip_outer_quotes(label.strip()) for label in raw_parts[1:]}
+        if name and name in labels:
+            return (
+                f"ref 路径结构不合法: {local_ref}；路径段应写为 "
+                "entity_name:label，不要把实体名重复写成标签"
+            )
+    return None
+
+
+def _repair_missing_table_column_segment(parts: list[str]) -> list[str]:
+    if len(parts) != 2:
+        return parts
+    table_col = [p for p in parts[1].split(":") if p]
+    if len(table_col) != 3 or table_col[2] != "col":
+        return parts
+    table_name, column_name, _ = table_col
+    if not table_name or not column_name:
+        return parts
+    return [parts[0], f"{table_name}:table", f"{column_name}:col"]
+
+
+def _repair_repeated_file_label(parts: list[str]) -> list[str]:
+    if not parts or ":" not in parts[0]:
+        return parts
+    raw = [p for p in parts[0].split(":") if p]
+    if len(raw) < 3:
+        return parts
+    if raw[0] != raw[1]:
+        return parts
+    if raw[-1] not in {"db", "file"}:
+        return parts
+    return [":".join([raw[0], *raw[2:]]), *parts[1:]]
 
 
 def _split_structured_path(local_ref: str) -> list[str]:

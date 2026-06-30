@@ -2,7 +2,7 @@
 
 Coverage:
 - path/file ref resolution for file / table / column entities
-- read tools: find / meta / query / cypher / grep / bash
+- read tools: find / meta / query / cypher / grep
 - write tools: update_meta / create_entity / add_edge / delete
 - negative cases for common agent mistakes
 
@@ -24,7 +24,6 @@ from agent.guardrail.sql_utils import get_meta_read
 from extractor.modules.utils.refs import get_entity_meta
 from tool.query.tool import query_command
 from tool.grep.tool import grep_command
-from tool.bash.tool import bash_command
 from tool.read.tool import read_command
 from tool.jd.tool import jd_command
 from tool.add_edge.tool import add_edge_command
@@ -58,7 +57,7 @@ def make_books_project():
         fh.write(
             "# Books\n\n"
             "This fixture mentions address status and order status.\n"
-            "Use it to test grep and bash tools.\n"
+            "Use it to test grep and read tools.\n"
         )
 
     os.makedirs(os.path.join(tmp, "notes"), exist_ok=True)
@@ -333,9 +332,6 @@ def main():
         and "Open child: jd(ref=\"records.json#/records/<key-or-index>\")" in jd_records,
         jd_records,
     )
-
-    bash_out = bash_command("printf 'tool-bash-ok'", cwd=project, workspace=ws)
-    ok("bash executes command", "tool-bash-ok" in bash_out, bash_out)
 
     mixed_history = [
         ("find", {"ref": "books.sqlite/*:table"}, ref_tables),

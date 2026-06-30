@@ -28,6 +28,7 @@ def explorer_writer_spec(
     effort: str = "max",
     max_rounds: int | None = None,
     include_readme: bool = False,
+    query_mode: str = "",
 ) -> AgentSpec:
     """Build an explicit writer spec for explorer preprocessing agents."""
     tool_list = list(tools)
@@ -40,6 +41,7 @@ def explorer_writer_spec(
         max_rounds=max_rounds,
         tools=tool_list,
         prompts=prompts,
+        query_mode=query_mode,
     )
     project_name = os.path.basename(os.path.abspath(workspace.project_path))
     spec.projects = [project_name]

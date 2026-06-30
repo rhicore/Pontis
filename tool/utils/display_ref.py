@@ -6,7 +6,7 @@ from tool.utils.resolve import selector_match_pattern, selector_params
 def node_selector(project: str | None, node_meta: dict) -> dict:
     return {
         "project": project,
-        "id": node_meta.get("id"),
+        "id": None,
         "name": node_meta.get("name", ""),
         "labels": list(node_meta.get("labels", [])),
         "path": node_meta.get("path"),

@@ -10,6 +10,9 @@ from typing import Any
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.append(str(_ROOT))
+_TOOLS_ROOT = _ROOT / "tools"
+if str(_TOOLS_ROOT) not in sys.path:
+    sys.path.append(str(_TOOLS_ROOT))
 
 from token_cache_accounting import (  # noqa: E402
     merge_cache_accounting_sources,

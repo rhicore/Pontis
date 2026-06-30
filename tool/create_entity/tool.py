@@ -6,6 +6,8 @@
   - 创建实体必须通过 edges 连接到至少一个已有实体
 """
 
+import json
+
 from tool.utils import execute_cypher
 from storage.query_inspector import cypher_label_clause, is_valid_label
 from tool.utils.knowledge_meta import is_bird_knowledge, normalize_knowledge_meta
@@ -149,9 +151,6 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
     # 禁止通配符
     if _has_wildcards(ref):
         return "错误: 实体名不允许包含通配符 (*, ?, [])"
-    if "::" in ref:
-        return "错误: create_entity.ref 只能包含实体名称和标签，不能包含 project:: 前缀"
-
     name, labels, project = _parse_ref(ref)
 
     if not name:
@@ -162,7 +161,16 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
     if invalid_labels:
         return f"错误: 非法标签: {', '.join(invalid_labels)}"
 
-    meta = dict(meta or {})
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except json.JSONDecodeError:
+            return "错误: create_entity.meta 必须是对象；收到的是无法解析为 JSON 对象的字符串"
+    if meta is None:
+        meta = {}
+    if not isinstance(meta, dict):
+        return "错误: create_entity.meta 必须是对象"
+    meta = dict(meta)
 
     existing_rows = workspace.cypher(
         'MATCH (n {name: $name}) RETURN n',

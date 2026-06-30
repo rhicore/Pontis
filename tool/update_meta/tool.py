@@ -4,7 +4,7 @@ import json
 
 from tool.utils.resolve import resolve_entity_selector, selector_match_pattern, selector_params
 
-_ALLOWED_FIELDS = {"brief", "detail", "hints"}
+_ALLOWED_FIELDS = {"brief", "detail", "hints", "disambig_note"}
 
 
 def _normalize_hints(value) -> list[str]:
@@ -42,6 +42,14 @@ def update_meta_command(workspace, ref: str, fields: dict) -> str:
       - 精确名称 → 直接匹配
       - ref 模式 → 必须匹配唯一实体
     """
+    if isinstance(fields, str):
+        try:
+            fields = json.loads(fields)
+        except json.JSONDecodeError:
+            return "错误: fields 必须是对象；收到的是无法解析为 JSON 对象的字符串"
+    if not isinstance(fields, dict):
+        return "错误: fields 必须是对象，只允许包含 brief/detail/hints/disambig_note"
+
     invalid = set(fields.keys()) - _ALLOWED_FIELDS
     if invalid:
         return f"错误: 不允许修改 {', '.join(sorted(invalid))}。只允许修改: {', '.join(sorted(_ALLOWED_FIELDS))}"

@@ -67,7 +67,6 @@ def extract_one(
     agent_only: bool = False,
     debug: bool = False,
     train: bool = False,
-    column_workers: int | None = None,
 ) -> dict:
     """提取单个 BIRD 数据库目录。"""
     db_dir = Path(db_dir).resolve()
@@ -124,11 +123,8 @@ def extract_one(
                 workspace,
                 config=config,
                 options=RunOptions(
-                    continue_on_error=True,
+                    continue_on_error=False,
                     collect_timing=True,
-                    module_kwargs={
-                        "db_column_stats_approx": {"max_workers": column_workers}
-                    } if column_workers else None,
                 ),
             )
             result["static"] = _sum_timings(static_timings, STATIC_PIPELINE)
@@ -140,7 +136,7 @@ def extract_one(
                 official_pipeline,
                 workspace,
                 config=config,
-                options=RunOptions(continue_on_error=True, collect_timing=True),
+                options=RunOptions(continue_on_error=False, collect_timing=True),
             )
             result["description_review"] = official_timings.get("official_description_extract", 0.0)
             if result["description_review"]:
@@ -155,7 +151,7 @@ def extract_one(
                     ai_pipeline,
                     workspace,
                     config=config,
-                    options=RunOptions(continue_on_error=True, collect_timing=True),
+                    options=RunOptions(continue_on_error=False, collect_timing=True),
                 )
                 result["ai_columns"] = ai_timings.get("ai_db_column_summary", 0.0)
                 result["ai_tables"] = ai_timings.get("ai_db_table_summary", 0.0)
@@ -167,7 +163,7 @@ def extract_one(
                 workspace,
                 config=config,
                 options=RunOptions(
-                    continue_on_error=True,
+                    continue_on_error=False,
                     collect_timing=True,
                 ),
             )
@@ -201,7 +197,7 @@ def extract_one(
             embedding_pipeline,
             workspace,
             config=config,
-            options=RunOptions(continue_on_error=True, collect_timing=True),
+            options=RunOptions(continue_on_error=False, collect_timing=True),
         )
         result["embedding"] = embedding_timings.get("semantic_embedding", 0.0)
         if result["embedding"]:
@@ -241,15 +237,6 @@ def _parse_workers(argv: list[str]) -> int:
     return 1
 
 
-def _parse_column_workers(argv: list[str]) -> int | None:
-    for i, arg in enumerate(argv):
-        if arg == "--column-workers" and i + 1 < len(argv):
-            return max(1, int(argv[i + 1]))
-        if arg.startswith("--column-workers="):
-            return max(1, int(arg.split("=", 1)[1]))
-    return None
-
-
 def _parse_modules(argv: list[str]) -> list[str] | None:
     for i, arg in enumerate(argv):
         if arg == "--modules" and i + 1 < len(argv):
@@ -265,7 +252,7 @@ def _parse_db_filter(argv: list[str]) -> str | None:
         if skip_next:
             skip_next = False
             continue
-        if arg in {"--run-id", "--workers", "--column-workers", "--modules"}:
+        if arg in {"--run-id", "--workers", "--modules"}:
             skip_next = True
             continue
         if arg.startswith("--"):
@@ -282,7 +269,6 @@ def main() -> None:
 
     args = set(argv)
     workers = _parse_workers(argv)
-    column_workers = _parse_column_workers(argv)
     selected_modules = _parse_modules(argv)
     db_filter = _parse_db_filter(argv)
 
@@ -320,7 +306,6 @@ def main() -> None:
     print(f"=== BIRD Extract ({split}, {mode}) ===")
     print(f"Databases: {len(db_dirs)}\n")
     print(f"Workers: {workers}")
-    print(f"Column workers/db: {column_workers or 'default'}")
     print(f"Run id: {get_run_id()}")
     print(f"Preprocess logs: {PONTIS_WORKSPACE_ROOT / 'preprocess_logs' / get_run_name(train)}\n")
 
@@ -385,7 +370,7 @@ def main() -> None:
                     selected_modules,
                     workspace,
                     config=config,
-                    options=RunOptions(continue_on_error=True, collect_timing=True),
+                    options=RunOptions(continue_on_error=False, collect_timing=True),
                 )
                 result["schema_prepare"] = timings.get("agent_schema_prepare", 0.0)
                 result["agent"] = result["schema_prepare"]
@@ -408,7 +393,6 @@ def main() -> None:
             agent_only=agent_only,
             debug=debug,
             train=train,
-            column_workers=column_workers,
         )
 
     def record_result(result: dict) -> None:
@@ -563,6 +547,7 @@ def main() -> None:
     print(f"Summary: {summary_path}")
     if failed:
         print(f"Failed: {', '.join(failed)}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

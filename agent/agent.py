@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import sys
 from collections import defaultdict
 from typing import Dict, Iterator, List, Optional, Tuple, Union
@@ -11,7 +12,7 @@ from openai import OpenAI
 from storage.workspace import Workspace
 from agent.utils import load_agent_config
 from agent.config import default_spec
-from agent.tools import EXIT_PLAN_TOOL, build_registry
+from agent.tools import build_registry
 from agent.prompt import build_prompt_messages
 from agent.guardrail_api import Guardrail, CallVerdict, GuardrailContext, PostToolAction
 from agent.runtime_metrics import (
@@ -86,8 +87,6 @@ class PontusAgent:
         self._cache_accounting_sources: List[str] = []
         self._previous_prompt_text: Optional[str] = None
         self._last_guardrail_trace: List[dict] = []
-        self._pending_approval: Optional[dict] = None
-
     # ──────────────── LLM 调用 ────────────────
 
     def _call_llm(self):
@@ -382,50 +381,6 @@ class PontusAgent:
 
         # ── 工具调用：per-call 聚合 + 执行 ──
         deferred_warnings = []
-        approval_indices = [
-            i for i, tc in enumerate(tool_calls)
-            if tc.function.name == EXIT_PLAN_TOOL
-        ]
-        if approval_indices:
-            approval_index = approval_indices[0]
-            for i, tc in enumerate(tool_calls):
-                name = tc.function.name
-                parsed_args, parse_error = self._parse_args_or_error(tc.function.arguments)
-                if i == approval_index:
-                    args = {} if parse_error else parsed_args
-                    self._pending_approval = {
-                        "tool_call_id": tc.id,
-                        "name": name,
-                        "arguments": args,
-                    }
-                    self.logger.info(
-                        "Exit plan requested: %s",
-                        json.dumps(args, ensure_ascii=False),
-                    )
-                    yield {
-                        "type": "exit_plan_request",
-                        "name": name,
-                        "arguments": args,
-                        "id": tc.id,
-                    }
-                else:
-                    content = (
-                        "Skipped because this assistant turn requested external approval. "
-                        "Call this tool again after the approval result if it is still needed."
-                    )
-                    self.messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": content,
-                    })
-                    yield {
-                        "type": "tool_result",
-                        "name": name,
-                        "result": content,
-                        "id": tc.id,
-                    }
-            return
-
         for i, tc in enumerate(tool_calls):
             name = tc.function.name
             call_vs = verdicts.get(i, [])
@@ -506,7 +461,7 @@ class PontusAgent:
     # ──────────────── 核心循环 ────────────────
 
     def _drive_loop(self, rounds: int = 0) -> Iterator[dict]:
-        """Continue the model/tool loop until final text or external approval."""
+        """Continue the model/tool loop until final text."""
 
         while True:
             for event in self._drain_guardrail_messages(rounds):
@@ -532,17 +487,14 @@ class PontusAgent:
             )
 
             done = False
-            paused = False
             for event in self._guardrail_process(ctx, msg, msg.tool_calls):
                 if self._trace_callback:
                     self._trace_callback(event)
                 yield event
                 if event["type"] == "done":
                     done = True
-                elif event["type"] == "exit_plan_request":
-                    paused = True
 
-            if done or paused:
+            if done:
                 return
 
             rounds += 1
@@ -553,125 +505,6 @@ class PontusAgent:
         """核心 agent 循环。"""
         self.messages.append({"role": "user", "content": user_input})
         yield from self._drive_loop(0)
-
-    def _approval_result_loop(self, approved: bool, feedback: str = "") -> Iterator[dict]:
-        self._restore_pending_approval_from_messages()
-        if not self._pending_approval:
-            message = "No pending approval request."
-            self.messages.append({"role": "user", "content": message})
-            yield from self._drive_loop(0)
-            return
-
-        pending = self._pending_approval
-        self._pending_approval = None
-        if approved:
-            content = "APPROVED"
-            if feedback.strip():
-                content += f"\nFeedback: {feedback.strip()}"
-        else:
-            content = "REJECTED"
-            if feedback.strip():
-                content += f"\nReason: {feedback.strip()}"
-            else:
-                content += "\nReason: The user rejected this approval request."
-
-        for tool_call_id in self._missing_tool_call_ids_for_last_assistant(exclude={pending["tool_call_id"]}):
-            self.messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": (
-                    "Skipped because this assistant turn requested external approval. "
-                    "Call this tool again after the approval result if it is still needed."
-                ),
-            })
-        self.messages.append({
-            "role": "tool",
-            "tool_call_id": pending["tool_call_id"],
-            "content": content,
-        })
-        self._tool_history.append((pending["name"], pending["arguments"], content))
-        yield {
-            "type": "approval_result",
-            "approved": approved,
-            "content": content,
-            "id": pending["tool_call_id"],
-        }
-        yield from self._drive_loop(0)
-
-    def has_pending_approval(self) -> bool:
-        self._restore_pending_approval_from_messages()
-        return self._pending_approval is not None
-
-    def _restore_pending_approval_from_messages(self) -> None:
-        if self._pending_approval:
-            return
-        for msg in reversed(self.messages):
-            if msg.get("role") != "assistant":
-                continue
-            tool_calls = msg.get("tool_calls") or []
-            answered = self._answered_tool_call_ids_after(msg)
-            for tc in tool_calls:
-                fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
-                if fn.get("name") != EXIT_PLAN_TOOL:
-                    continue
-                tool_call_id = str(tc.get("id") or "")
-                if not tool_call_id or tool_call_id in answered:
-                    continue
-                parsed_args, _ = self._parse_args_or_error(fn.get("arguments") or "{}")
-                self._pending_approval = {
-                    "tool_call_id": tool_call_id,
-                    "name": EXIT_PLAN_TOOL,
-                    "arguments": parsed_args,
-                }
-                return
-            return
-
-    def _answered_tool_call_ids_after(self, assistant_msg: dict) -> set[str]:
-        answered: set[str] = set()
-        seen = False
-        for msg in self.messages:
-            if msg is assistant_msg:
-                seen = True
-                continue
-            if not seen:
-                continue
-            if msg.get("role") == "tool" and msg.get("tool_call_id"):
-                answered.add(str(msg["tool_call_id"]))
-                continue
-            if msg.get("role") in {"assistant", "user", "system"}:
-                break
-        return answered
-
-    def _missing_tool_call_ids_for_last_assistant(self, *, exclude: set[str]) -> list[str]:
-        for msg in reversed(self.messages):
-            if msg.get("role") != "assistant":
-                continue
-            tool_calls = msg.get("tool_calls") or []
-            answered = self._answered_tool_call_ids_after(msg)
-            missing = []
-            for tc in tool_calls:
-                tool_call_id = str(tc.get("id") or "")
-                if tool_call_id and tool_call_id not in answered and tool_call_id not in exclude:
-                    missing.append(tool_call_id)
-            return missing
-        return []
-
-    def resolve_approval_stream(self, approved: bool, feedback: str = "") -> Iterator[dict]:
-        yield from self._approval_result_loop(approved, feedback)
-
-    def resolve_approval(self, approved: bool, feedback: str = "") -> str:
-        result = ""
-        self._empty_text_retries = 0
-        for event in self._approval_result_loop(approved, feedback):
-            if event["type"] == "done":
-                result = event["content"]
-        return result
-
-    def approve(self, feedback: str = "") -> str:
-        return self.resolve_approval(True, feedback)
-
-    def reject(self, feedback: str = "") -> str:
-        return self.resolve_approval(False, feedback)
 
     # ──────────────── 公开接口 ────────────────
 
@@ -789,8 +622,17 @@ class PontusAgent:
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 last_error = exc
 
-        balanced_args = PontusAgent._append_missing_json_closers(repaired_args)
-        if balanced_args != repaired_args:
+        quoted_args = PontusAgent._quote_bare_json_values(repaired_args)
+        if quoted_args != repaired_args:
+            for loader in (json.loads, json.JSONDecoder(strict=False).decode):
+                try:
+                    parsed = loader(quoted_args)
+                    return (parsed, None) if isinstance(parsed, dict) else ({}, "quoted arguments JSON is not an object")
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    last_error = exc
+
+        balanced_args = PontusAgent._append_missing_json_closers(quoted_args)
+        if balanced_args != quoted_args:
             for loader in (json.loads, json.JSONDecoder(strict=False).decode):
                 try:
                     parsed = loader(balanced_args)
@@ -807,6 +649,20 @@ class PontusAgent:
             if not ch.isspace():
                 return ch
         return None
+
+    @staticmethod
+    def _quote_bare_json_values(text: str) -> str:
+        """Repair common tool-call JSON like {"property": brief}."""
+        literal_values = {"true", "false", "null"}
+        token_pattern = re.compile(r"(:\s*)([A-Za-z_][A-Za-z0-9_./:-]*)(\s*[,}\]])")
+
+        def replace(match: re.Match) -> str:
+            token = match.group(2)
+            if token in literal_values:
+                return match.group(0)
+            return f'{match.group(1)}"{token}"{match.group(3)}'
+
+        return token_pattern.sub(replace, text)
 
     @staticmethod
     def _append_missing_json_closers(text: str) -> str:

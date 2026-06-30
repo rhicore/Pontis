@@ -13,8 +13,6 @@ _TOOL_DIR_MAP = {
     "agent": "sub_agent",
 }
 
-EXIT_PLAN_TOOL = "exit_plan"
-
 
 def _load_prompt(tool_name: str) -> str:
     """Load tool prompt from agent/tool_use/{dir}/prompt.py."""
@@ -216,27 +214,6 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                 },
             },
         },
-        "bash": {
-            "type": "function",
-            "function": {
-                "name": "bash",
-                "description": _load_prompt("bash"),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Shell command to execute",
-                        },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "Timeout in seconds, default 120",
-                        },
-                    },
-                    "required": ["command"],
-                },
-            },
-        },
         "query": {
             "type": "function",
             "function": {
@@ -262,60 +239,6 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                 },
             },
         },
-        "cypher": {
-            "type": "function",
-            "function": {
-                "name": "cypher",
-                "description": _load_prompt("cypher"),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Cypher query statement",
-                        },
-                        "project": {
-                            "type": "string",
-                            "description": "Optional project route. One Cypher call executes against one project database.",
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Starting index (0-based), default 0",
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Max results per page, default 100",
-                        },
-                    },
-                    "required": ["query"],
-                },
-            },
-        },
-        EXIT_PLAN_TOOL: {
-            "type": "function",
-            "function": {
-                "name": EXIT_PLAN_TOOL,
-                "description": _load_prompt(EXIT_PLAN_TOOL),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "title": {
-                            "type": "string",
-                            "description": "Short label for the plan.",
-                        },
-                        "plan": {
-                            "type": "string",
-                            "description": "Plan text to submit for approval.",
-                        },
-                        "reason": {
-                            "type": "string",
-                            "description": "Optional reason why this plan should be approved.",
-                        },
-                    },
-                    "required": ["title", "plan"],
-                },
-            },
-        },
     }
 
 
@@ -332,7 +255,7 @@ def _build_write_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "待创建实体的名称和标签，如 'school_name_relation:rel'；不能包含路径或 project::",
+                            "description": "待创建实体的名称和标签，如 'school_name_relation:rel'；可加 project:: 前缀；不能包含路径",
                         },
                         "meta": {
                             "type": "object",
@@ -376,6 +299,38 @@ def _build_write_schemas() -> Dict[str, dict]:
                         },
                     },
                     "required": ["ref", "fields"],
+                },
+            },
+        },
+        "add_edge": {
+            "type": "function",
+            "function": {
+                "name": "add_edge",
+                "description": _load_prompt("add_edge"),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "edges": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "a": {
+                                        "type": "string",
+                                        "description": "已有实体 ref",
+                                    },
+                                    "b": {
+                                        "type": "string",
+                                        "description": "已有实体 ref",
+                                    },
+                                },
+                                "required": ["a", "b"],
+                            },
+                            "description": "要添加的 RELATED_TO 边列表；两个端点都必须已存在",
+                        },
+                    },
+                    "required": ["edges"],
                 },
             },
         },
@@ -486,16 +441,6 @@ def _exec_meta(workspace, arguments: dict) -> str:
     )
 
 
-def _exec_bash(workspace, arguments: dict) -> str:
-    from tool.bash.tool import bash_command
-    return bash_command(
-        command=arguments["command"],
-        cwd=workspace.project_path,
-        timeout_ms=arguments.get("timeout", 120) * 1000,
-        workspace=workspace,
-    )
-
-
 def _exec_query(workspace, arguments: dict) -> str:
     from tool.query.tool import query_command
     return query_command(
@@ -508,6 +453,11 @@ def _exec_query(workspace, arguments: dict) -> str:
 
 def _exec_single_table_fact_query(workspace, arguments: dict) -> str:
     from tool.query.tool import structured_single_table_fact_query_command
+    allowed = {"ref", "table", "operation", "column", "value", "order", "limit", "offset"}
+    unexpected = set(arguments) - allowed
+    if unexpected:
+        names = ", ".join(sorted(unexpected))
+        return f"错误：query 不支持参数 {names}。分页请使用 offset；不要使用 start_line。"
     return structured_single_table_fact_query_command(
         workspace,
         ref=arguments.get("ref", ""),
@@ -517,22 +467,8 @@ def _exec_single_table_fact_query(workspace, arguments: dict) -> str:
         value=arguments.get("value"),
         order=arguments.get("order", "asc"),
         limit=arguments.get("limit", 20),
-    )
-
-
-def _exec_cypher(workspace, arguments: dict) -> str:
-    from tool.cypher.tool import cypher_command
-    return cypher_command(
-        workspace,
-        query=arguments["query"],
         offset=arguments.get("offset", 0),
-        limit=arguments.get("limit", 100),
-        project=arguments.get("project"),
     )
-
-
-def _exec_exit_plan(workspace, arguments: dict) -> str:
-    return "Exit plan request was not intercepted by the runtime."
 
 
 def _exec_create_entity(workspace, arguments: dict) -> str:
@@ -549,12 +485,23 @@ def _exec_update_meta(workspace, arguments: dict) -> str:
     from tool.update_meta.tool import update_meta_command
     ref = arguments.get("ref") or arguments.get("path")
     if not ref:
-        return "Error: missing required field 'ref'"
+        return "无效 update_meta 调用：必须提供 ref 和非空 fields；不要空调用。"
+    fields = arguments.get("fields")
+    if isinstance(fields, str):
+        if not fields.strip():
+            return "无效 update_meta 调用：必须提供非空 fields，例如 {\"brief\": \"...\", \"detail\": \"...\"}。"
+    elif not isinstance(fields, dict) or not fields:
+        return "无效 update_meta 调用：必须提供非空 fields，例如 {\"brief\": \"...\", \"detail\": \"...\"}。"
     return update_meta_command(
         workspace,
         ref=ref,
-        fields=arguments.get("fields", {}),
+        fields=fields,
     )
+
+
+def _exec_add_edge(workspace, arguments: dict) -> str:
+    from tool.add_edge.tool import add_edge_command
+    return add_edge_command(workspace, edges=arguments.get("edges") or [])
 
 
 def _exec_delete(workspace, arguments: dict) -> str:
@@ -597,18 +544,15 @@ _READONLY_EXECUTORS = {
     "read": _exec_read,
     "jd": _exec_jd,
     "meta": _exec_meta,
-    "bash": _exec_bash,
     "query": _exec_query,
-    "cypher": _exec_cypher,
-    EXIT_PLAN_TOOL: _exec_exit_plan,
 }
 
 _WRITE_EXECUTORS = {
     "create_entity": _exec_create_entity,
     "update_meta": _exec_update_meta,
+    "add_edge": _exec_add_edge,
     "delete": _exec_delete,
 }
-
 
 def build_registry(spec) -> ToolRegistry:
     """根据 AgentSpec 构建工具注册表。
@@ -635,8 +579,8 @@ def build_registry(spec) -> ToolRegistry:
                 executor = _exec_single_table_fact_query
                 schema = copy.deepcopy(schema)
                 schema["function"]["description"] = (
-                    "执行结构化单表局部事实验证。适用范围：行数、字段枚举、值存在性、"
-                    "单字段条件计数、少量样例和极值样例。"
+                    "执行结构化单表局部事实验证。适用范围：行数、表样例行、字段枚举、值存在性、"
+                    "单字段条件计数、字段样例和极值样例。"
                 )
                 schema["function"]["parameters"] = {
                     "type": "object",
@@ -653,20 +597,22 @@ def build_registry(spec) -> ToolRegistry:
                             "type": "string",
                             "enum": [
                                 "count_rows",
+                                "cardinality",
                                 "distinct_values",
                                 "value_exists",
                                 "count_where",
+                                "sample_rows",
                                 "sample_values",
                                 "extreme_values",
                             ],
-                            "description": "Structured fact check operation",
+                            "description": "Structured fact check operation. Use cardinality for distinct counts; distinct_values is a paged sample of sorted distinct values.",
                         },
                         "column": {
                             "type": "string",
-                            "description": "Column name for column-based operations",
+                            "description": "Column name for column-based operations; omit for sample_rows",
                         },
                         "value": {
-                            "description": "Literal value for value_exists or count_where",
+                            "description": "Literal value for value_exists or count_where; use JSON null or \"NULL\" for SQL NULL",
                         },
                         "order": {
                             "type": "string",
@@ -677,8 +623,13 @@ def build_registry(spec) -> ToolRegistry:
                             "type": "integer",
                             "description": "Max rows to return, default 20",
                         },
+                        "offset": {
+                            "type": "integer",
+                            "description": "0-based row/value offset for sample_rows, sample_values, distinct_values, value_exists or extreme_values",
+                        },
                     },
                     "required": ["ref", "table", "operation"],
+                    "additionalProperties": False,
                 }
             registry.register(name, schema, executor)
         elif name in write_schemas:

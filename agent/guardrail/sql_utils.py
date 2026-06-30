@@ -348,10 +348,13 @@ def extract_join_col_pairs(sql: str) -> List[Tuple[str, str, str, str]]:
     if tree is None:
         return []
 
-    # 构建别名映射
+    # 构建真实表名与别名映射。子查询/CTE alias 不在这里登记；
+    # JOIN 到派生表时，不应把派生表 alias 当作图谱表名检查。
     aliases: Dict[str, str] = {}
+    table_names: Set[str] = set()
     for t in tree.find_all(exp.Table):
         name = t.name.lower()
+        table_names.add(name)
         if t.alias:
             aliases[t.alias.lower()] = name
 
@@ -368,12 +371,18 @@ def extract_join_col_pairs(sql: str) -> List[Tuple[str, str, str, str]]:
             right = eq.right
             if not isinstance(left, exp.Column) or not isinstance(right, exp.Column):
                 continue
-            t1 = aliases.get(left.table.lower(), left.table.lower()) if left.table else ""
-            t2 = aliases.get(right.table.lower(), right.table.lower()) if right.table else ""
+            left_prefix = left.table.lower() if left.table else ""
+            right_prefix = right.table.lower() if right.table else ""
+            if not left_prefix or not right_prefix:
+                continue
+            if left_prefix not in aliases and left_prefix not in table_names:
+                continue
+            if right_prefix not in aliases and right_prefix not in table_names:
+                continue
+            t1 = aliases.get(left_prefix, left_prefix)
+            t2 = aliases.get(right_prefix, right_prefix)
             c1 = left.name
             c2 = right.name
-            if not t1 or not t2:
-                continue
             pairs.append((t1, c1, t2, c2))
 
     return pairs

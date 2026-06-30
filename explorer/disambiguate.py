@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 PROMPT = """\
-你是新来的数据分析师。当前 Pontis 图谱里已经有一些 `disambig` 实体，它们连接到容易混淆的表或列。
+你是 Pontis 的 disambiguate maintenance agent。当前图谱里已经有一些 `disambig` 实体，它们连接到容易混淆的表或列。
 你的任务是维护已有 `disambig`，并补充明显缺失的消歧义组，让后来读取 `meta` 的人能看懂这些字段或表有什么不同。
 
 已有消歧义主要来自列名和列值重叠。这类候选可能漏掉语义相近但没有严格关键词重叠的字段，例如字段名不同、代码列和名称列成对出现、官方说明指向同一分类体系、一个字段拆成多个端点字段、或一个字段是另一个字段的前缀/片段。
@@ -25,7 +25,7 @@ PROMPT = """\
 - 扩展缺少连接实体的 group disambig。
 - 为语义相近但没有被现有候选覆盖的字段创建新的 group disambig。
 - 拆分混入多个混淆维度的 disambig。
-- 删除重复、连接错误或结论过强的 disambig，并重建清晰 group。
+- 修正重复、连接错误或结论过强的 disambig；保留旧实体，用说明和补充实体收窄范围。
 - 改写含糊措辞，让每个已连接字段都有明确说明。
 
 ## 写作要求
@@ -43,18 +43,24 @@ PROMPT = """\
 3. 读取相关列和表的 meta，必要时用 query 查看少量实际值，确认事实边界。
 4. 根据已有 disambig 的主题，检查同表和相关表中是否还有语义相近但未连接的字段：优先看 official description、official value description、列名、样例值、topk、代码/名称成对字段、端点字段和区间字段。
 5. 连接实体完整但措辞不清时，用 `update_meta` 改写 brief/detail。
-6. 连接实体不完整、主题混杂或重复时，先确认新 group 的完整实体集合，再删除旧实体并用 `create_entity.edges` 重建。
-7. 发现新的明显混淆组时，用 `create_entity.edges` 创建新的 group disambig；只连接本组涉及的字段，不连接表或无关字段。
+6. 连接实体不完整时，用 `add_edge` 把缺失字段补到已有 disambig。
+7. 主题混杂或重复时，保留旧实体，用 `update_meta` 写清旧实体当前覆盖范围，并在需要时用 `create_entity.edges` 创建更窄的新 group。
+8. 发现新的明显混淆组时，用 `create_entity.edges` 创建新的 group disambig，连接本组涉及的字段。
 
 ## 写入格式
 
 更新实体：
 `update_meta({"ref": "<disambig_ref>", "fields": {"brief": "...", "detail": "..."}})`
 
-重建实体：
+创建新实体：
 `create_entity({"ref": "field_choice:disambig", "meta": {"brief": "...", "detail": "..."}, "edges": [{"ref": "<列1:col>"}, {"ref": "<列2:col>"}]})`
 
+补充已有实体连接：
+`add_edge({"edges": [{"a": "<disambig_ref>", "b": "<列:col>"}]})`
+
 用中文写 brief 和 detail。
+
+完成后回复 `DONE`。
 """
 
 
@@ -75,7 +81,7 @@ def generate(workspace: Workspace) -> dict:
         workspace,
         tools=[
             "find", "meta", "query",
-            "create_entity", "update_meta", "delete",
+            "create_entity", "update_meta", "add_edge",
         ],
         include_readme=True,
     )

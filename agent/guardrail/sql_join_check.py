@@ -14,6 +14,7 @@ from agent.guardrail.sql_utils import has_read, extract_join_col_pairs, get_sql_
 _ENTITY_PATTERN = re.compile(
     r'(\w+)\.(\w+)->(\w+)\.(\w+)'
 )
+_OVERLAP_PATTERN = re.compile(r"value_domain\[([^\]]+)\]")
 
 
 class BridgeTableCheck(Guardrail):
@@ -68,15 +69,15 @@ class BridgeTableCheck(Guardrail):
             already_confirmed = False
             for e, rtype in entities:
                 # 匹配列名（大小写不敏感）
-                col_pair = _parse_col_pair(e)
-                if not col_pair:
-                    continue
-                et1, ec1, et2, ec2 = col_pair
-                pair_match = (
-                    (et1.lower() == t1 and ec1.lower() == c1.lower() and
-                     et2.lower() == t2 and ec2.lower() == c2.lower()) or
-                    (et1.lower() == t2 and ec1.lower() == c2.lower() and
-                     et2.lower() == t1 and ec2.lower() == c1.lower())
+                pair_match = any(
+                    (
+                        et1.lower() == t1 and ec1.lower() == c1.lower() and
+                        et2.lower() == t2 and ec2.lower() == c2.lower()
+                    ) or (
+                        et1.lower() == t2 and ec1.lower() == c2.lower() and
+                        et2.lower() == t1 and ec2.lower() == c1.lower()
+                    )
+                    for et1, ec1, et2, ec2 in _parse_col_pairs(e)
                 )
                 if not pair_match:
                     continue
@@ -149,37 +150,48 @@ class BridgeTableCheck(Guardrail):
             if rel_type is None:
                 continue
 
-            m = _ENTITY_PATTERN.match(ename)
-            if not m:
-                continue
-
-            src_table = m.group(1)
-            dst_table = m.group(3)
-
-            key = tuple(sorted([src_table.lower(), dst_table.lower()]))
-            edge_map[key].append((ename, rel_type))
+            for src_table, _src_col, dst_table, _dst_col in _parse_col_pairs(ename):
+                key = tuple(sorted([src_table.lower(), dst_table.lower()]))
+                edge_map[key].append((ename, rel_type))
 
         self._edge_map = dict(edge_map)
         return self._edge_map
 
 
 def _parse_col_pair(entity: str) -> Optional[tuple]:
-    """从关系实体名提取列对 (table1, col1, table2, col2)。
+    """从关系实体名提取第一个列对 (table1, col1, table2, col2)。"""
+    pairs = _parse_col_pairs(entity)
+    return pairs[0] if pairs else None
 
-    格式: table1.col1->table2.col2
+
+def _parse_col_pairs(entity: str) -> List[tuple]:
+    """从关系实体名提取列对。
+
+    支持:
+      - table1.col1->table2.col2
+      - value_domain[table1.col1__table2.col2__table3.col3]#...
     """
-    if "->" not in entity:
-        return None
+    if "->" in entity:
+        left, right = entity.split("->", 1)
+        parts_l = left.rsplit(".", 1)
+        parts_r = right.rsplit(".", 1)
+        if len(parts_l) == 2 and len(parts_r) == 2:
+            return [(parts_l[0], parts_l[1], parts_r[0], parts_r[1])]
+        return []
 
-    left, right = entity.split("->", 1)
-
-    parts_l = left.rsplit(".", 1)
-    if len(parts_l) != 2:
-        return None
-    parts_r = right.rsplit(".", 1)
-    if len(parts_r) != 2:
-        return None
-    return (parts_l[0], parts_l[1], parts_r[0], parts_r[1])
+    match = _OVERLAP_PATTERN.search(entity)
+    if not match:
+        return []
+    refs = []
+    for raw in match.group(1).split("__"):
+        parts = raw.rsplit(".", 1)
+        if len(parts) == 2 and parts[0] and parts[1]:
+            refs.append((parts[0], parts[1]))
+    pairs = []
+    for i, (table1, col1) in enumerate(refs):
+        for table2, col2 in refs[i + 1:]:
+            pairs.append((table1, col1, table2, col2))
+    return pairs
 
 
 def _get_query_project(ctx) -> str:

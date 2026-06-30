@@ -193,7 +193,7 @@ def _build_bird_agent_spec(db_id: str) -> AgentSpec:
     spec = AgentSpec(
         projects=[db_id],
         effort="mid",
-        tools=["find", "grep", "read", "jd", "meta", "bash", "query", "cypher"],
+        tools=["find", "grep", "read", "jd", "meta", "query"],
         prompts=[
             "base",
             "tool",

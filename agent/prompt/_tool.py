@@ -5,12 +5,9 @@ _TOOL_DESCRIPTIONS = {
     "find": "发现图谱实体；按 ref 列实体，或在实体摘要和官方字段中匹配 query",
     "meta": "读取单个实体的官方字段、brief/detail、统计、样例等元数据",
     "query": "对 DB/CSV/TSV/JSON records 执行只读 SQL，支持 workspace 跨源查询",
-    "cypher": "执行复杂图查询，适合 find 难以表达的关系遍历",
     "grep": "在 text file ref 的原文中定位字符串或正则模式",
     "read": "按行号回读 text file ref 的原文",
     "jd": "浏览 JSON file ref 的内部层级结构",
-    "bash": "执行只读 shell 命令，适合工具无法覆盖的一次性计算",
-    "exit_plan": "计划模式结束工具；完成必要探索后提交一段计划文本给用户审批",
 }
 
 
@@ -21,7 +18,7 @@ def get_tool_prompt(spec=None) -> str:
     for name in tool_names:
         desc = _TOOL_DESCRIPTIONS.get(name)
         if name == "query" and query_mode == "single_table_fact_check":
-            desc = "执行结构化单表局部事实验证；用于行数、枚举、值存在性、单字段条件计数、少量样例和极值样例"
+            desc = "执行结构化单表局部事实验证；用于行数、表样例行、枚举、值存在性、单字段条件计数、字段样例和极值样例"
         if desc:
             lines.append(f"- **{name}**：{desc}")
     tool_list = "\n".join(lines)
@@ -38,7 +35,7 @@ def get_tool_prompt(spec=None) -> str:
         ]
         exploration_lines = [
             "- 结构入口：`find` 找 db/table/col/fk/rel/knowledge/disambig，`meta` 读目标实体。",
-            "- 值验证：先用 `meta` 查看列语义、统计、样例和提示，再用 `query` 补充单表内的值事实。",
+            "- 值验证：先用 `meta` 查看列语义、统计、样例和提示，再用 `query` 补充单表内的值事实；不同值数量用 `cardinality`，范围边界用 `extreme_values`。",
             "- 常规实体定位和字段边界核对使用 `find`/`meta`。",
         ]
     else:
@@ -56,7 +53,7 @@ def get_tool_prompt(spec=None) -> str:
             "- 结构入口：`find` 找 db/table/col/fk/rel/knowledge/disambig，`meta` 读目标实体。",
             "- 值验证：先用 `meta` 查看列语义、统计、样例和提示，再用 `query` 验证值是否存在、局部条件行数、连接前后行数和字段统计值。",
             "- 文本证据：`grep` 定位，`read` 回读上下文；JSON 层级用 `jd` 展开。",
-            "- 图关系：复杂多跳关系用 `cypher`；常规实体定位和字段边界核对使用 `find`/`meta`。",
+            "- 图关系：常规实体定位和字段边界核对使用 `find`/`meta`。",
         ]
     workflow = "\n".join(workflow_lines)
     exploration = "\n".join(exploration_lines)
@@ -70,6 +67,12 @@ def get_tool_prompt(spec=None) -> str:
 ### 工作协议
 
 {workflow}
+
+### 调用格式
+
+- 工具参数必须是合法 JSON；字符串值必须加双引号，例如 `{{"property": "brief"}}`，不要写 `{{"property": brief}}`。
+- 使用 ref 时优先复制 `find` 返回的第一列或 `meta` 输出中的完整 ref。
+- 不要自己拼 `source::`、重复项目名前缀、`:db:db`，也不要给 `overlap`、`rel`、`disambig` ref 追加 `/*` 来猜邻接。
 
 ### 探索主线
 

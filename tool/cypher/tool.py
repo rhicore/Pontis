@@ -1,12 +1,48 @@
-"""Cypher 查询工具 — 标准 Cypher 的透传封装。"""
+"""Cypher 查询工具 — 标准 Cypher 的只读透传封装。"""
+
+import re
 
 from tool.utils.formatters import format_labels
+
+
+_WRITE_KEYWORDS = {
+    "CREATE",
+    "MERGE",
+    "SET",
+    "DELETE",
+    "DETACH",
+    "REMOVE",
+    "DROP",
+    "LOAD",
+    "FOREACH",
+}
+_CALL_WRITE_PREFIXES = (
+    "DB.CREATE",
+    "DB.INDEX",
+    "DBMS.",
+)
+
+
+def _strip_string_literals(query: str) -> str:
+    """Remove quoted strings before keyword checks."""
+    return re.sub(r"""(['"])(?:\\.|(?!\1).)*\1""", " ", query, flags=re.DOTALL)
+
+
+def _is_readonly_cypher(query: str) -> bool:
+    cleaned = _strip_string_literals(query)
+    tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_.]*", cleaned.upper())
+    if any(token in _WRITE_KEYWORDS for token in tokens):
+        return False
+    return not any(
+        token == "CALL" and idx + 1 < len(tokens) and tokens[idx + 1].startswith(_CALL_WRITE_PREFIXES)
+        for idx, token in enumerate(tokens)
+    )
 
 
 def cypher_command(workspace, query: str, offset: int = 0,
                    limit: int = 100, params: dict = None,
                    project: str = None) -> str:
-    """执行标准 Cypher 查询，直接透传给 workspace。
+    """执行只读 Cypher 查询，直接透传给 workspace。
 
     Args:
         workspace: Workspace 实例
@@ -16,6 +52,12 @@ def cypher_command(workspace, query: str, offset: int = 0,
         params: 参数化查询参数
         project: 目标 project database；省略时由 Workspace 使用默认项目
     """
+    if not _is_readonly_cypher(query):
+        return (
+            "Error: cypher 工具只允许只读查询。"
+            "请使用 MATCH/OPTIONAL MATCH/WITH/RETURN 等读取语句，不要 CREATE/MERGE/SET/DELETE/REMOVE。"
+        )
+
     results = workspace.cypher(query, params=params, project=project)
 
     if not results:

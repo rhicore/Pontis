@@ -10,12 +10,15 @@
     python -m extractor.modules.db_fk_validate ./my_data
 """
 import logging
+import time
 
 from storage.workspace import Workspace
 from extractor.modules.utils.refs import db_fk_ref, set_entity_meta
 from extractor.modules.utils.src import file_exists, open_sqlite_db
 
 logger = logging.getLogger(__name__)
+
+TRANSIENT_RETRY_LIMIT = 4
 
 
 def generate(workspace: Workspace) -> None:
@@ -30,13 +33,37 @@ def generate(workspace: Workspace) -> None:
 
     validated = 0
     for ref in fk_refs:
-        try:
-            if _validate_one(ref, workspace):
-                validated += 1
-        except Exception as e:
-            logger.warning(f"  Failed to validate {ref}: {e}")
+        if _validate_with_retries(ref, workspace):
+            validated += 1
 
     logger.info(f"  Validated {validated}/{len(fk_refs)} FK entities")
+
+
+def _validate_with_retries(ref: str, workspace: Workspace) -> bool:
+    """Run one FK validation, retrying transient Neo4j write conflicts."""
+    for attempt in range(1, TRANSIENT_RETRY_LIMIT + 1):
+        try:
+            return _validate_one(ref, workspace)
+        except Exception as e:
+            if not _is_transient_neo4j_error(e) or attempt == TRANSIENT_RETRY_LIMIT:
+                logger.warning(f"  Failed to validate {ref}: {e}")
+                return False
+            wait_s = min(0.5 * attempt, 2.0)
+            logger.warning(
+                "  Retry FK validation after transient Neo4j error "
+                f"({attempt}/{TRANSIENT_RETRY_LIMIT}) for {ref}: {e}"
+            )
+            time.sleep(wait_s)
+    return False
+
+
+def _is_transient_neo4j_error(error: Exception) -> bool:
+    text = str(error)
+    return (
+        "Neo.TransientError" in text
+        or "DeadlockDetected" in text
+        or "deadlock detected" in text.lower()
+    )
 
 
 def _parse_fk_entity(entity_name: str) -> dict | None:

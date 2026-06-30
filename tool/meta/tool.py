@@ -184,6 +184,39 @@ def _append_notice(result: str, notice: str) -> str:
     return result.rstrip() + "\n\n" + notice
 
 
+def _normalize_property_request(property: Optional[Union[str, List[str]]]) -> list[str] | None:
+    if not property:
+        return None
+    if not isinstance(property, str):
+        return [str(item).strip().strip("\"'") for item in property if str(item).strip().strip("\"'")]
+
+    text = property.strip()
+    if not text:
+        return None
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, list):
+        return [str(item).strip().strip("\"'") for item in parsed if str(item).strip().strip("\"'")]
+    if isinstance(parsed, str):
+        text = parsed.strip()
+
+    if text.startswith("[") and text.endswith("]"):
+        inner = text.strip("[]")
+        props = [
+            item.strip().strip("\"'")
+            for item in inner.split(",")
+            if item.strip().strip("\"'")
+        ]
+        return props or None
+
+    prop = text.strip("\"'")
+    return [prop] if prop else None
+
+
 def meta_command(
     workspace,
     ref: str,
@@ -226,12 +259,7 @@ def meta_command(
         labels,
     )
 
-    props = None
-    if property:
-        if isinstance(property, str):
-            props = [property]
-        else:
-            props = list(property)
+    props = _normalize_property_request(property)
 
     if props and not (set(props) & _ADJACENCY_KEYS):
         from tool.utils.formatters import _format_meta_value

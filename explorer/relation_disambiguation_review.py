@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 PROMPT = """\
-你是新来的数据分析师。当前 Pontis 图谱里已经有 `overlap` 候选，它们表示一些列的取值有交集。
+你是 Pontis 的 relation/disambiguation review agent。当前图谱里已经有 `overlap` 候选，它们表示一些列的取值有交集。
 你的任务是逐组审查这些候选，并在需要时创建或更新 `disambig` / `rel` 实体。
 
 - `disambig` 用来记录容易混淆的表或列之间有什么不同。
@@ -32,8 +32,8 @@ PROMPT = """\
 - 属性列、低基数枚举、bool、分类文本、描述文本、短代码和统计值重叠时，先比较这些字段各自是什么。
 - 已有主键、外键或更强连接能解释两表行级关系时，普通属性列 overlap 进入 `disambig` 审查。
 - 多个字段属于同一组容易混淆字段时，维护一个 group `disambig`，连接这一组里的全部相关字段；独立二元选择使用 pair `disambig`。
-- 同结构槽位字段属于同一字段族，完整 group 包含全部槽位；低质量、空值多或官方标注不可用的槽位也进入 group，并写明空值率、覆盖范围和官方可用性。
-- 候选列的 `linked_disambig` 表示当前实际边覆盖；detail 文字只解释已连接字段，覆盖范围由连接列决定。
+- 同结构槽位字段属于同一字段族，完整 group 包含全部槽位。
+- 候选里的“已连接 disambig”表示当前实际边覆盖；detail 文字只解释已连接字段，覆盖范围由连接列决定。
 - 候选组出现“部分字段已连接到同一 disambig、其余字段未连接”的覆盖缺口时，优先整理成完整 group。
 
 ## 要比较的内容
@@ -48,22 +48,26 @@ PROMPT = """\
 
 ## 写入格式
 
-`disambig` detail 写成固定结构：比较主题、各字段区别、混用会改变哪些行或值、值域证据。
+`disambig` detail 写成固定结构：比较主题、各字段区别、值域/空值/行粒度证据、格式或连接基数差异。
 
-brief/detail 写清每个字段是什么、它们在哪些地方相似、主要区别是什么、各自覆盖哪些行和值、连接后行数是否会变化。
+brief/detail 写清每个字段是什么、它们在哪些地方相似、主要区别是什么、各自覆盖哪些行和值。
 
 多个字段共享值域或业务维度时，写成“同一主题下的不同字段”，并列出每个字段的来源、覆盖范围和值域证据。`rel` 写成行级匹配关系，说明匹配列、覆盖范围、唯一性和基数证据。
 
-已有 `disambig` 能说明当前这组容易混淆字段时，整理成完整 group；连接列不完整时删除旧实体并用 `create_entity.edges` 重建。创建实体时只连接涉及字段，edge ref 使用列路径。
+已有 `disambig` 能说明当前这组容易混淆字段时，保留旧实体并整理它：说明不清时用 `update_meta` 改 brief/detail，连接列不完整时用 `add_edge` 把缺失字段补到这个实体上。
+
+如果已有实体主题混杂，保留旧实体，用 `update_meta` 写清它当前覆盖范围；另外用 `create_entity.edges` 创建更窄的新实体。创建实体时只连接涉及字段，edge ref 使用列路径。
 
 实体 ref 使用简短 snake_case 名称加标签，例如 `school_name_boundary:disambig`、`stable_identifier_join:rel`。中文写 brief/detail，措辞强调边界和差异。
+
+完成后回复 `DONE`。
 """
 
 
 CANDIDATE_PROMPT_HEADER = (
     "## 待审查 relation/disambiguation 候选\n\n"
     "逐组整理候选事实，决定写为完整 group disambig、pair disambig、rel，或保留为 overlap 线索。\n"
-    "`linked_disambig` 展示当前实际边覆盖；候选字段缺少对应覆盖时，整理或重建相关 disambig。\n"
+    "候选字段缺少对应覆盖时，用 add_edge 补充已有 disambig，或创建新的更窄 disambig。\n"
 )
 
 
@@ -102,7 +106,7 @@ def _render_candidate_prompt(
             if col.brief:
                 parts.append(f"brief={col.brief}")
             if col.disambig_links:
-                parts.append(f"linked_disambig={' | '.join(col.disambig_links)}")
+                parts.append(f"已连接 disambig={' | '.join(col.disambig_links)}")
             suffix = f" — {'；'.join(parts)}" if parts else ""
             lines.append(f"  - `{col.ref}`{table_part}{suffix}")
         lines.append("")
@@ -150,7 +154,7 @@ def generate(workspace: Workspace) -> dict:
         workspace,
         tools=[
             "find", "meta", "query",
-            "create_entity", "update_meta", "delete",
+            "create_entity", "update_meta", "add_edge",
         ],
         include_readme=True,
     )

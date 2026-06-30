@@ -15,6 +15,9 @@ from utils.token_metrics import add_usage
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.append(str(_ROOT))
+_TOOLS_ROOT = _ROOT / "tools"
+if str(_TOOLS_ROOT) not in sys.path:
+    sys.path.append(str(_TOOLS_ROOT))
 
 from token_cache_accounting import normalize_cache_accounting, serialize_request  # noqa: E402
 

@@ -7,7 +7,7 @@ from agent.prompt import build_prompt_messages
 from agent.guardrail_api import Guardrail
 from agent.guardrail import build_guardrails
 
-DEFAULT_READONLY_TOOLS = ["find", "grep", "read", "jd", "meta", "bash", "query", "agent", "exit_plan"]
+DEFAULT_READONLY_TOOLS = ["find", "grep", "read", "jd", "meta", "query", "agent"]
 DEFAULT_READONLY_PROMPTS = [
     "base", "tool", "ontology", "sql",
     "guardrail", "project", "readme",
