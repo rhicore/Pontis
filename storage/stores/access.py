@@ -19,6 +19,7 @@ class FileOpen:
 class DbConnect:
     db_path: str
     connect: Callable
+    dialect: str = "sqlite"
     table: str = ""
     view: str = ""
     column: str = ""

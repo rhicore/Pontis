@@ -499,6 +499,24 @@ def _exec_update_meta(workspace, arguments: dict) -> str:
     )
 
 
+def _restricted_update_meta_executor(allowed_fields: List[str]) -> Callable:
+    allowed = {field for field in allowed_fields if field}
+
+    def executor(workspace, arguments: dict) -> str:
+        fields = arguments.get("fields")
+        if not isinstance(fields, dict) or not fields:
+            return "无效 update_meta 调用：必须提供非空 fields。"
+        invalid = sorted(set(fields) - allowed)
+        if invalid:
+            return (
+                "错误: 当前 agent 只能写 "
+                f"{', '.join(sorted(allowed))}；不允许写 {', '.join(invalid)}。"
+            )
+        return _exec_update_meta(workspace, arguments)
+
+    return executor
+
+
 def _exec_add_edge(workspace, arguments: dict) -> str:
     from tool.add_edge.tool import add_edge_command
     return add_edge_command(workspace, edges=arguments.get("edges") or [])
@@ -633,6 +651,35 @@ def build_registry(spec) -> ToolRegistry:
                 }
             registry.register(name, schema, executor)
         elif name in write_schemas:
-            registry.register(name, write_schemas[name], _WRITE_EXECUTORS[name])
+            schema = write_schemas[name]
+            executor = _WRITE_EXECUTORS[name]
+            allowed_meta_fields = list(getattr(spec, "meta_write_fields", []) or [])
+            if name == "update_meta" and allowed_meta_fields:
+                schema = copy.deepcopy(schema)
+                schema["function"]["description"] = (
+                    schema["function"]["description"]
+                    + "\n\n当前 agent 只允许写字段: "
+                    + ", ".join(allowed_meta_fields)
+                )
+                field_props = {}
+                for field in allowed_meta_fields:
+                    if field == "hints":
+                        field_props[field] = {
+                            "oneOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}},
+                            ],
+                            "description": "实体本地 hints；传入完整保留后的 hint 列表或多行文本",
+                        }
+                    else:
+                        field_props[field] = {"description": f"允许写入字段 {field}"}
+                schema["function"]["parameters"]["properties"]["fields"] = {
+                    "type": "object",
+                    "properties": field_props,
+                    "additionalProperties": False,
+                    "description": "当前 agent 可写字段集合",
+                }
+                executor = _restricted_update_meta_executor(allowed_meta_fields)
+            registry.register(name, schema, executor)
 
     return registry

@@ -33,6 +33,7 @@ class AgentSpec:
     prompts: List[str] = field(default_factory=list)
     guardrails: List[Guardrail] = field(default_factory=list)
     query_mode: str = ""
+    meta_write_fields: List[str] = field(default_factory=list)
 
 
 def create_agent(project_path: str, spec: AgentSpec = None,

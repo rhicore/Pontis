@@ -42,6 +42,7 @@ AGENT_PIPELINE = [
     "agent_schema_prepare",
     "agent_relation_disambiguation_review",
     "agent_disambiguate",
+    "agent_bird_profile",
     "agent_description_audit",
     "agent_readme",
 ]

@@ -90,11 +90,13 @@ def get_registry() -> Dict[str, object]:
         from explorer.relation_disambiguation_review import generate as agent_relation_disambiguation_review
         from explorer.description_audit import generate as agent_description_audit
         from explorer.disambiguate import generate as agent_disambiguate
+        from explorer.bird_profile import generate as agent_bird_profile
         from explorer.readme import generate as agent_readme
         _REGISTRY["agent_schema_prepare"] = agent_schema_prepare
         _REGISTRY["agent_relation_disambiguation_review"] = agent_relation_disambiguation_review
         _REGISTRY["agent_description_audit"] = agent_description_audit
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
+        _REGISTRY["agent_bird_profile"] = agent_bird_profile
         _REGISTRY["agent_readme"] = agent_readme
     except ImportError:
         pass

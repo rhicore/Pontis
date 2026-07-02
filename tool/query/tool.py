@@ -649,6 +649,18 @@ def _fetch_rows(
         conn.set_progress_handler(None, 0)
 
 
+def _fetch_dbapi_rows(conn, sql: str, limit: int) -> tuple[list[str], list[tuple], bool]:
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql)
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        rows = cursor.fetchmany(max(0, limit) + 1)
+        has_more = len(rows) > limit
+        return columns, rows[:limit], has_more
+    finally:
+        cursor.close()
+
+
 def _resolve_csv_source(workspace, selector: str):
     sources = []
     sources.extend(resolve_file_sources(workspace, selector, labels=("csv",), allow_directory=False))
@@ -920,7 +932,7 @@ def _resolve_db_connection(workspace, selector: str):
     active_projects = set(getattr(workspace, "active_projects", []) or [])
     if selector in active_projects:
         rows = workspace.cypher(
-            "MATCH (f:file:db) "
+            "MATCH (f:db) "
             "RETURN f.path AS path, coalesce(f._db_connect, f.db_connect) AS db_connect",
             project=selector,
         )
@@ -934,7 +946,7 @@ def _resolve_db_connection(workspace, selector: str):
     selector_stem = os.path.splitext(os.path.basename(selector_head))[0].strip()
     if selector_stem and selector_stem in active_projects:
         rows = workspace.cypher(
-            "MATCH (f:file:db) "
+            "MATCH (f:db) "
             "RETURN f.path AS path, coalesce(f._db_connect, f.db_connect) AS db_connect",
             project=selector_stem,
         )
@@ -967,14 +979,14 @@ def _resolve_db_connection(workspace, selector: str):
 
     try:
         rows = workspace.cypher(
-            "MATCH (f:file:db) WHERE f.path = $path "
+            "MATCH (f:db) WHERE f.path = $path OR f._ref = $path "
             "RETURN coalesce(f._db_connect, f.db_connect) AS db_connect",
             params={"path": source_path},
         )
         if len(rows) != 1:
             basename = os.path.basename(source_path)
             rows = workspace.cypher(
-                "MATCH (f:file:db) WHERE f.name = $name "
+                "MATCH (f:db) WHERE f.name = $name "
                 "RETURN coalesce(f._db_connect, f.db_connect) AS db_connect",
                 params={"name": basename},
             )
@@ -1147,14 +1159,18 @@ def query_command(workspace, sql: str, ref: str = "", limit: int = _DEFAULT_LIMI
             conn = db_connect(readonly=True)
         else:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        stripped = _sqlite_quote_unquoted_schema_columns(conn, stripped)
-        precheck_error = _sqlite_unknown_column_precheck(conn, stripped)
-        if precheck_error:
-            return precheck_error
-        precheck_error = _sqlite_non_numeric_aggregate_precheck(conn, stripped)
-        if precheck_error:
-            return precheck_error
-        columns, display_rows, has_more = _fetch_rows(conn, stripped, limit)
+        dialect = getattr(db_connect, "dialect", "sqlite") if db_connect is not None else "sqlite"
+        if dialect == "sqlite":
+            stripped = _sqlite_quote_unquoted_schema_columns(conn, stripped)
+            precheck_error = _sqlite_unknown_column_precheck(conn, stripped)
+            if precheck_error:
+                return precheck_error
+            precheck_error = _sqlite_non_numeric_aggregate_precheck(conn, stripped)
+            if precheck_error:
+                return precheck_error
+            columns, display_rows, has_more = _fetch_rows(conn, stripped, limit)
+        else:
+            columns, display_rows, has_more = _fetch_dbapi_rows(conn, stripped, limit)
     except Exception as e:
         hint = _sqlite_error_hint(stripped, e, conn)
         suffix = f"\n修正方向: {hint}" if hint else ""

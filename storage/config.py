@@ -15,6 +15,20 @@ class SourceConfig:
     """数据源配置 — 决定怎么发现和访问数据。"""
     type: str = ""            # fs | docker | s3 | ...
     path: str = ""
+    host: str = ""
+    port: int = 0
+    database: str = ""
+    schema: str = ""
+    credential_path: str = ""
+    account: str = ""
+    user: str = ""
+    username: str = ""
+    password: str = ""
+    password_env: str = ""
+    role: str = ""
+    warehouse: str = ""
+    sslmode: str = ""
+    connect_timeout: int = 0
 
 
 @dataclass
@@ -46,7 +60,7 @@ class StoreConfig:
         if not entry:
             return None
         p = os.path.expanduser(entry.source.path)
-        if entry.source.type == "fs" and not os.path.isabs(p):
+        if entry.source.type in {"fs", "snowflake"} and p and not os.path.isabs(p):
             p = os.path.abspath(p)
         return p
 
@@ -61,22 +75,41 @@ class StoreConfig:
         return entry.groups if entry else []
 
 
-def _parse_project(name: str, pdata, base_dir: str = "") -> ProjectConfig:
+def _parse_project(name: str, pdata, base_dir: str = "", graph_defaults: dict = None) -> ProjectConfig:
     """从 YAML 数据解析 ProjectConfig。"""
     if not isinstance(pdata, dict):
         raise ValueError(f"Project '{name}' config must be a dict, got {type(pdata).__name__}")
 
     src = pdata.get("source", {})
     source_path = src.get("path", "")
-    if source_path and src.get("type", "") == "fs":
+    if source_path and src.get("type", "") in {"fs", "snowflake"}:
         expanded = os.path.expanduser(source_path)
         if not os.path.isabs(expanded) and base_dir:
             source_path = os.path.abspath(os.path.join(base_dir, expanded))
+    credential_path = src.get("credential_path", "")
+    if credential_path:
+        expanded = os.path.expanduser(credential_path)
+        if not os.path.isabs(expanded) and base_dir:
+            credential_path = os.path.abspath(os.path.join(base_dir, expanded))
     source_cfg = SourceConfig(
         type=src.get("type", ""),
         path=source_path,
+        host=src.get("host", ""),
+        port=int(src.get("port") or 0),
+        database=src.get("database", ""),
+        schema=src.get("schema", ""),
+        credential_path=credential_path,
+        account=src.get("account", ""),
+        user=src.get("user", ""),
+        username=src.get("username", ""),
+        password=src.get("password", ""),
+        password_env=src.get("password_env", ""),
+        role=src.get("role", ""),
+        warehouse=src.get("warehouse", ""),
+        sslmode=src.get("sslmode", ""),
+        connect_timeout=int(src.get("connect_timeout") or 0),
     )
-    graph = pdata.get("graph", {})
+    graph = {**(graph_defaults or {}), **(pdata.get("graph", {}) or {})}
     graph_cfg = GraphConfig(
         uri=graph.get("uri", ""),
         database=graph.get("database", ""),
@@ -120,9 +153,15 @@ def load_config(config_path: str = None, project_path: str = None) -> StoreConfi
         base_dir = os.path.dirname(os.path.abspath(src))
         with open(src, "r") as f:
             data = yaml.safe_load(f) or {}
+        graph_defaults = data.get("graph_defaults", {}) or {}
         for name, pdata in data.get("projects", {}).items():
             if name not in merged_projects:
-                merged_projects[name] = _parse_project(name, pdata, base_dir=base_dir)
+                merged_projects[name] = _parse_project(
+                    name,
+                    pdata,
+                    base_dir=base_dir,
+                    graph_defaults=graph_defaults,
+                )
 
     if project_path:
         pname = os.path.basename(os.path.abspath(project_path))

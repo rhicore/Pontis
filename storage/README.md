@@ -21,15 +21,23 @@ Workspace.cypher(query)
 Neo4j is the formal query surface for durable graph data, indexes, constraints,
 full Cypher, and future semantic/vector search.
 
-Project isolation is configured through `graph.uri` and `graph.database`:
+Project isolation is configured through `graph.uri`, `graph.database`, and the
+logical project selected by `Workspace`:
 
 - Neo4j Community/local mode uses one Neo4j process per project. Each project
   has a distinct `graph.uri` and uses `database: neo4j`.
 - Neo4j Enterprise/single-process mode can use one shared `graph.uri` and
   distinct `graph.database` values.
+- Shared Neo4j Community mode can use one shared `graph.uri` and
+  `database: neo4j` for multiple logical projects. In this mode, `Workspace`
+  scopes external Cypher to the active project and storage tags published nodes
+  with the reserved `project` property.
 
-In both modes, `project` is a `Workspace.cypher(..., project=...)` route, not a
-node property.
+When a `Workspace` is created with multiple `active_projects`, those projects
+form the maximum visible domain. External Cypher may still filter on
+`project`, but the selected projects are intersected with that active domain;
+queries cannot see or mutate projects that were not activated in the
+`Workspace`.
 
 The old SQLite storage backend, merged read overlay, and in-process Cypher
 executor have been removed from the active storage path. `storage/query_inspector.py`
@@ -37,11 +45,13 @@ only parses enough Cypher structure for source-module query inspection.
 
 ## Layer Boundaries
 
-- `storage/workspace.py` owns project routing and asks source modules whether
-  they must publish virtual subgraphs before a query through `TriggerRouter`.
-  It should not hard-code source labels or source-type rules.
+- `storage/workspace.py` owns project routing, applies user-query project
+  scoping, and asks source modules whether they must publish virtual subgraphs
+  before a query through `TriggerRouter`. It should not hard-code source labels
+  or source-type rules.
 - `storage/store.py` owns module publication order. It executes module-declared
-  Cypher submissions before the query is sent to Neo4j.
+  Cypher submissions before the query is sent to Neo4j, then tags published
+  nodes with the active logical project.
 - `storage/neo4j/graph.py` owns Neo4j connection management, durable node/edge writes,
   native Cypher execution, and Neo4j result normalization.
 - `storage/neo4j/instances.py` owns local one-project-one-Neo4j-process
@@ -62,10 +72,11 @@ All graph nodes share the same public shape:
   `<pontis:project:fs:src:README.md>`, which Neo4j treats as a normal string
   and Workspace may replace after query execution.
 
-`project` is not a node property. It is a `Workspace.cypher(..., project=...)`
-route that selects which project graph database receives the query. Tool syntax
-such as `bird::*:knowledge` is therefore a query-level project selector, not an
-entity filter.
+`project` is a reserved storage property. Source modules should not set or
+remove it themselves; `Store` stamps published nodes with the active logical
+project, and `Workspace.cypher(...)` rewrites external Cypher so node patterns
+can only see that project. Tool syntax such as `bird::*:knowledge` remains a
+query-level project selector, not an entity-authored metadata field.
 
 Other fields such as `name`, `path`, `ref`, `row_count`, `column_count`,
 `brief`, and `detail` are normal properties. Storage must not treat them as
@@ -83,6 +94,11 @@ Current source modules are:
 - `CSVSchemaModule`: exposes CSV/TSV columns as `col` virtual nodes.
 - `SQLiteSchemaModule`: exposes SQLite database tables, views, columns, and
   foreign-key relationship nodes.
+- `SnowflakeSchemaModule`: exposes a live Snowflake database as `db`, `schema`,
+  `table`/`view`, `col`, and `fk`-compatible graph facts.
+- `PostgreSQLSchemaModule`: exposes a live PostgreSQL database the same way.
+  Docker-hosted databases are configured as normal PostgreSQL host/port
+  endpoints; the source module does not call the Docker API.
 
 Every source module is constructed with `ModuleContext` and should only import
 `storage.stores.base` from storage internals. It must not inspect `Store`
@@ -92,6 +108,35 @@ For `source.type: fs`, the registered module chain is:
 
 ```text
 FSModule -> TextModule -> CSVSchemaModule -> SQLiteSchemaModule
+```
+
+For any local PostgreSQL database, use the generic `source.type: postgresql`.
+The database may be a normal local PostgreSQL cluster, a port forwarded service,
+or a Docker-published endpoint; Pontis only uses host/port credentials.
+
+```yaml
+postgresql_source_defaults: &postgresql_source
+  type: postgresql
+  host: 127.0.0.1
+  port: 55432
+  user: root
+  password: "123123"
+
+projects:
+  solar_panel:
+    source:
+      <<: *postgresql_source
+      database: solar_panel
+```
+
+When Pontis itself runs inside the same Docker Compose network as
+`bird_interact_postgresql_full`, use the service name and container port:
+
+```yaml
+source:
+  type: postgresql
+  host: bird_interact_postgresql_full
+  port: 5432
 ```
 
 ## Module Submission Rule

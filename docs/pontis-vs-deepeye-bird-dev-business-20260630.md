@@ -144,6 +144,18 @@
 
 ### 输出列 / 输出形状 / 标签格式
 
+这一类不是泛指“多列就错”。在当前 business 评测下，预测结果多返回列通常已经被放宽；仍归到这一类的 case，核心是答案表的可见结果对象变了：少了题面要求的列，返回了另一种 ID/name/code，行列互相转置，把本应分开的多列合成一列，或把 gold 要求的标签值改成另一套文本。它和 schema linking 的区别在于：很多题的过滤条件和候选集合大体是对的，但最终 `SELECT` 的答案对象没有贴住 BIRD gold。
+
+这类错误经常来自 Pontis 的“解释型回答”倾向。模型会觉得输出 name 比 id 更可读，输出指标列有助于解释排序，输出 `Yes/No` 比原始 `+/-` 更像最终答案，或者把多个槽位字段整理成统一格式。但 BIRD dev 的 gold 通常是机械的最小答案表：题面要 id 就输出 id，题面要原始 code 就输出原始 code，题面要三组管理员字段就保留三组字段。判断这类错题时，重点看结果行集合是否大致正确、主要差异是否集中在 `SELECT` 列、列含义、列数量、标签文本和多行/多列形状。
+
+小类：
+
+- **少选题面要求列**：gold 的答案表包含题面明确要求的字段，Pontis 只返回其中一部分，或把其中一个字段换成解释列。典型如少 `ProductID`、少 `County`、少 `milliseconds`、少第三组管理员字段。
+- **答案对象换位**：过滤集合接近，但 `SELECT` 返回了另一种对象，例如 gold 要 id，Pontis 返回 name；gold 要 set code，Pontis 返回 set name；gold 要 users.Id，Pontis 返回 posts.Id。
+- **行列形状改变**：gold 是多列同一行，Pontis 拆成多行；gold 是多行明细，Pontis 聚合成一行；gold 要两个独立计数列，Pontis 合成一个总数。
+- **标签和原始编码改写**：gold 返回 `YES/NO`、`+/-`、`Normal/Abnormal` 等固定文本或原始编码，Pontis 改成 `yes/no`、解释文本、0/1 或额外说明列。
+- **解释列进入答案表**：Pontis 把排序指标、辅助字段、解释字段一起输出。单纯多列通常已被 business 放宽；仍出现在本类时，通常伴随少列、对象换位、行形状改变或标签不同。
+
 - `california_schools` Q1：题目只要最低三个 rate，Pontis 额外输出 school name；同时用了分母过滤替代 gold 的表达式非空过滤。
 - `california_schools` Q23：SQL 语义接近，但输出别名/形状与 gold 的最小 `School, Street` 结果不完全一致，需复核业务评测未放宽原因。
 - `california_schools` Q33：gold 输出 `Website, School Name` 且过滤 website 非空；Pontis 输出 `School, Website`，列顺序和非空条件都不同。
@@ -260,6 +272,18 @@
 
 ### 行粒度 / 去重 / 明细行 vs 唯一实体
 
+这一类的核心是“同一个自然语言对象在数据库里可能有多行事实记录”。BIRD gold 很多时候不是数唯一实体，而是数 join 后留下的原始行；Pontis 则更常把问题理解成业务实体集合，主动加 `DISTINCT`、`GROUP BY`、`EXISTS`、`IN`、`INTERSECT`，或先按实体取最新/最早/唯一记录。只要这种处理改变了重复行、多次观测、历史记录、关系表明细或 join 乘法，就归到这一类。
+
+典型场景包括：一个 patient 有多条 laboratory row，一个 player 有多条 attributes 历史记录，一个 card 在 legalities/foreign_data/rulings 中有多条关联记录，一个 molecule 有多个 atom/bond/connected 明细。题面写 “how many patients/cards/users” 时，Pontis 会倾向数唯一 patient/card/user；但 gold 可能是 `COUNT(T1.ID)` 直接数 join 行。判断时要看 SQL 是否改变了基本行粒度：`COUNT(DISTINCT ...)` 替代 `COUNT(...)`、`EXISTS` 替代 join、先 group 再 count、只取 latest row、保留并列或丢并列，都会改变结果。
+
+小类：
+
+- **唯一实体替代明细行**：Pontis 用 `COUNT(DISTINCT id)`、`DISTINCT id/name` 或 `GROUP BY id` 把多条事实记录压成一个实体；gold 直接数或返回 join 后明细行。
+- **半连接压缩**：Pontis 用 `EXISTS`、`IN`、`INTERSECT` 判断“是否存在匹配记录”，导致每个实体最多贡献一行；gold 的 join 允许同一实体因多条匹配记录贡献多行。
+- **历史/观测表取单条记录**：Pontis 只取 latest、earliest、best 或每实体一条属性记录；gold 保留属性历史、检查记录、lap 记录、transaction 记录等原始多行。
+- **关系表重复行处理不同**：Pontis 对 legalities、foreign_data、rulings、votes、badges、connected 等关系表去重或聚合；gold 保留这些关系表自身的行数和重复关系。
+- **LEFT/INNER 保留集合不同**：Pontis 换 join 类型或先过滤从表，导致没有匹配明细的主表行被保留或丢弃；gold 的 join 形态决定了最终行粒度。
+
 - `california_schools` Q27：gold 用 LEFT JOIN 保留没有 SAT 行的学校，Pontis 用 INNER JOIN 丢掉这类学校。
 - `california_schools` Q53：gold 返回 Fresno 每所学校的 `NumTstTakr` 明细，Pontis 汇总成 SUM。
 - `california_schools` Q54：gold 只查 Adm1 槽位，Pontis 扩到 Adm1/Adm2，候选集合变大。
@@ -336,6 +360,19 @@
 - `thrombosis_prediction` Q1308：gold count lab rows，Pontis 用 EXISTS 统计 patient。
 
 ### 公式 / 聚合 / 排序候选口径
+
+这一类是 SQL 里“怎么算”的口径错，而不只是返回对象错。Pontis 经常会把题面里的 highest、average、percentage、total、normal range 等词解释成更完整的业务公式，例如先按实体汇总、先过滤异常值、先取每个实体最新记录、把并列全部保留、把文本时间转成数值再排序。BIRD gold 则经常直接按 evidence 给出的字段和表达式写 SQL，不补额外统计逻辑。
+
+这类错题的判断标准是：表和核心字段可能没有完全错，但聚合分母、分子、排序候选集合、排序截断方式或公式层级不同。常见差异包括 `ORDER BY ... LIMIT 1` 与 `MAX()` 等值返回并列、按原始记录聚合与按实体聚合、百分比分母选错、把单笔/单行条件改成 `SUM/HAVING`、把已有指标字段和重算公式互换、在排序前后过滤顺序不同。它和“行粒度”有重叠，但这里更强调公式和聚合表达式本身的口径。
+
+小类：
+
+- **百分比分母/分子错位**：Pontis 选了更自然的全集、去重实体集合或另一个 join 集合作分母；gold 通常按当前 SQL join 后候选行直接计算。
+- **先聚合再过滤 vs 单行条件**：Pontis 把 `amount > x`、`FavoriteCount >= x` 等单行条件改成 `SUM(...) > x` 或 `HAVING`；gold 直接在原始行上过滤。
+- **排序候选集合不同**：Pontis 在排序前加入额外过滤、改用 district/team/player 等更高层实体，或先定某个实体再展开；gold 在原始结果行或 evidence 指定集合上排序。
+- **极值并列处理不同**：Pontis 用 `MAX/MIN` 等值子查询或 `HAVING` 返回所有并列；gold 多数用 `ORDER BY ... LIMIT 1` 截断到一行。
+- **已有指标 vs 重算公式互换**：Pontis 用已有 percent/score/consumption 字段，或反过来重算一个 gold 直接取的字段，导致数值口径不同。
+- **单位和尺度不同**：Pontis 输出 0.x 比例、毫秒/解析时间、合并金额等；gold 使用百分比乘 100、原始文本时间或原始金额列。
 
 - `california_schools` Q15：题目问 district，但 gold 按 school-level SAT 行排序取对应 district，Pontis 切到 `rtype='D'` 的 district SAT 行。
 - `california_schools` Q25：gold 先按 `District Name LIKE 'Riverside%'` 分组算平均；Pontis 用 county、单行 AvgScrMath 和 schools funding 字段。
@@ -434,6 +471,19 @@
 
 ### 精确条件 / 过滤范围 / 值解释
 
+这一类是 `WHERE` 条件的范围或值口径被改了。Pontis 往往会把自然语言条件解释得更“合理”：用 `LIKE '%x%'` 代替 `= 'x'`，补充非空过滤，排除 0 或异常值，加上角色/status 限制，把一种代码扩展成相近代码集合，或者把 evidence 中的字面边界改成更自然的医学/业务边界。BIRD gold 多数按题面/evidence 的字面字段和值直接过滤，不自动扩展。
+
+判断这类错题时，先看表和输出对象是否基本一致，再看候选集合是否因为过滤条件变宽或变窄而变化。它和 schema linking 的区别是：字段大体是同一个或同一组字段，但比较运算符、边界、NULL 处理、LIKE 精确度、是否额外加条件、代码值解释发生了变化。典型 SQL 形态包括额外的 `IS NOT NULL`、`height > 0`、`status='Legal'`、`rtype='S'`，或把 `keyword='Flying'` 改成 `LIKE '%Flying%'`。
+
+小类：
+
+- **精确匹配与模糊匹配互换**：Pontis 用 `LIKE` 扩大文本匹配，或把 gold 的 contains 口径改成 `=`；这会影响值域中包含复合字符串、前后缀、大小写或多标签值的字段。
+- **额外过滤条件**：Pontis 添加 `IS NOT NULL`、非零、合法状态、角色、rtype、admission、active 等条件；gold 没有这些限制，候选集合因此变窄。
+- **漏掉 gold 的限定条件**：Pontis 没加 gold 的非空、status、format、availability、date 或代码条件，候选集合变宽。
+- **边界和比较符不同**：`>`/`>=`、`BETWEEN`、日期当天是否包含、NULL 是否参与排序等细节不同，导致边界行被纳入或排除。
+- **代码值解释扩展**：Pontis 把一个代码、医学检查项、badge、status 或 element 解释成语义相近的一组条件；gold 只按 evidence 或 SQL 中的字面值过滤。
+- **问题文本冲突下选择另一侧**：当 question/evidence/gold 有冲突时，Pontis 选择了题面或 evidence 的自然解释，本类只记录条件层面的差异；明显 gold 异常的题另归到“Gold / evidence / question 字面冲突”。
+
 - `california_schools` Q7：gold 不限制 `rtype`，Pontis 加了 `rtype='S'`。
 - `california_schools` Q16：题面说 Alameda，gold 却过滤 Lake；Pontis按题面走，且用 EXISTS 改变计数粒度。
 - `california_schools` Q28：gold 用 schools.FundingType，Pontis 用 frpm.`Charter Funding Type`。
@@ -487,6 +537,19 @@
 
 ### 原始字段 vs 自行加工 / 原样返回
 
+这一类专门记录“数据库里已经有一个原始字段，但 Pontis 重新加工了它”的错误。BIRD gold 经常要求返回或过滤原始列本身，即使这个列看起来是代码、拼接文本、日期字符串、时间字符串或不够友好的 ID。Pontis 则会尝试把它翻译、规范化、解析、拼接、截断或从其他字段推导出更漂亮的值。
+
+这类错误的关键不在于加工是否业务上更好，而在于 gold 要的是原始数据库字段。比如从 `CDSCode` 推导 district code、把 `+/-` 映射成 inpatient/outpatient、把 F1 时间文本转成 milliseconds、把 raw tags 拆成 tag 表、把姓名字段拼成 full name，都会改变 BIRD 的结果等值。判断时看 SQL 是否用了函数、拼接、日期差、字符串解析、代码映射，或者放弃已有原始列而改用派生表达式。
+
+小类：
+
+- **代码/标签翻译**：Pontis 把原始 `+/-`、`YES/NO`、status code、label code 或 normal/abnormal 字段翻译成解释文本；gold 返回原始值或固定文本。
+- **字符串解析和拼接**：Pontis 拆分 tags、拼接 full name/location、截取文本、解析 grade/date/code；gold 直接返回数据库中的 raw column。
+- **从其他字段推导已有字段**：Pontis 通过 `SUBSTR`、日期差、CDSCode、GSoffered、card issued date 等推导一个值；gold 直接使用库里已有的 district code、low grade、age/year 或对应原始字段。
+- **时间/数值格式转换**：Pontis 将 F1 时间、duration、fastestLapTime、医学检查值等转成毫秒、数值或标准格式；gold 保留原始文本或原始数值列。
+- **原始文本字段结构化**：Pontis 把 raw Tags/Text/Body/Comment 等字段理解成结构化 tag、comment、摘要或解释；gold 直接返回原始文本字段。
+- **已有指标与公式的反向替换**：Pontis 认为已有 percent/score 字段更直接或重算更可靠；gold 可能按 evidence 公式重算，也可能直接取原始字段，关键是不能脱离 gold 的字段口径。
+
 - `california_schools` Q71：gold 返回 frpm.`District Code` 原始列，Pontis 从 schools.CDSCode 用 `SUBSTR` 推导。
 - `california_schools` Q81：gold 返回 frpm.`Low Grade`，Pontis 从 schools.GSoffered 字符串解析最低年级。
 - `california_schools` Q85：gold 按 evidence 公式计算 percent，Pontis 直接返回已有 percent 字段。
@@ -515,6 +578,10 @@
 - `thrombosis_prediction` Q1285：gold 返回原始检查值，Pontis 返回解释/派生结果。
 
 ### Schema / table / role linking
+
+这一类是真正的 schema linking 或 role linking 错误：Pontis 选错了表、字段、join path、关系端点或同名字段的角色。它和 BIRD 风格类不同，因为这里不是“同一事实的两种输出写法”，而是 SQL 落到了不同的数据库对象上，结果语义已经变了。常见原因是多个表里有相似字段，多个 ID/Name/Date/Status 字段看起来都能解释题面，或者关系表两端角色需要严格区分。
+
+典型模式包括：`schools.County` vs `satscores.cname`、`client.district_id` vs account/disposition 路径、post owner vs last editor vs postHistory user、home team vs away team、driver result vs constructor result、`connected.atom_id` vs `connected.atom_id2`。判断这类错题时，要看 Pontis 是否选择了错误事实表、错误实体角色、错误 join key 或错误端点；即使 SQL 形式干净、业务解释合理，只要字段角色与 gold 的 schema 口径不一致，就归到这里。
 
 - `california_schools` Q10：gold 直接 `satscores.cds = frpm.CDSCode`，Pontis 试图给 `cds` 补 0，join key 处理错。
 - `california_schools` Q11：gold 通过 schools-frpm join 限定学校集合，Pontis 只查 frpm，可能多出无 school 匹配行。
@@ -606,6 +673,10 @@
 
 ### Gold / evidence / question 字面冲突或异常口径
 
+这一类不是 Pontis 单方面“没理解数据库”，而是 question、evidence、gold SQL 之间存在冲突，或者 gold 使用了明显不自然的字段/条件组合。Pontis 在这些题里通常选择了题面或 evidence 中更直观的一侧，但评测只认 gold。它们对提升真实业务能力的价值有限，但对 BIRD dev 分数有影响。
+
+判断这类题时要非常谨慎：只有在逐题读 question、evidence、gold、pred 后，能看到明确冲突或 gold 异常，才放进这一类。比如 evidence 写一个阈值而 gold 用另一个阈值，question 指向 comment 但 gold 过滤 post，题面说某个实体关系而 gold 走另一条很不自然的关系路径。这里不适合靠 guardrail 强行泛化，因为泛化后很容易伤到正常题。
+
 - `card_games` Q342：evidence 说 Max(faceConvertedManaCost)，gold 却按 `ORDER BY faceConvertedManaCost LIMIT 1` 取最小；Pontis 按 max 理解。
 - `card_games` Q446：question/gold 用 convertedManaCost=10，evidence 文本写 16；Pontis 按 evidence 的 16。
 - `card_games` Q474：question/gold 是 baseSetSize < 100，evidence 错写 `< 10`；Pontis 按 evidence 的 10。
@@ -635,6 +706,10 @@
 
 ### 执行错误 / SQL 拼写错误
 
+这一类是生成 SQL 不能正常执行，或者执行时引用了不存在的字段、拼错列名、别名作用域错误、大小写/引号不符合实际 schema。它和前面的语义分类不同：即使 SQL 设计思路可能接近，最终也没有得到可比对结果。对于 benchmark，这类错误首先应该由 SQL 执行反馈和 retry 修掉，而不是靠业务 matcher 放宽。
+
+常见成因包括拼写错误如 `CreaionDate`，把字段放到错误表别名下，复杂 join 后引用了不存在的列，或者为了业务解释引入了实际 schema 没有的字段。判断时优先看 result 是否是 execution error / parse error，再看错误 SQL 是否还有明显次因；如果 SQL 可执行但语义错，不放到这一类。
+
 - `codebase_community` Q603：Pontis 使用不存在的 `CreaionDate`，并且路径从 posts.OwnerUserId 出发，不是 gold 的 postHistory.UserId。
 - `codebase_community` Q642：Pontis 使用 posts 表和不存在的 `CreaionDate`；gold 统计 postHistory 的 date(CreationDate)。
 - `codebase_community` Q652：Pontis 使用 posts.`CreaionDate`，并且从 users/posts 出发；gold 从 postHistory.UserDisplayName 和 badges.Date 出发。
@@ -648,6 +723,10 @@
 - `formula_1` Q1016：Pontis race/circuit 相关字段引用错误，执行失败。
 
 ### 疑似业务等价或需要复核评测差异
+
+这一类是暂时没有足够证据判定 Pontis 真错，或者从 SQL 结构看两边可能业务等价，但 business matcher 仍判错。它不是“确认正确”的集合，而是复核队列：需要进一步执行投影对齐、重复行分析、排序无关比较、NULL 处理检查，才能确认是 matcher 漏放宽、数据重复导致差异，还是确实存在隐藏语义差异。
+
+这类题通常有两个特点：核心过滤条件和返回对象看起来接近；差异集中在 `DISTINCT`、排序、重复行、等价日期函数、近似 join 路径或无业务意义的列顺序。后续如果确认只是评测过严，应改 business matcher；如果发现结果集合实际不同，则应移回行粒度、输出形状、schema linking 或条件范围类。
 
 - `card_games` Q375：Pontis 与 gold 都是 cards.id where convertedManaCost=0，看起来业务等价。
 - `card_games` Q378：Pontis 与 gold 都过滤两个 kingdom id 非空并返回 id，看起来业务等价。
@@ -840,3 +919,51 @@ Gap 题：20。BIRD 风格 13，schema/linking 7。
 - 执行错误/timeout：不是 result matching 问题。
 
 因此，继续放宽 business 指标不能解决主差距。主要改进点仍是生成阶段对 BIRD 行粒度、原始字段和最小输出表的服从。 
+
+## DISTINCT 与重复答案行
+
+这轮复盘里专门检查了 BIRD dev gold 对 `DISTINCT` 和重复行的实际使用方式。结论是：BIRD gold 的最终答案表不是集合语义，而是 SQLite 查询结果的 bag semantics。gold SQL 如果没有写 `DISTINCT`，最终答案表允许出现完全重复的 row tuple。
+
+基于 `data/bird_dev/dev.json` 的 SQL 文本统计：
+
+- 全量 dev：1534 题。
+- gold SQL 出现任意 `DISTINCT`：244 题。
+- `SELECT DISTINCT`：179 题。
+- `COUNT(DISTINCT ...)`：65 题。
+- 普通 `COUNT(...)` 且没有 `COUNT(DISTINCT ...)`：428 题。
+
+只看 question/evidence 是否显式出现 `unique`、`distinct`、`different`，不能解释 gold 的多数去重：
+
+- `SELECT DISTINCT` 179 题里，只有 4 题显式出现这些词。
+- `COUNT(DISTINCT ...)` 65 题里，只有 20 题显式出现这些词。
+
+这说明 BIRD gold 使用 `DISTINCT` 的主要依据不是自然语言关键词，而是 gold 自己选择的答案对象粒度。当答案对象是唯一实体或唯一属性值，而 SQL 需要 join 到多行事实表时，gold 经常用 `DISTINCT` 消除 join 重复。相反，当 gold 把 join 后明细行当作答案行时，即使题面自然语言看起来像是在问 entities，也可能不去重。
+
+从最终答案表角度，抽样执行 dev gold 时观察到：
+
+- 可执行的 1529 条 gold 中，1398 条结果没有完全重复行。
+- 131 条结果存在完全重复行。
+- 5 条大查询被 timeout 跳过。
+
+典型重复答案行包括：
+
+- `california_schools` Q53：gold 只 `SELECT NumTstTakr`，结果中 `(0,)` 重复多次。
+- `financial` Q149：gold 只返回 account type，结果中 `DISPONENT` 重复数百次。
+- `toxicology` Q205：gold 返回含 carbon 的 `molecule_id`，同一个 molecule 因多个 carbon atom 重复出现。
+- `card_games` Q351：gold 返回有 Japanese foreign data 的 card name，同名 card 会重复。
+- `card_games` Q469：gold 返回 `YES/NO`，同一个 `NO` 可重复出现。
+
+因此，针对 Pontis 的收尾判断是：
+
+- 不要把 BIRD 答案表默认理解成集合。
+- 不要为了让列表答案“更干净”自动加 `SELECT DISTINCT`。
+- 不要因为 question 中出现复数名词，如 patients/cards/users/schools，就自动 `COUNT(DISTINCT id)`。
+- 只有题面/evidence 明确要求 unique/distinct/different，或者已经确认答案对象是唯一实体列表且 join 只是筛选路径时，才使用 `DISTINCT`。
+- 对 `how many` 问题，先判断 gold 风格更可能数 join 后明细行，还是数唯一实体。BIRD dev 中很多 `how many patients ...` 实际按 Laboratory/Examination join rows 计数。
+
+当前 `Pontis/scripts/BIRD/hard_guard.py` 已有两条相关 warning：
+
+- `COUNT(DISTINCT ...)` 且 question/evidence 没有明确唯一/不同/去重要求时，提示核查是否应改为普通 `COUNT(column)` 或 `COUNT(*)`。
+- `EXISTS` / `IN` 子查询用于 count 场景、把匹配明细压成“是否存在”时，提示核查是否应改成直接 join 后计数。
+
+这两条目前只覆盖 count/how many 场景。普通列表查询里的 `SELECT DISTINCT` 尚未做 warning。考虑到 dev gold 中也有大量合理的隐式 `SELECT DISTINCT`，这类规则不适合 strict guard；如果后续继续优化，只适合做一次性 warning，提醒模型核查 `DISTINCT` 是否会丢掉 BIRD gold 可能保留的重复答案行。

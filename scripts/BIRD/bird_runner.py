@@ -22,6 +22,7 @@ from scripts.BIRD.models import BirdCase, BirdRunResult, CandidateReport
 from scripts.BIRD.result_match import compare_execution_results
 from scripts.BIRD.hard_guard import (
     bird_sql_output_guard,
+    format_bird_sql_output_guard_force_feedback,
     format_bird_sql_output_guard_strict_feedback,
     format_bird_sql_output_guard_warning,
 )
@@ -102,6 +103,7 @@ class PontisBirdRunner:
         feedback: str | None = None
         execution_preview: str | None = None
         seen_deterministic_warnings: set[str] = set()
+        force_feedback_seen = False
 
         for attempt_no in range(1, BIRD_SQL_RETRY_LIMIT + 1):
             request = (
@@ -138,8 +140,10 @@ class PontisBirdRunner:
                 sql,
                 case=case,
                 seen_deterministic_warnings=seen_deterministic_warnings,
+                force_feedback_seen=force_feedback_seen,
             )
             if guard_feedback:
+                force_feedback_seen = True
                 feedback = guard_feedback
                 execution_preview = None
                 predicted_execution = "PARSE_ERROR"
@@ -274,12 +278,16 @@ def _guard_feedback(
     *,
     case: BirdCase,
     seen_deterministic_warnings: set[str],
+    force_feedback_seen: bool,
 ) -> str | None:
     """Return blocking guard feedback.
 
     Deterministic strict findings request revision until cleared.
     Deterministic warnings are returned once per distinct message, then repeated
     occurrences do not request another revision.
+    Force feedback is unconditional; it is not a SQL-content finding. The
+    runner sends it at least once, then keeps attaching it only while strict or
+    new warning feedback is already requesting another revision.
     """
 
     feedback_parts: list[str] = []
@@ -296,6 +304,8 @@ def _guard_feedback(
         seen_deterministic_warnings.update(new_warnings)
         if new_warnings:
             feedback_parts.append(format_bird_sql_output_guard_warning(new_warnings))
+    if deterministic_result.force and (not force_feedback_seen or feedback_parts):
+        feedback_parts.append(format_bird_sql_output_guard_force_feedback(deterministic_result.force))
 
     if not feedback_parts:
         return None

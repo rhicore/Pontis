@@ -14,6 +14,7 @@ from agent.prompt._ontology import get_ontology_prompt
 from agent.prompt._effort import get_effort_prompt, VALID_EFFORTS
 from agent.prompt._sql import get_sql_rules
 from agent.prompt._bird import get_bird_sql_prompt
+from agent.prompt._spider import get_spider_snow_prompt
 from agent.prompt._guardrail import get_guardrail_guidance
 from agent.prompt._project import build_project_context
 from agent.prompt._README import build_readme_context
@@ -69,13 +70,17 @@ def build_prompt_parts(spec) -> list[str]:
     if "bird" in spec.prompts:
         _append_part(parts, get_bird_sql_prompt())
 
-    # 8. 当前项目上下文
+    # 8. Spider2-Snow benchmark 专用 SQL 风格；只由 Spider runner 显式加载
+    if "spider_snow" in spec.prompts:
+        _append_part(parts, get_spider_snow_prompt())
+
+    # 9. 当前项目上下文
     if "project" in spec.prompts:
         project = build_project_context(spec.project_path, spec=spec)
         if project:
             _append_part(parts, project)
 
-    # 9. 当前项目 README
+    # 10. 当前项目 README
     if "readme" in spec.prompts:
         readme = build_readme_context(spec.project_path, spec=spec)
         if readme:

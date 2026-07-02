@@ -6,6 +6,7 @@ from storage import stores
 import logging
 
 from storage.stores.base import parse_pointer
+from storage.cypher_scope import requested_projects_from_cypher, scope_user_cypher, validate_user_cypher
 from storage.triggers import TriggerEvent, TriggerRouter
 
 logger = logging.getLogger(__name__)
@@ -60,24 +61,34 @@ class Workspace:
                 return list(mods)
             store = self._stores.get(project)
             return list(getattr(store, "modules", [])) if store else []
-        store = self._get_store(project)
-        if not store:
-            return []
-        pname = store.project_name
-        mods = self._modules.get(pname)
-        if mods is not None:
-            return list(mods)
-        return list(getattr(store, "modules", []))
+        result = []
+        for pname, store in self._stores.items():
+            mods = self._modules.get(pname)
+            result.extend(list(mods) if mods is not None else list(getattr(store, "modules", [])))
+        return result
 
     def _get_store(self, project: str = None):
-        """获取指定 project 的 Store，默认返回唯一已注册 store 或首个注册 store。"""
+        """获取指定 project 的 Store，默认只在唯一 active project 时返回。"""
         if project:
             return self._stores.get(project)
         if len(self._stores) == 1:
             return next(iter(self._stores.values()))
-        if self._stores:
-            return next(iter(self._stores.values()))
         return None
+
+    def _selected_stores(self, project: str = None, query: str = "", params: dict = None) -> list:
+        if project:
+            requested = requested_projects_from_cypher(query, params)
+            if requested is not None and project not in requested:
+                return []
+            store = self._stores.get(project)
+            return [store] if store else []
+        requested = requested_projects_from_cypher(query, params)
+        if requested is not None:
+            return [
+                store for pname, store in self._stores.items()
+                if pname in requested
+            ]
+        return list(self._stores.values())
 
     @property
     def project_path(self) -> str:
@@ -92,12 +103,20 @@ class Workspace:
         Args:
             query: Cypher 查询字符串
             params: 参数字典（$var 替换）
-            project: 指定项目，None 时使用默认项目
+            project: 指定项目；None 时在所有 active projects 的域内分别执行并合并结果
         """
-        from storage.query_inspector import parse_cypher
-        store = self._get_store(project)
-        if not store:
+        validate_user_cypher(query, params)
+        stores = self._selected_stores(project, query=query, params=params)
+        if not stores:
             return []
+        rows = []
+        for store in stores:
+            rows.extend(self._cypher_store(store, query, params=params))
+        return rows
+
+    def _cypher_store(self, store, query: str, params: dict = None) -> list:
+        from storage.query_inspector import parse_cypher
+        scoped_query, scoped_params = scope_user_cypher(query, params, store.project_name)
         parsed = parse_cypher(query, params=params)
         event = TriggerEvent(
             type="write" if parsed.action != "RETURN" else "query",
@@ -112,7 +131,7 @@ class Workspace:
             with store.execution_lock:
                 if modules:
                     store.publish_modules(modules, force=True)
-                rows = store.execute_cypher(query, params=params)
+                rows = store.execute_cypher(scoped_query, params=scoped_params)
                 store.invalidate_modules()
             return self._resolve_result_pointers(rows, store.project_name)
 
@@ -120,28 +139,24 @@ class Workspace:
             with store.execution_lock:
                 store.publish_modules(modules)
 
-        rows = store.execute_cypher(query, params=params)
+        rows = store.execute_cypher(scoped_query, params=scoped_params)
         return self._resolve_result_pointers(rows, store.project_name)
 
     def refresh_sources(self, project: str = None, modules: list[str] | None = None) -> None:
         """Force selected source modules to publish into Neo4j."""
-        store = self._get_store(project)
-        if not store:
-            return
-        selected = [
-            mod for mod in self.modules(store.project_name)
-            if not modules or mod.name in set(modules)
-        ]
-        with store.execution_lock:
-            store.invalidate_modules(modules)
-            store.publish_modules(selected, force=True)
+        for store in self._selected_stores(project):
+            selected = [
+                mod for mod in self.modules(store.project_name)
+                if not modules or mod.name in set(modules)
+            ]
+            with store.execution_lock:
+                store.invalidate_modules(modules)
+                store.publish_modules(selected, force=True)
 
     def clear_graph(self, project: str = None) -> None:
         """Remove all nodes and relationships from the selected project graph."""
-        store = self._get_store(project)
-        if not store:
-            return
-        store.clear_graph()
+        for store in self._selected_stores(project):
+            store.clear_graph()
 
     def _modules_for_query(self, modules: list, parsed, raw_query: str = "") -> list:
         event = TriggerEvent(type="query", project="", query=raw_query, parsed_query=parsed)

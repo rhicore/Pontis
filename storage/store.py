@@ -92,7 +92,13 @@ class Store:
     def clear_graph(self) -> None:
         """Remove all nodes and relationships for this project graph."""
         with self.execution_lock:
-            self.execute_cypher("MATCH (n) DETACH DELETE n")
+            if self._project_name:
+                self.execute_cypher(
+                    "MATCH (n {project: $project}) DETACH DELETE n",
+                    params={"project": self._project_name},
+                )
+            else:
+                self.execute_cypher("MATCH (n) DETACH DELETE n")
             self.invalidate_modules()
 
     def publish_modules(self, modules: list, *, force: bool = False) -> None:
@@ -107,6 +113,7 @@ class Store:
                 raise RuntimeError(f"Source module {mod.name} failed") from exc
             for statement in statements:
                 self.execute_cypher(statement.query, params=statement.params)
+            self._stamp_project_nodes(mod)
             self._mark_module_published(mod)
 
     def invalidate_modules(self, module_names: list[str] | None = None) -> None:
@@ -115,19 +122,48 @@ class Store:
         prefix = self._module_state_prefix()
         with _PUBLISH_STATE_GUARD:
             for key in list(_PUBLISH_STATE.keys()):
-                if key[:3] != prefix:
+                if key[:4] != prefix:
                     continue
-                if names and key[3] not in names:
+                if names and key[4] not in names:
                     continue
                 _PUBLISH_STATE.pop(key, None)
 
     def _module_state_prefix(self) -> tuple:
         graph_uri = getattr(self._graph, "uri", "") or ""
         graph_db = getattr(self._graph, "database", "") or ""
-        return (self._project_path, graph_uri, graph_db)
+        return (self._project_name, self._project_path, graph_uri, graph_db)
 
     def _module_state_key(self, mod) -> tuple:
         return (*self._module_state_prefix(), getattr(mod, "name", mod.__class__.__name__))
+
+    def _stamp_project_nodes(self, mod) -> None:
+        """Tag nodes published by this project for user-query scoping."""
+        if not self._project_name:
+            return
+
+        source_type = (getattr(self._source_config, "type", "") or "").lower()
+        database = getattr(self._source_config, "database", "") or self._project_name
+        if source_type in {"postgresql", "postgres", "snowflake"} and database:
+            self.execute_cypher(
+                (
+                    "MATCH (n) "
+                    "WHERE n._ref = $database "
+                    "OR n._ref STARTS WITH $prefix "
+                    "OR n._db_ref = $database "
+                    "SET n.project = $project"
+                ),
+                params={
+                    "database": database,
+                    "prefix": f"{database}--",
+                    "project": self._project_name,
+                },
+            )
+            return
+
+        self.execute_cypher(
+            "MATCH (n) WHERE n.project IS NULL SET n.project = $project",
+            params={"project": self._project_name},
+        )
 
     def _module_is_fresh(self, mod) -> bool:
         key = self._module_state_key(mod)

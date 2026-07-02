@@ -15,9 +15,14 @@ from storage.stores.fs import FSModule
 from storage.stores.text import TextModule
 from storage.stores.csv_schema import CSVSchemaModule
 from storage.stores.db_schema import SQLiteSchemaModule
+from storage.stores.snowflake import SnowflakeSchemaModule
+from storage.stores.postgresql import PostgreSQLSchemaModule
 
 _MODULE_REGISTRY = {
     "fs": [FSModule, TextModule, CSVSchemaModule, SQLiteSchemaModule],
+    "snowflake": [FSModule, TextModule, CSVSchemaModule, SnowflakeSchemaModule],
+    "postgresql": [PostgreSQLSchemaModule],
+    "postgres": [PostgreSQLSchemaModule],
 }
 
 
@@ -57,4 +62,13 @@ def register_module(name: str, module_cls):
     _MODULE_REGISTRY[name] = module_cls
 
 
-__all__ = ["FSModule", "TextModule", "CSVSchemaModule", "SQLiteSchemaModule", "create_store", "register_module"]
+__all__ = [
+    "FSModule",
+    "TextModule",
+    "CSVSchemaModule",
+    "SQLiteSchemaModule",
+    "SnowflakeSchemaModule",
+    "PostgreSQLSchemaModule",
+    "create_store",
+    "register_module",
+]

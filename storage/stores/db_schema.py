@@ -69,6 +69,21 @@ def _safe_row_count(cur, name: str) -> int | None:
         return None
 
 
+def _primary_key_columns(columns: list[tuple]) -> list[str]:
+    return [
+        col[1]
+        for col in sorted((col for col in columns if col[5]), key=lambda col: col[5])
+    ]
+
+
+def _primary_key_display(pk_cols: list[str]) -> str:
+    return ", ".join(pk_cols)
+
+
+def _single_primary_key_target(pk_cols: list[str]) -> str:
+    return pk_cols[0] if len(pk_cols) == 1 else "rowid"
+
+
 def _node_copy(node: dict) -> dict:
     return {k: (list(v) if isinstance(v, list) else v) for k, v in node.items()}
 
@@ -304,8 +319,8 @@ class SQLiteSchemaModule(StoreModule):
             for table_name in tables:
                 cur.execute(f'PRAGMA table_info("{table_name}")')
                 columns = cur.fetchall()
-                pk_col = next((col[1] for col in columns if col[5] == 1), None)
-                table_pks[table_name] = pk_col or "rowid"
+                pk_cols = _primary_key_columns(columns)
+                table_pks[table_name] = _single_primary_key_target(pk_cols)
                 row_count = _safe_row_count(cur, table_name)
 
                 table_ref = f"{db_name}--{table_name}"
@@ -316,7 +331,7 @@ class SQLiteSchemaModule(StoreModule):
                     "_db_connect": self.pointer("connect", db_rel),
                     "table_name": table_name,
                     "column_count": len(columns),
-                    "primary_key": pk_col or "",
+                    "primary_key": _primary_key_display(pk_cols),
                     "labels": ["table"],
                 }
                 if row_count is not None:

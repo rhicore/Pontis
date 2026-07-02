@@ -412,12 +412,63 @@ def test_query_trigger_order_and_pointer_resolution(ws: Workspace):
     _clear_graph(fresh)
 
 
-def test_no_project_node_property(ws: Workspace):
+def test_project_visible_domain_filtering():
+    ws = Workspace.__new__(Workspace)
+    ws._stores = {
+        "alpha": type("DummyStore", (), {"project_name": "alpha"})(),
+        "beta": type("DummyStore", (), {"project_name": "beta"})(),
+    }
+
+    _assert_equal(
+        [store.project_name for store in ws._selected_stores(query="MATCH (n) RETURN n")],
+        ["alpha", "beta"],
+        "No project filter should keep the full active project domain.",
+    )
+    _assert_equal(
+        [
+            store.project_name
+            for store in ws._selected_stores(query="MATCH (n {project: 'alpha'}) RETURN n")
+        ],
+        ["alpha"],
+        "Cypher project filters should narrow within the active domain.",
+    )
+    _assert_equal(
+        ws._selected_stores(query="MATCH (n {project: 'gamma'}) RETURN n"),
+        [],
+        "Cypher project filters outside the active domain should see nothing.",
+    )
+    _assert_equal(
+        [
+            store.project_name
+            for store in ws._selected_stores(
+                query="MATCH (n) WHERE n.project IN $projects RETURN n",
+                params={"projects": ["beta", "gamma"]},
+            )
+        ],
+        ["beta"],
+        "Parameterized project filters should be intersected with the active domain.",
+    )
+
+
+def test_project_node_property_and_reserved_mutation(ws: Workspace):
     rows = ws.cypher(
-        "MATCH (n) WHERE n.project IS NOT NULL RETURN count(n) AS nodes",
+        "MATCH (f:file) RETURN count(f) AS nodes",
         project="alpha",
     )
-    _assert_equal(rows, [{"nodes": 0}], "Project must be a Workspace.cypher route, not a node property.")
+    _assert_true(rows[0]["nodes"] > 0, "Published nodes should be visible through the active project scope.")
+
+    project_rows = ws.cypher(
+        "MATCH (f:file) WHERE f.project IS NOT NULL RETURN count(f) AS nodes",
+        project="alpha",
+    )
+    _assert_equal(project_rows, rows, "Published nodes should carry the reserved project property.")
+
+    try:
+        ws.cypher("MATCH (n) SET n.project = 'beta' RETURN n", project="alpha")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("User Cypher should not be able to mutate the reserved project property.")
 
 
 def test_project_database_config(alpha_root: Path, beta_root: Path):
@@ -443,6 +494,38 @@ def test_project_database_config(alpha_root: Path, beta_root: Path):
 
     _assert_equal(config.projects["alpha"].graph.database, "alpha-graph")
     _assert_equal(config.projects["beta"].graph.database, "beta-graph")
+
+
+def test_graph_defaults_config(tmp_root: Path):
+    config_path = tmp_root / "pontis.yml"
+    config_path.write_text(
+        """
+graph_defaults:
+  uri: bolt://localhost:7999
+  database: neo4j
+  user: neo4j
+  password_env: NEO4J_PASSWORD
+
+projects:
+  inherited:
+    source:
+      type: fs
+      path: inherited
+  override:
+    source:
+      type: fs
+      path: override
+    graph:
+      uri: bolt://localhost:8000
+""",
+        encoding="utf-8",
+    )
+    config = load_config(str(config_path))
+    _assert_equal(config.projects["inherited"].graph.uri, "bolt://localhost:7999")
+    _assert_equal(config.projects["inherited"].graph.database, "neo4j")
+    _assert_equal(config.projects["inherited"].graph.password_env, "NEO4J_PASSWORD")
+    _assert_equal(config.projects["override"].graph.uri, "bolt://localhost:8000")
+    _assert_equal(config.projects["override"].graph.database, "neo4j")
 
 
 def test_source_adapter_root_confinement(alpha_root: Path, beta_root: Path):
@@ -491,8 +574,10 @@ def main():
         test_idempotent_refresh(ws)
         test_same_name_paths_and_label_merging(ws)
         test_query_trigger_order_and_pointer_resolution(ws)
-        test_no_project_node_property(ws)
+        test_project_visible_domain_filtering()
+        test_project_node_property_and_reserved_mutation(ws)
         test_project_database_config(alpha, beta)
+        test_graph_defaults_config(tmp_root)
         test_source_adapter_root_confinement(alpha, beta)
         test_pointer_resolution(ws)
 

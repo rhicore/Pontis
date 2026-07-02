@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from itertools import permutations
+from itertools import combinations, permutations
 from math import isfinite, perm
 import re
 from typing import Any, Iterable
 
 
-MAX_COLUMN_SEARCH = 8
-MAX_PROJECTION_CANDIDATES = 20000
+MAX_COLUMN_REORDER_WIDTH = 8
+MAX_PROJECTED_GOLD_WIDTH = 5
+MAX_PROJECTION_CANDIDATES = 200000
 FLOAT_ROUND_DIGITS = 9
 
 _TOP_LIKE_RE = re.compile(
@@ -127,7 +128,7 @@ def _parse_date(text: str) -> date | None:
 def _column_reorder_match(predicted: ExecutionResult, golden: ExecutionResult) -> bool:
     if predicted.width != golden.width or predicted.width <= 1:
         return False
-    if predicted.width > MAX_COLUMN_SEARCH:
+    if predicted.width > MAX_COLUMN_REORDER_WIDTH:
         return False
     golden_rows = _normalized_row_set(golden)
     for indexes in permutations(range(predicted.width)):
@@ -141,12 +142,12 @@ def _column_reorder_match(predicted: ExecutionResult, golden: ExecutionResult) -
 def _predicted_superset_match(predicted: ExecutionResult, golden: ExecutionResult) -> bool:
     if predicted.width <= golden.width:
         return False
-    if predicted.width > MAX_COLUMN_SEARCH:
+    if golden.width <= 0:
         return False
-    if _candidate_count(predicted.width, golden.width) > MAX_PROJECTION_CANDIDATES:
+    if golden.width > MAX_PROJECTED_GOLD_WIDTH:
         return False
     golden_rows = _normalized_row_set(golden)
-    for indexes in permutations(range(predicted.width), golden.width):
+    for indexes in _projection_index_orders(predicted.width, golden.width):
         if _projected_row_set(predicted, indexes, normalize=True) == golden_rows:
             return True
     return False
@@ -163,7 +164,7 @@ def _top_tie_superset_match(
         return False
     if not _TOP_LIKE_RE.search(question or ""):
         return False
-    if predicted.width > MAX_COLUMN_SEARCH:
+    if predicted.width > MAX_COLUMN_REORDER_WIDTH:
         return False
 
     golden_rows = _normalized_row_set(golden)
@@ -185,3 +186,15 @@ def _candidate_count(n: int, k: int) -> int:
         return perm(n, k)
     except ValueError:
         return MAX_PROJECTION_CANDIDATES + 1
+
+
+def _projection_index_orders(predicted_width: int, golden_width: int) -> Iterable[tuple[int, ...]]:
+    if _candidate_count(predicted_width, golden_width) > MAX_PROJECTION_CANDIDATES:
+        return
+    for indexes in combinations(range(predicted_width), golden_width):
+        yield indexes
+        if golden_width <= 1:
+            continue
+        for ordered in permutations(indexes):
+            if ordered != indexes:
+                yield ordered

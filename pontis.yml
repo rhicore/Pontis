@@ -8,11 +8,21 @@
 #   Point projects at the same uri and set graph.database to different database
 #   names, for example california-schools, card-games, bird.
 graph_defaults: &neo4j_graph
+  uri: bolt://localhost:7687
   database: neo4j
   user: neo4j
   password_env: NEO4J_PASSWORD
 
+postgresql_source_defaults: &postgresql_source
+  type: postgresql
+  host: 127.0.0.1
+  port: 55432
+  user: root
+  password: "123123"
+  connect_timeout: 5
+
 projects:
+  # BEGIN BIRD projects
   bird:
     graph:
       <<: *neo4j_graph
@@ -101,407 +111,1468 @@ projects:
     graph:
       <<: *neo4j_graph
       uri: bolt://localhost:7699
+  # END BIRD projects
 
-  # KDDCup 2026 public tasks.
-  # Community/local mode: one Neo4j process per task, one Bolt port per task,
-  # database remains neo4j for each process.
-  task_11:
+  # BEGIN BIRD-Interact projects
+  archeology_scan:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_11
+      <<: *postgresql_source
+      database: archeology_scan
+  mental_health:
+    source:
+      <<: *postgresql_source
+      database: mental_health
+  solar_panel:
+    source:
+      <<: *postgresql_source
+      database: solar_panel
+  virtual_idol:
+    source:
+      <<: *postgresql_source
+      database: virtual_idol
+  insider_trading:
+    source:
+      <<: *postgresql_source
+      database: insider_trading
+  museum_artifact:
+    source:
+      <<: *postgresql_source
+      database: museum_artifact
+  labor_certification_applications:
+    source:
+      <<: *postgresql_source
+      database: labor_certification_applications
+  organ_transplant:
+    source:
+      <<: *postgresql_source
+      database: organ_transplant
+  cross_border:
+    source:
+      <<: *postgresql_source
+      database: cross_border
+  reverse_logistics:
+    source:
+      <<: *postgresql_source
+      database: reverse_logistics
+  cold_chain_pharma_compliance:
+    source:
+      <<: *postgresql_source
+      database: cold_chain_pharma_compliance
+  exchange_traded_funds:
+    source:
+      <<: *postgresql_source
+      database: exchange_traded_funds
+  hulushows:
+    source:
+      <<: *postgresql_source
+      database: hulushows
+  sports_events:
+    source:
+      <<: *postgresql_source
+      database: sports_events
+  disaster_relief:
+    source:
+      <<: *postgresql_source
+      database: disaster_relief
+  cybermarket_pattern:
+    source:
+      <<: *postgresql_source
+      database: cybermarket_pattern
+  polar_equipment:
+    source:
+      <<: *postgresql_source
+      database: polar_equipment
+  planets_data:
+    source:
+      <<: *postgresql_source
+      database: planets_data
+  households:
+    source:
+      <<: *postgresql_source
+      database: households
+  crypto_exchange:
+    source:
+      <<: *postgresql_source
+      database: crypto_exchange
+  robot_fault_prediction:
+    source:
+      <<: *postgresql_source
+      database: robot_fault_prediction
+  fake_account:
+    source:
+      <<: *postgresql_source
+      database: fake_account
+  # END BIRD-Interact projects
+
+  # BEGIN Spider2 projects
+  # Generated Spider2-Snow filesystem projects.
+  # Run scripts/spider/extract.py first to prepare each source path.
+  ADVENTUREWORKS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/ADVENTUREWORKS
+      database: ADVENTUREWORKS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7700
-      database: neo4j
-  task_19:
+      uri: bolt://127.0.0.1:7900
+  AIRLINES:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_19
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/AIRLINES
+      database: AIRLINES
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7701
-      database: neo4j
-  task_22:
+      uri: bolt://127.0.0.1:7901
+  AMAZON_VENDOR_ANALYTICS__SAMPLE_DATASET:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_22
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/AMAZON_VENDOR_ANALYTICS__SAMPLE_DATASET
+      database: AMAZON_VENDOR_ANALYTICS__SAMPLE_DATASET
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7702
-      database: neo4j
-  task_24:
+      uri: bolt://127.0.0.1:7902
+  AUSTIN:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_24
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/AUSTIN
+      database: AUSTIN
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7703
-      database: neo4j
-  task_25:
+      uri: bolt://127.0.0.1:7903
+  BANK_SALES_TRADING:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_25
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/BANK_SALES_TRADING
+      database: BANK_SALES_TRADING
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7704
-      database: neo4j
-  task_26:
+      uri: bolt://127.0.0.1:7904
+  BASEBALL:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_26
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/BASEBALL
+      database: BASEBALL
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7705
-      database: neo4j
-  task_27:
+      uri: bolt://127.0.0.1:7905
+  BBC:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_27
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/BBC
+      database: BBC
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7706
-      database: neo4j
-  task_38:
+      uri: bolt://127.0.0.1:7906
+  BLS:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_38
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/BLS
+      database: BLS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7707
-      database: neo4j
-  task_64:
+      uri: bolt://127.0.0.1:7907
+  BOWLINGLEAGUE:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_64
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/BOWLINGLEAGUE
+      database: BOWLINGLEAGUE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7708
-      database: neo4j
-  task_67:
+      uri: bolt://127.0.0.1:7908
+  BRAZE_USER_EVENT_DEMO_DATASET:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_67
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/BRAZE_USER_EVENT_DEMO_DATASET
+      database: BRAZE_USER_EVENT_DEMO_DATASET
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7709
-      database: neo4j
-  task_74:
+      uri: bolt://127.0.0.1:7909
+  BRAZILIAN_E_COMMERCE:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_74
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/BRAZILIAN_E_COMMERCE
+      database: BRAZILIAN_E_COMMERCE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7710
-      database: neo4j
-  task_75:
+      uri: bolt://127.0.0.1:7910
+  CALIFORNIA_TRAFFIC_COLLISION:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_75
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CALIFORNIA_TRAFFIC_COLLISION
+      database: CALIFORNIA_TRAFFIC_COLLISION
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7711
-      database: neo4j
-  task_80:
+      uri: bolt://127.0.0.1:7911
+  CENSUS_BUREAU_ACS_1:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_80
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CENSUS_BUREAU_ACS_1
+      database: CENSUS_BUREAU_ACS_1
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7712
-      database: neo4j
-  task_86:
+      uri: bolt://127.0.0.1:7912
+  CENSUS_BUREAU_ACS_2:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_86
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CENSUS_BUREAU_ACS_2
+      database: CENSUS_BUREAU_ACS_2
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7713
-      database: neo4j
-  task_89:
+      uri: bolt://127.0.0.1:7913
+  CENSUS_BUREAU_INTERNATIONAL:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_89
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CENSUS_BUREAU_INTERNATIONAL
+      database: CENSUS_BUREAU_INTERNATIONAL
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7714
-      database: neo4j
-  task_145:
+      uri: bolt://127.0.0.1:7914
+  CENSUS_BUREAU_USA:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_145
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CENSUS_BUREAU_USA
+      database: CENSUS_BUREAU_USA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7715
-      database: neo4j
-  task_163:
+      uri: bolt://127.0.0.1:7915
+  CENSUS_GALAXY__AIML_MODEL_DATA_ENRICHMENT_SAMPLE:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_163
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CENSUS_GALAXY__AIML_MODEL_DATA_ENRICHMENT_SAMPLE
+      database: CENSUS_GALAXY__AIML_MODEL_DATA_ENRICHMENT_SAMPLE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7716
-      database: neo4j
-  task_169:
+      uri: bolt://127.0.0.1:7916
+  CENSUS_GALAXY__ZIP_CODE_TO_BLOCK_GROUP_SAMPLE:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_169
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CENSUS_GALAXY__ZIP_CODE_TO_BLOCK_GROUP_SAMPLE
+      database: CENSUS_GALAXY__ZIP_CODE_TO_BLOCK_GROUP_SAMPLE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7717
-      database: neo4j
-  task_173:
+      uri: bolt://127.0.0.1:7917
+  CHICAGO:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_173
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CHICAGO
+      database: CHICAGO
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7718
-      database: neo4j
-  task_180:
+      uri: bolt://127.0.0.1:7918
+  CHINOOK:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_180
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CHINOOK
+      database: CHINOOK
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7719
-      database: neo4j
-  task_194:
+      uri: bolt://127.0.0.1:7919
+  CITY_LEGISLATION:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_194
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CITY_LEGISLATION
+      database: CITY_LEGISLATION
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7720
-      database: neo4j
-  task_196:
+      uri: bolt://127.0.0.1:7920
+  CMS_DATA:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_196
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CMS_DATA
+      database: CMS_DATA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7721
-      database: neo4j
-  task_199:
+      uri: bolt://127.0.0.1:7921
+  COMPLEX_ORACLE:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_199
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/COMPLEX_ORACLE
+      database: COMPLEX_ORACLE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7722
-      database: neo4j
-  task_200:
+      uri: bolt://127.0.0.1:7922
+  COVID19_JHU_WORLD_BANK:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_200
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/COVID19_JHU_WORLD_BANK
+      database: COVID19_JHU_WORLD_BANK
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7723
-      database: neo4j
-  task_214:
+      uri: bolt://127.0.0.1:7923
+  COVID19_NYT:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_214
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/COVID19_NYT
+      database: COVID19_NYT
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7724
-      database: neo4j
-  task_218:
+      uri: bolt://127.0.0.1:7924
+  COVID19_OPEN_DATA:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_218
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/COVID19_OPEN_DATA
+      database: COVID19_OPEN_DATA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7725
-      database: neo4j
-  task_243:
+      uri: bolt://127.0.0.1:7925
+  COVID19_OPEN_WORLD_BANK:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_243
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/COVID19_OPEN_WORLD_BANK
+      database: COVID19_OPEN_WORLD_BANK
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7726
-      database: neo4j
-  task_249:
+      uri: bolt://127.0.0.1:7926
+  COVID19_SYMPTOM_SEARCH:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_249
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/COVID19_SYMPTOM_SEARCH
+      database: COVID19_SYMPTOM_SEARCH
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7727
-      database: neo4j
-  task_250:
+      uri: bolt://127.0.0.1:7927
+  COVID19_USA:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_250
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/COVID19_USA
+      database: COVID19_USA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7728
-      database: neo4j
-  task_257:
+      uri: bolt://127.0.0.1:7928
+  CPTAC_PDC:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_257
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CPTAC_PDC
+      database: CPTAC_PDC
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7729
-      database: neo4j
-  task_259:
+      uri: bolt://127.0.0.1:7929
+  CRYPTO:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_259
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CRYPTO
+      database: CRYPTO
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7730
-      database: neo4j
-  task_261:
+      uri: bolt://127.0.0.1:7930
+  CYMBAL_INVESTMENTS:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_261
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/CYMBAL_INVESTMENTS
+      database: CYMBAL_INVESTMENTS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7731
-      database: neo4j
-  task_269:
+      uri: bolt://127.0.0.1:7931
+  DB_IMDB:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_269
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/DB_IMDB
+      database: DB_IMDB
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7732
-      database: neo4j
-  task_283:
+      uri: bolt://127.0.0.1:7932
+  DEATH:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_283
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/DEATH
+      database: DEATH
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7733
-      database: neo4j
-  task_287:
+      uri: bolt://127.0.0.1:7933
+  DELIVERY_CENTER:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_287
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/DELIVERY_CENTER
+      database: DELIVERY_CENTER
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7734
-      database: neo4j
-  task_292:
+      uri: bolt://127.0.0.1:7934
+  DEPS_DEV_V1:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_292
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/DEPS_DEV_V1
+      database: DEPS_DEV_V1
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7735
-      database: neo4j
-  task_303:
+      uri: bolt://127.0.0.1:7935
+  DIMENSIONS_AI_COVID19:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_303
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/DIMENSIONS_AI_COVID19
+      database: DIMENSIONS_AI_COVID19
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7736
-      database: neo4j
-  task_305:
+      uri: bolt://127.0.0.1:7936
+  EBI_CHEMBL:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_305
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/EBI_CHEMBL
+      database: EBI_CHEMBL
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7737
-      database: neo4j
-  task_330:
+      uri: bolt://127.0.0.1:7937
+  ECLIPSE_MEGAMOVIE:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_330
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/ECLIPSE_MEGAMOVIE
+      database: ECLIPSE_MEGAMOVIE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7738
-      database: neo4j
-  task_344:
+      uri: bolt://127.0.0.1:7938
+  ECOMMERCE:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_344
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/ECOMMERCE
+      database: ECOMMERCE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7739
-      database: neo4j
-  task_349:
+      uri: bolt://127.0.0.1:7939
+  EDUCATION_BUSINESS:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_349
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/EDUCATION_BUSINESS
+      database: EDUCATION_BUSINESS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7740
-      database: neo4j
-  task_350:
+      uri: bolt://127.0.0.1:7940
+  ELECTRONIC_SALES:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_350
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/ELECTRONIC_SALES
+      database: ELECTRONIC_SALES
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7741
-      database: neo4j
-  task_352:
+      uri: bolt://127.0.0.1:7941
+  ENTERTAINMENTAGENCY:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_352
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/ENTERTAINMENTAGENCY
+      database: ENTERTAINMENTAGENCY
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7742
-      database: neo4j
-  task_355:
+      uri: bolt://127.0.0.1:7942
+  EPA_HISTORICAL_AIR_QUALITY:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_355
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/EPA_HISTORICAL_AIR_QUALITY
+      database: EPA_HISTORICAL_AIR_QUALITY
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7743
-      database: neo4j
-  task_379:
+      uri: bolt://127.0.0.1:7943
+  ETHEREUM_BLOCKCHAIN:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_379
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/ETHEREUM_BLOCKCHAIN
+      database: ETHEREUM_BLOCKCHAIN
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7744
-      database: neo4j
-  task_396:
+      uri: bolt://127.0.0.1:7944
+  EU_SOCCER:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_396
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/EU_SOCCER
+      database: EU_SOCCER
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7745
-      database: neo4j
-  task_408:
+      uri: bolt://127.0.0.1:7945
+  E_COMMERCE:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_408
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/E_COMMERCE
+      database: E_COMMERCE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7746
-      database: neo4j
-  task_415:
+      uri: bolt://127.0.0.1:7946
+  F1:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_415
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/F1
+      database: F1
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7747
-      database: neo4j
-  task_418:
+      uri: bolt://127.0.0.1:7947
+  FDA:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_418
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/FDA
+      database: FDA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7748
-      database: neo4j
-  task_420:
+      uri: bolt://127.0.0.1:7948
+  FEC:
     source:
-      type: fs
-      path: example_data/KDDCUP/public/input/task_420
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/FEC
+      database: FEC
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://localhost:7749
-      database: neo4j
+      uri: bolt://127.0.0.1:7949
+  FHIR_SYNTHEA:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/FHIR_SYNTHEA
+      database: FHIR_SYNTHEA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7950
+  FINANCE__ECONOMICS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/FINANCE__ECONOMICS
+      database: FINANCE__ECONOMICS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7951
+  FIREBASE:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/FIREBASE
+      database: FIREBASE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7952
+  GA360:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GA360
+      database: GA360
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7953
+  GA4:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GA4
+      database: GA4
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7954
+  GBIF:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GBIF
+      database: GBIF
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7955
+  GENOMICS_CANNABIS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GENOMICS_CANNABIS
+      database: GENOMICS_CANNABIS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7956
+  GEO_OPENSTREETMAP:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GEO_OPENSTREETMAP
+      database: GEO_OPENSTREETMAP
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7957
+  GEO_OPENSTREETMAP_BOUNDARIES:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GEO_OPENSTREETMAP_BOUNDARIES
+      database: GEO_OPENSTREETMAP_BOUNDARIES
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7958
+  GEO_OPENSTREETMAP_CENSUS_PLACES:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GEO_OPENSTREETMAP_CENSUS_PLACES
+      database: GEO_OPENSTREETMAP_CENSUS_PLACES
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7959
+  GEO_OPENSTREETMAP_WORLDPOP:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GEO_OPENSTREETMAP_WORLDPOP
+      database: GEO_OPENSTREETMAP_WORLDPOP
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7960
+  GHCN_D:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GHCN_D
+      database: GHCN_D
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7961
+  GITHUB_REPOS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GITHUB_REPOS
+      database: GITHUB_REPOS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7962
+  GITHUB_REPOS_DATE:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GITHUB_REPOS_DATE
+      database: GITHUB_REPOS_DATE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7963
+  GLOBAL_GOVERNMENT:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GLOBAL_GOVERNMENT
+      database: GLOBAL_GOVERNMENT
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7964
+  GLOBAL_WEATHER__CLIMATE_DATA_FOR_BI:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GLOBAL_WEATHER__CLIMATE_DATA_FOR_BI
+      database: GLOBAL_WEATHER__CLIMATE_DATA_FOR_BI
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7965
+  GNOMAD:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GNOMAD
+      database: GNOMAD
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7966
+  GOOGLE_ADS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GOOGLE_ADS
+      database: GOOGLE_ADS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7967
+  GOOGLE_DEI:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GOOGLE_DEI
+      database: GOOGLE_DEI
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7968
+  GOOGLE_TRENDS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GOOGLE_TRENDS
+      database: GOOGLE_TRENDS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7969
+  GOOG_BLOCKCHAIN:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/GOOG_BLOCKCHAIN
+      database: GOOG_BLOCKCHAIN
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7970
+  HACKER_NEWS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/HACKER_NEWS
+      database: HACKER_NEWS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7971
+  HTAN_1:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/HTAN_1
+      database: HTAN_1
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7972
+  HTAN_2:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/HTAN_2
+      database: HTAN_2
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7973
+  HUMAN_GENOME_VARIANTS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/HUMAN_GENOME_VARIANTS
+      database: HUMAN_GENOME_VARIANTS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7974
+  IDC:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/IDC
+      database: IDC
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7975
+  IMDB_MOVIES:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/IMDB_MOVIES
+      database: IMDB_MOVIES
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7976
+  IOWA_LIQUOR_SALES:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/IOWA_LIQUOR_SALES
+      database: IOWA_LIQUOR_SALES
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7977
+  IOWA_LIQUOR_SALES_PLUS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/IOWA_LIQUOR_SALES_PLUS
+      database: IOWA_LIQUOR_SALES_PLUS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7978
+  IPL:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/IPL
+      database: IPL
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7979
+  IRS_990:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/IRS_990
+      database: IRS_990
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7980
+  LIBRARIES_IO:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/LIBRARIES_IO
+      database: LIBRARIES_IO
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7981
+  LOG:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/LOG
+      database: LOG
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7982
+  LONDON:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/LONDON
+      database: LONDON
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7983
+  META_KAGGLE:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/META_KAGGLE
+      database: META_KAGGLE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7984
+  MITELMAN:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/MITELMAN
+      database: MITELMAN
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7985
+  MLB:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/MLB
+      database: MLB
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7986
+  MODERN_DATA:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/MODERN_DATA
+      database: MODERN_DATA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7987
+  MUSIC:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/MUSIC
+      database: MUSIC
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7988
+  NCAA_BASKETBALL:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NCAA_BASKETBALL
+      database: NCAA_BASKETBALL
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7989
+  NCAA_INSIGHTS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NCAA_INSIGHTS
+      database: NCAA_INSIGHTS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7990
+  NETHERLANDS_OPEN_MAP_DATA:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NETHERLANDS_OPEN_MAP_DATA
+      database: NETHERLANDS_OPEN_MAP_DATA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7991
+  NEW_YORK:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NEW_YORK
+      database: NEW_YORK
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7992
+  NEW_YORK_CITIBIKE_1:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NEW_YORK_CITIBIKE_1
+      database: NEW_YORK_CITIBIKE_1
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7993
+  NEW_YORK_GEO:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NEW_YORK_GEO
+      database: NEW_YORK_GEO
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7994
+  NEW_YORK_GHCN:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NEW_YORK_GHCN
+      database: NEW_YORK_GHCN
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7995
+  NEW_YORK_NOAA:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NEW_YORK_NOAA
+      database: NEW_YORK_NOAA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7996
+  NEW_YORK_PLUS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NEW_YORK_PLUS
+      database: NEW_YORK_PLUS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7997
+  NHTSA_TRAFFIC_FATALITIES:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NHTSA_TRAFFIC_FATALITIES
+      database: NHTSA_TRAFFIC_FATALITIES
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7998
+  NHTSA_TRAFFIC_FATALITIES_PLUS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NHTSA_TRAFFIC_FATALITIES_PLUS
+      database: NHTSA_TRAFFIC_FATALITIES_PLUS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:7999
+  NOAA_DATA:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NOAA_DATA
+      database: NOAA_DATA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8000
+  NOAA_DATA_PLUS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NOAA_DATA_PLUS
+      database: NOAA_DATA_PLUS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8001
+  NOAA_GLOBAL_FORECAST_SYSTEM:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NOAA_GLOBAL_FORECAST_SYSTEM
+      database: NOAA_GLOBAL_FORECAST_SYSTEM
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8002
+  NOAA_GSOD:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NOAA_GSOD
+      database: NOAA_GSOD
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8003
+  NOAA_PORTS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NOAA_PORTS
+      database: NOAA_PORTS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8004
+  NORTHWIND:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NORTHWIND
+      database: NORTHWIND
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8005
+  NPPES:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/NPPES
+      database: NPPES
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8006
+  OPENAQ:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/OPENAQ
+      database: OPENAQ
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8007
+  OPEN_IMAGES:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/OPEN_IMAGES
+      database: OPEN_IMAGES
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8008
+  OPEN_TARGETS_GENETICS_1:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/OPEN_TARGETS_GENETICS_1
+      database: OPEN_TARGETS_GENETICS_1
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8009
+  OPEN_TARGETS_GENETICS_2:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/OPEN_TARGETS_GENETICS_2
+      database: OPEN_TARGETS_GENETICS_2
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8010
+  OPEN_TARGETS_PLATFORM_1:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/OPEN_TARGETS_PLATFORM_1
+      database: OPEN_TARGETS_PLATFORM_1
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8011
+  OPEN_TARGETS_PLATFORM_2:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/OPEN_TARGETS_PLATFORM_2
+      database: OPEN_TARGETS_PLATFORM_2
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8012
+  ORACLE_SQL:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/ORACLE_SQL
+      database: ORACLE_SQL
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8013
+  PAGILA:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/PAGILA
+      database: PAGILA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8014
+  PANCANCER_ATLAS_1:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/PANCANCER_ATLAS_1
+      database: PANCANCER_ATLAS_1
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8015
+  PANCANCER_ATLAS_2:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/PANCANCER_ATLAS_2
+      database: PANCANCER_ATLAS_2
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8016
+  PATENTS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/PATENTS
+      database: PATENTS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8017
+  PATENTSVIEW:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/PATENTSVIEW
+      database: PATENTSVIEW
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8018
+  PATENTS_GOOGLE:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/PATENTS_GOOGLE
+      database: PATENTS_GOOGLE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8019
+  PATENTS_USPTO:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/PATENTS_USPTO
+      database: PATENTS_USPTO
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8020
+  PYPI:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/PYPI
+      database: PYPI
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8021
+  SAN_FRANCISCO:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/SAN_FRANCISCO
+      database: SAN_FRANCISCO
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8022
+  SAN_FRANCISCO_PLUS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/SAN_FRANCISCO_PLUS
+      database: SAN_FRANCISCO_PLUS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8023
+  SCHOOL_SCHEDULING:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/SCHOOL_SCHEDULING
+      database: SCHOOL_SCHEDULING
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8024
+  SDOH:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/SDOH
+      database: SDOH
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8025
+  SEC_QUARTERLY_FINANCIALS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/SEC_QUARTERLY_FINANCIALS
+      database: SEC_QUARTERLY_FINANCIALS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8026
+  SQLITE_SAKILA:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/SQLITE_SAKILA
+      database: SQLITE_SAKILA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8027
+  STACKING:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/STACKING
+      database: STACKING
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8028
+  STACKOVERFLOW:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/STACKOVERFLOW
+      database: STACKOVERFLOW
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8029
+  STACKOVERFLOW_PLUS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/STACKOVERFLOW_PLUS
+      database: STACKOVERFLOW_PLUS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8030
+  SUNROOF_SOLAR:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/SUNROOF_SOLAR
+      database: SUNROOF_SOLAR
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8031
+  TARGETOME_REACTOME:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/TARGETOME_REACTOME
+      database: TARGETOME_REACTOME
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8032
+  TCGA:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/TCGA
+      database: TCGA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8033
+  TCGA_BIOCLIN_V0:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/TCGA_BIOCLIN_V0
+      database: TCGA_BIOCLIN_V0
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8034
+  TCGA_HG19_DATA_V0:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/TCGA_HG19_DATA_V0
+      database: TCGA_HG19_DATA_V0
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8035
+  TCGA_HG38_DATA_V0:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/TCGA_HG38_DATA_V0
+      database: TCGA_HG38_DATA_V0
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8036
+  TCGA_MITELMAN:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/TCGA_MITELMAN
+      database: TCGA_MITELMAN
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8037
+  THELOOK_ECOMMERCE:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/THELOOK_ECOMMERCE
+      database: THELOOK_ECOMMERCE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8038
+  THE_MET:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/THE_MET
+      database: THE_MET
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8039
+  USA_NAMES:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/USA_NAMES
+      database: USA_NAMES
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8040
+  USDA_NASS_AGRICULTURE:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/USDA_NASS_AGRICULTURE
+      database: USDA_NASS_AGRICULTURE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8041
+  USFS_FIA:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/USFS_FIA
+      database: USFS_FIA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8042
+  US_ADDRESSES__POI:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/US_ADDRESSES__POI
+      database: US_ADDRESSES__POI
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8043
+  US_REAL_ESTATE:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/US_REAL_ESTATE
+      database: US_REAL_ESTATE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8044
+  WEATHER__ENVIRONMENT:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/WEATHER__ENVIRONMENT
+      database: WEATHER__ENVIRONMENT
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8045
+  WIDE_WORLD_IMPORTERS:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/WIDE_WORLD_IMPORTERS
+      database: WIDE_WORLD_IMPORTERS
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8046
+  WORD_VECTORS_US:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/WORD_VECTORS_US
+      database: WORD_VECTORS_US
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8047
+  WORLD_BANK:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/WORLD_BANK
+      database: WORLD_BANK
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8048
+  WWE:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/WWE
+      database: WWE
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8049
+  YES_ENERGY__SAMPLE_DATA:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/YES_ENERGY__SAMPLE_DATA
+      database: YES_ENERGY__SAMPLE_DATA
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8050
+  _1000_GENOMES:
+    source:
+      type: snowflake
+      path: ../workspace/baselines/pontis/spider2_snow/projects/_1000_GENOMES
+      database: _1000_GENOMES
+      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
+    graph:
+      <<: *neo4j_graph
+      uri: bolt://127.0.0.1:8051
+  # END Spider2 projects
