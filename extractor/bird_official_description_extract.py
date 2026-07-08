@@ -1,4 +1,4 @@
-"""Official database description extractor.
+"""BIRD official database description extractor.
 
 This deterministic pass imports human-authored BIRD
 ``database_description/*.csv`` annotations onto existing database column
@@ -26,10 +26,10 @@ def generate(workspace: Workspace) -> None:
     project_path = Path(workspace.project_path)
     description_dir = project_path / _DESCRIPTION_DIR
     if not description_dir.is_dir():
-        logger.info("=== Official description extract: no database_description directory ===")
+        logger.info("=== BIRD official description extract: no database_description directory ===")
         return None
 
-    logger.info("=== Official description extract ===")
+    logger.info("=== BIRD official description extract ===")
     total_rows = 0
     updated = 0
     missing = 0
@@ -67,7 +67,7 @@ def generate(workspace: Workspace) -> None:
         )
 
     logger.info(
-        "Official description extract done: updated %s/%s columns, missing %s",
+        "BIRD official description extract done: updated %s/%s columns, missing %s",
         updated,
         total_rows,
         missing,

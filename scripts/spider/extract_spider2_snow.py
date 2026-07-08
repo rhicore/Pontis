@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare and extract Spider2-Snow filesystem projects for Pontis."""
+"""Prepare and preprocess Spider2-Snow filesystem projects for Pontis."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ for _path in (PONTIS_ROOT, TEXT2SQL_ROOT / "tools"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from extractor.engine import RunOptions, file_log_handler, get_registry, init_workspace, run_modules
+from scripts.preprocess_engine import RunOptions, file_log_handler, get_registry, init_workspace, run_modules
 from scripts.spider.common import (
     get_preprocess_dir,
     get_run_id,
@@ -32,12 +32,13 @@ from scripts.spider.common import (
 
 logger = logging.getLogger(__name__)
 
-FS_PIPELINE = [
-    "json_pattern",
-    "csv_column_stats",
-    "csv_column_sample",
-    "csv_column_topk",
+EXTRACT_PIPELINE = [
+    "spider2_snow_schema",
+    "db_table_group",
 ]
+TOPIC_PIPELINE = ["agent_topic_group"]
+NAVIGATION_PIPELINE = ["agent_spider_navigation_prepare"]
+LANDSCAPE_PIPELINE = ["schema_landscape"]
 EMBEDDING_PIPELINE = ["semantic_embedding"]
 
 
@@ -46,23 +47,35 @@ def extract_one(
     cases: list,
     *,
     force: bool = False,
+    extract_only: bool = False,
+    agent_only: bool = False,
+    skip_topic: bool = False,
+    skip_navigation: bool = False,
+    skip_landscape: bool = False,
     skip_embedding: bool = False,
     debug: bool = False,
 ) -> dict:
-    prepared = prepare_spider2_snow_project(db_id, cases, force=force)
+    prepared = prepare_spider2_snow_project(db_id, cases, force=force and not agent_only)
     project_dir = Path(prepared["project_dir"])
     preprocess_dir = get_preprocess_dir(db_id)
     preprocess_dir.mkdir(parents=True, exist_ok=True)
 
     workspace, config = init_workspace(str(project_dir), verbose=debug)
-    if force:
+    if force and not agent_only:
         workspace.clear_graph()
-    if prepared.get("graph_uri"):
-        workspace.refresh_sources(modules=["snowflake"])
 
     registry = get_registry()
-    pipeline = [name for name in FS_PIPELINE if name in registry]
-    if not skip_embedding:
+    pipeline: list[str] = []
+    if not agent_only:
+        pipeline.extend(name for name in EXTRACT_PIPELINE if name in registry)
+    if not extract_only:
+        if not skip_topic:
+            pipeline.extend(name for name in TOPIC_PIPELINE if name in registry)
+        if not skip_navigation:
+            pipeline.extend(name for name in NAVIGATION_PIPELINE if name in registry)
+        if not skip_landscape:
+            pipeline.extend(name for name in LANDSCAPE_PIPELINE if name in registry)
+    if not extract_only and not skip_embedding:
         pipeline.extend(name for name in EMBEDDING_PIPELINE if name in registry)
 
     result = {
@@ -71,6 +84,11 @@ def extract_one(
         "run_name": get_run_name(),
         "modules": pipeline,
         "timings": {},
+        "extract": 0.0,
+        "topic": 0.0,
+        "navigation": 0.0,
+        "landscape": 0.0,
+        "embedding": 0.0,
         "preprocess_llm_calls": 0,
         "preprocess_llm_total_tokens": 0,
         "preprocess_embedding_calls": 0,
@@ -79,7 +97,7 @@ def extract_one(
     }
 
     with file_log_handler(str(preprocess_dir / "extract.log")):
-        logger.info("=== Spider2-Snow extract: %s ===", db_id)
+        logger.info("=== Spider2-Snow preprocess: %s ===", db_id)
         logger.info("Project: %s", project_dir)
         timings = run_modules(
             pipeline,
@@ -88,9 +106,14 @@ def extract_one(
             options=RunOptions(continue_on_error=False, collect_timing=True),
         )
         result["timings"] = {name: round(value, 3) for name, value in timings.items()}
+        result["extract"] = round(sum(timings.get(name, 0.0) for name in EXTRACT_PIPELINE), 3)
+        result["topic"] = round(sum(timings.get(name, 0.0) for name in TOPIC_PIPELINE), 3)
+        result["navigation"] = round(sum(timings.get(name, 0.0) for name in NAVIGATION_PIPELINE), 3)
+        result["landscape"] = round(sum(timings.get(name, 0.0) for name in LANDSCAPE_PIPELINE), 3)
+        result["embedding"] = round(sum(timings.get(name, 0.0) for name in EMBEDDING_PIPELINE), 3)
         if hasattr(config, "get_preprocess_token_metrics"):
             result.update(config.get_preprocess_token_metrics())
-        logger.info("=== Spider2-Snow extract done: %s ===", db_id)
+        logger.info("=== Spider2-Snow preprocess done: %s ===", db_id)
 
     (preprocess_dir / "summary.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -107,6 +130,11 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--run-id")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--extract-only", action="store_true", help="Run only official schema/table-group extraction.")
+    parser.add_argument("--agent-only", action="store_true", help="Skip extraction and rerun explorer/embedding on the existing graph.")
+    parser.add_argument("--skip-topic", action="store_true")
+    parser.add_argument("--skip-navigation", action="store_true")
+    parser.add_argument("--skip-landscape", action="store_true")
     parser.add_argument("--skip-embedding", action="store_true")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
@@ -130,7 +158,7 @@ def main() -> int:
         raise SystemExit("No Spider2-Snow cases selected.")
     grouped = group_cases_by_db(cases)
 
-    print(f"Spider2-Snow extract run: {get_run_name()} ({get_run_id()})")
+    print(f"Spider2-Snow preprocess run: {get_run_name()} ({get_run_id()})")
     print(f"Databases: {len(grouped)}, cases: {len(cases)}")
     print(f"Pontis config: {config_path}")
 
@@ -142,6 +170,11 @@ def main() -> int:
                     db_id,
                     db_cases,
                     force=args.force,
+                    extract_only=args.extract_only,
+                    agent_only=args.agent_only,
+                    skip_topic=args.skip_topic,
+                    skip_navigation=args.skip_navigation,
+                    skip_landscape=args.skip_landscape,
                     skip_embedding=args.skip_embedding,
                     debug=args.debug,
                 )
@@ -154,6 +187,11 @@ def main() -> int:
                     db_id,
                     db_cases,
                     force=args.force,
+                    extract_only=args.extract_only,
+                    agent_only=args.agent_only,
+                    skip_topic=args.skip_topic,
+                    skip_navigation=args.skip_navigation,
+                    skip_landscape=args.skip_landscape,
                     skip_embedding=args.skip_embedding,
                     debug=args.debug,
                 ): db_id

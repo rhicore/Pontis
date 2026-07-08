@@ -20,7 +20,7 @@ from typing import Any
 
 from datasketches import cpc_sketch
 
-from extractor.modules.utils.refs import set_entity_meta
+from extractor.utils.refs import set_entity_meta
 from storage.workspace import Workspace
 from tool.utils.workspace_access import OpenFileSource, resolve_file_sources
 

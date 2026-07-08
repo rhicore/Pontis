@@ -11,9 +11,9 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from storage.workspace import Workspace
-from extractor.modules.utils.loader import Config
-from extractor.modules.utils.ai_utils import generate_with_prefix
-from extractor.modules.utils.refs import db_column_ref, db_table_ref, get_entity_meta, set_entity_meta
+from extractor.utils.loader import Config
+from extractor.utils.ai_utils import generate_with_prefix
+from extractor.utils.refs import db_column_ref, db_table_ref, get_entity_meta, set_entity_meta
 
 logger = logging.getLogger(__name__)
 

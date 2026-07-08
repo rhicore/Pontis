@@ -330,7 +330,17 @@ class SnowflakeSchemaModule(StoreModule):
             with open(credential_path, "r", encoding="utf-8") as fh:
                 kwargs.update(json.load(fh))
 
-        for key in ("account", "user", "username", "password", "role", "warehouse"):
+        for key in (
+            "account",
+            "user",
+            "username",
+            "password",
+            "role",
+            "warehouse",
+            "authenticator",
+            "token",
+            "token_file_path",
+        ):
             value = getattr(source, key, "") or ""
             if value:
                 kwargs[key] = value
@@ -349,5 +359,31 @@ class SnowflakeSchemaModule(StoreModule):
             kwargs["schema"] = self.schema_filter
         return kwargs
 
+class SnowflakeAccessModule(SnowflakeSchemaModule):
+    """Snowflake connection resolver without live schema publication.
 
-__all__ = ["SnowflakeSchemaModule"]
+    Spider2-Snow schema facts come from official DDL/JSON files. This module is
+    kept only so `_db_connect` pointers can resolve to a Snowflake connection
+    for SQL execution.
+    """
+
+    name = "snowflake"
+    query_labels: set[str] = set()
+
+    def should_materialize_for_query(self, parsed, raw_query: str = "") -> bool:
+        return False
+
+    def cypher_statements(self) -> list[CypherStatement]:
+        return []
+
+    def source_fingerprint(self) -> str | None:
+        return "|".join([
+            "snowflake-access",
+            self.database,
+            getattr(self.ctx.source_config, "account", "") or "",
+            getattr(self.ctx.source_config, "warehouse", "") or "",
+            getattr(self.ctx.source_config, "role", "") or "",
+        ])
+
+
+__all__ = ["SnowflakeSchemaModule", "SnowflakeAccessModule"]

@@ -50,12 +50,24 @@ def get_ontology_prompt() -> str:
 
 | 标签 | 含义 | 典型例子 | 邻接实体 | 实体命名方式 | 常见元数据 |
 |---|---|---|---|---|---|
+| `schema` | 数据库官方 namespace，类似 Snowflake schema/命名空间 | `PUBLIC`, `FEC` | 通常连接上游 `db`，以及 namespace 内的 `table/view`；在大型数据库中也可连接导航层的 `table_group/topic` | 通常用官方 schema 名，内部 ref 常为 `<db>--<schema>` | `name`, `table_count`, `view_count`, `brief`, `detail` |
 | `table` | 数据库表 | `drivers` | 通常连接上游的 `db`，连接自己的 `col`，也常连接 `fk`、`rel`、`overlap`、`disambig` | 通常直接用数据库里的表名命名，例如 `drivers`、`schools` | `row_count`, `column_count`, `primary_key`, `brief`, `detail` |
 | `view` | 数据库视图 | `active_users` | 通常连接上游的 `db`，连接自己的 `col`，也可能连接 `rel`、`disambig` | 通常直接用数据库里的视图名命名，例如 `active_users` | `row_count`, `column_count`, `brief`, `detail` |
 | `csv_table` | CSV/TSV 的表状摘要 | `schools` | 连接上游 `file:csv` 和自己的 `col`，用于描述 CSV 列结构 | 通常由文件名或表头生成 | `column_count`, `delimiter`, `brief`, `detail` |
 | `col` | 表列或视图列，CSV 列也使用这个标签 | `driverId`, `school_name` | 通常连接所属的 `table`、`view`、`csv_table` 或 `csv` 文件，也常连接 `fk`、`rel`、`overlap`、`disambig` | 通常直接用列名命名；图谱 ref 通过 `/` 沿相邻节点路径访问 | `official_column_description`, `official_value_description`, `cardinality`, `null_count`, `null_percentage`, `sample`, `topk`, `min_value`, `max_value`, `mean_value`, `min_length`, `max_length`, `avg_length`, `brief`, `detail` |
 | `fk` | 数据库中显式建立的外键| `orders.user_id->users.id` | 通常连接所属 `db`，同时连接源 `table`、源 `col`、目标 `table`、目标 `col` | 如果没有人工命名，通常按 `源表.源列->目标表.目标列` 的形式命名 | `detail`, `match_rate`, `format_hint`, `brief` |
 | `INT` / `TEXT` / `REAL` / `BLOB` / `BOOL` / `DATETIME` / `JSON` / `FLOAT` | 列类型标签 | `driverId:INT:col` | 这些标签通常附着在 `col` 上，用来说明列的类型；带这些标签的实体最常连接所属的 `table/view/csv`，以及 `fk`、`rel`、`overlap` 等列级关系实体 | 这些通常不是独立命名的实体，而是作为附着在 `col` 上的类型标签出现，例如 `driverId:INT:col` | 使用 `col` 实体元数据 |
+
+### 大型数据库导航层
+
+大型数据库可能有几百张物理表和几万列。遇到这类 project 时，不要直接展开所有 `table/col`；应先读取导航层。
+
+| 标签 | 含义 | 典型例子 | 邻接实体 | 实体命名方式 | 常见元数据 |
+|---|---|---|---|---|---|
+| `table_group` | 命名模式显示为同一逻辑表的物理分片/版本/时间分区 | `GA_SESSIONS_YYYYMMDD`, `INDIVYY` | 通常连接所属 `db/schema` 和成员 `table` | `<db>--table_group--<schema>--<family>` | `family`, `member_count`, `representative_members`, `common_columns`, `variable_columns`, `consistency`, `cognitive_shape`, `agent_usage_hint` |
+| `topic` | agent 创建的 schema 内语义主题分组，不属于官方 schema 结构 | `clinical`, `campaign_finance_transactions`, `patent_citations` | 通常连接所属 `schema`，以及相关 `table_group` 和 standalone `table` | `<db>.<schema>.<topic_key>:topic:knowledge` | `topic_key`, `topic_label`, `brief`, `detail`, `grouping_method`, `source`, `scope`, `confidence`, `agent_usage_hint` |
+
+读取顺序：先读 `schema_landscape.detail`，再看 `schema/topic`，然后展开命中的 `table_group` 或 standalone `table`。不要直接全量展开 `table_group` 的 member tables 或所有 columns。`table_group.consistency=same_order/same_set` 时，代表表通常足以理解全组；`drifting` 时只能把 `common_columns` 当稳定 schema，命中具体成员后再看 `variable_columns`。
 
 ### 语义关系层
 

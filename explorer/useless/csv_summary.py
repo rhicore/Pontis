@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import logging
 
-from extractor.modules import csv_column_stats
+from extractor import csv_column_stats
 from storage.workspace import Workspace
 from tool.utils.workspace_access import OpenFileSource, resolve_file_sources
 

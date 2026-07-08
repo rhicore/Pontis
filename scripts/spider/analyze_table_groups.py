@@ -25,9 +25,70 @@ for _path in (PONTIS_ROOT, TEXT2SQL_ROOT / "tools"):
 from scripts.spider.common import SPIDER2_SNOW_DATABASES, parse_csv_arg
 
 
-_YEAR_RE = re.compile(r"(19|20)\d{2}")
-_YYYYMM_RE = re.compile(r"(19|20)\d{4}")
-_YYYYMMDD_RE = re.compile(r"(19|20)\d{6}")
+_YEAR_RE = re.compile(r"(17|18|19|20)\d{2}")
+_YYYYMM_RE = re.compile(r"(17|18|19|20)\d{4}")
+_YYYYMMDD_RE = re.compile(r"(17|18|19|20)\d{6}")
+_COMPACT_YY_RE = re.compile(r"^([A-Z][A-Z0-9]*?[A-Z])(\d{2})$")
+_COMPACT_PREFIX_DIGIT_YY_RE = re.compile(r"^([A-Z][A-Z0-9]*\d)(\d{2})$")
+_GEO_SUFFIXES = {
+    "ALABAMA",
+    "ALASKA",
+    "AMERICAN_SAMOA",
+    "ARIZONA",
+    "ARKANSAS",
+    "CALIFORNIA",
+    "COLORADO",
+    "CONNECTICUT",
+    "DELAWARE",
+    "DISTRICT_OF_COLUMBIA",
+    "FLORIDA",
+    "GEORGIA",
+    "GUAM",
+    "HAWAII",
+    "IDAHO",
+    "ILLINOIS",
+    "INDIANA",
+    "IOWA",
+    "KANSAS",
+    "KENTUCKY",
+    "LOUISIANA",
+    "MAINE",
+    "MARYLAND",
+    "MASSACHUSETTS",
+    "MICHIGAN",
+    "MINNESOTA",
+    "MISSISSIPPI",
+    "MISSOURI",
+    "MONTANA",
+    "NEBRASKA",
+    "NEVADA",
+    "NEW_HAMPSHIRE",
+    "NEW_JERSEY",
+    "NEW_MEXICO",
+    "NEW_YORK",
+    "NORTH_CAROLINA",
+    "NORTH_DAKOTA",
+    "NORTHERN_MARIANA_ISLANDS",
+    "OHIO",
+    "OKLAHOMA",
+    "OREGON",
+    "PENNSYLVANIA",
+    "PUERTO_RICO",
+    "RHODE_ISLAND",
+    "SOUTH_CAROLINA",
+    "SOUTH_DAKOTA",
+    "TENNESSEE",
+    "TEXAS",
+    "UTAH",
+    "VERMONT",
+    "VIRGIN_ISLANDS",
+    "VIRGINIA",
+    "WASHINGTON",
+    "WEST_VIRGINIA",
+    "WISCONSIN",
+    "WYOMING",
+}
+_GEO_SUFFIX_PATTERN = re.compile(rf"_(?:{'|'.join(sorted(_GEO_SUFFIXES, key=len, reverse=True))})$")
 
 
 def table_family_name(table_name: str) -> str:
@@ -41,11 +102,28 @@ def table_family_name(table_name: str) -> str:
     name = _YEAR_RE.sub("YYYY", name)
 
     # Common Spider2-Snow physical sharding/version suffixes.
-    name = re.sub(r"_R\d+\b", "_R#", name)
+    name = re.sub(r"^REL\d+(?=_|$)", "REL#", name)
+    name = re.sub(r"_R\d+(?=_|$)", "_R#", name)
     name = re.sub(r"_Q[1-4]\b", "_Q#", name)
-    name = re.sub(r"__CHR(?:\d+|X|Y|M|MT)\b", "__CHR#", name)
-    name = re.sub(r"_CHR(?:\d+|X|Y|M|MT)\b", "_CHR#", name)
+    name = re.sub(r"__CHR(?:\d+|X|Y|MT|M)(?=_|$)", "__CHR#", name)
+    name = re.sub(r"_CHR(?:\d+|X|Y|MT|M)(?=_|$)", "_CHR#", name)
     name = re.sub(r"_\d{1,3}\b", "_#", name)
+    name = _GEO_SUFFIX_PATTERN.sub("_GEO_REGION", name)
+    name = _compact_year_family(name)
+    return name
+
+
+def _compact_year_family(name: str) -> str:
+    """Normalize compact FEC-style cycle suffixes such as INDIV20 or PAS220."""
+
+    if "_" in name or len(name) < 4:
+        return name
+    match = _COMPACT_PREFIX_DIGIT_YY_RE.fullmatch(name)
+    if match:
+        return f"{match.group(1)}YY"
+    match = _COMPACT_YY_RE.fullmatch(name)
+    if match:
+        return f"{match.group(1)}YY"
     return name
 
 

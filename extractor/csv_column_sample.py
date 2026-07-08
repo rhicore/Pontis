@@ -5,7 +5,7 @@ CSV profiling is now a single-pass file-level module implemented in
 """
 
 from storage.workspace import Workspace
-from extractor.modules.csv_column_stats import generate as _profile_csv_columns
+from extractor.csv_column_stats import generate as _profile_csv_columns
 
 
 def generate(workspace: Workspace, sample_size: int = 10, file: str | None = None) -> None:

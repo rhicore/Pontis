@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 from contextlib import contextmanager
 from typing import Optional
 
@@ -43,23 +42,13 @@ def get_file_src(workspace: Workspace, rel_path: str):
 
 
 def file_exists(workspace: Workspace, rel_path: str) -> bool:
-    if os.path.isabs(rel_path):
-        return os.path.exists(rel_path)
     file_open = get_file_open(workspace, rel_path)
-    path = getattr(file_open, "path", None)
-    if path:
-        return os.path.exists(path)
-    return False
+    return callable(file_open)
 
 
 def get_file_path(workspace: Workspace, rel_path: str) -> Optional[str]:
-    if os.path.isabs(rel_path):
-        return rel_path if os.path.exists(rel_path) else None
     file_open = get_file_open(workspace, rel_path)
-    path = getattr(file_open, "path", None)
-    if path:
-        return path
-    return None
+    return getattr(file_open, "path", None) if callable(file_open) else None
 
 
 @contextmanager
@@ -72,11 +61,7 @@ def open_text_file(workspace: Workspace, rel_path: str, mode="r", **kwargs):
         finally:
             fh.close()
         return
-    path = get_file_path(workspace, rel_path)
-    if not path:
-        raise FileNotFoundError(rel_path)
-    with open(path, mode, **kwargs) as fh:
-        yield fh
+    raise FileNotFoundError(f"no storage _file_open handle for {rel_path}")
 
 
 @contextmanager
@@ -90,13 +75,7 @@ def open_sqlite_db(workspace: Workspace, rel_path: str, *, readonly: bool = True
     if callable(db_connect):
         conn = db_connect(readonly=readonly)
     else:
-        db_path = getattr(db_connect, "db_path", None) or get_file_path(workspace, rel_path)
-        if not db_path:
-            raise FileNotFoundError(rel_path)
-        if readonly:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        else:
-            conn = sqlite3.connect(db_path)
+        raise FileNotFoundError(f"no storage _db_connect handle for {rel_path}")
     try:
         yield conn
     finally:

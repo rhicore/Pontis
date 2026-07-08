@@ -60,7 +60,7 @@ class StoreConfig:
         if not entry:
             return None
         p = os.path.expanduser(entry.source.path)
-        if entry.source.type in {"fs", "snowflake"} and p and not os.path.isabs(p):
+        if entry.source.type in {"fs", "snowflake", "spider2_snow"} and p and not os.path.isabs(p):
             p = os.path.abspath(p)
         return p
 
@@ -82,7 +82,7 @@ def _parse_project(name: str, pdata, base_dir: str = "", graph_defaults: dict = 
 
     src = pdata.get("source", {})
     source_path = src.get("path", "")
-    if source_path and src.get("type", "") in {"fs", "snowflake"}:
+    if source_path and src.get("type", "") in {"fs", "snowflake", "spider2_snow"}:
         expanded = os.path.expanduser(source_path)
         if not os.path.isabs(expanded) and base_dir:
             source_path = os.path.abspath(os.path.join(base_dir, expanded))

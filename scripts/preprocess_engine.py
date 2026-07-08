@@ -1,6 +1,7 @@
-"""Engine — 模块注册表与执行引擎
+"""Preprocess module registry and runner.
 
-供全量提取、部分执行等脚本共用的基础设施。
+This orchestrates extractor and explorer modules for dataset preprocessing
+scripts. It does not belong to either module family.
 """
 import logging
 import threading
@@ -14,7 +15,7 @@ from storage.workspace import Workspace
 logger = logging.getLogger(__name__)
 
 # 需要传 config 参数的模块
-CONFIG_MODULES = {"db_column_overlap", "ai_db_column_summary", "semantic_embedding"}
+CONFIG_MODULES = {"db_column_overlap", "semantic_embedding"}
 
 _REGISTRY = None
 
@@ -60,16 +61,17 @@ def get_registry() -> Dict[str, object]:
     if _REGISTRY is not None:
         return _REGISTRY
 
-    from extractor.modules.db_column_stats_approx import generate as db_column_stats_approx
-    from extractor.modules.csv_column_stats import generate as csv_column_stats
-    from extractor.modules.csv_column_sample import generate as csv_column_sample
-    from extractor.modules.csv_column_topk import generate as csv_column_topk
-    from extractor.modules.json_pattern import generate as json_pattern
-    from extractor.modules.db_fk_validate import generate as db_fk_validate
-    from extractor.modules.db_column_overlap import generate as db_column_overlap
-    from extractor.modules.ai_db_column_summary import generate as ai_db_column_summary
-    from extractor.modules.semantic_embedding import generate as semantic_embedding
-    from extractor.modules.official_description_extract import generate as official_description_extract
+    from extractor.db_column_stats_approx import generate as db_column_stats_approx
+    from extractor.csv_column_stats import generate as csv_column_stats
+    from extractor.csv_column_sample import generate as csv_column_sample
+    from extractor.csv_column_topk import generate as csv_column_topk
+    from extractor.json_pattern import generate as json_pattern
+    from extractor.db_fk_validate import generate as db_fk_validate
+    from extractor.db_column_overlap import generate as db_column_overlap
+    from extractor.db_table_group import generate as db_table_group
+    from extractor.spider2_snow_schema import generate as spider2_snow_schema
+    from extractor.semantic_embedding import generate as semantic_embedding
+    from extractor.bird_official_description_extract import generate as bird_official_description_extract
 
     _REGISTRY = {
         "db_column_stats_approx": db_column_stats_approx,
@@ -79,8 +81,9 @@ def get_registry() -> Dict[str, object]:
         "json_pattern": json_pattern,
         "db_fk_validate": db_fk_validate,
         "db_column_overlap": db_column_overlap,
-        "ai_db_column_summary": ai_db_column_summary,
-        "official_description_extract": official_description_extract,
+        "db_table_group": db_table_group,
+        "spider2_snow_schema": spider2_snow_schema,
+        "bird_official_description_extract": bird_official_description_extract,
         "semantic_embedding": semantic_embedding,
     }
 
@@ -92,23 +95,18 @@ def get_registry() -> Dict[str, object]:
         from explorer.disambiguate import generate as agent_disambiguate
         from explorer.bird_profile import generate as agent_bird_profile
         from explorer.readme import generate as agent_readme
+        from explorer.topic_group import generate as agent_topic_group
+        from explorer.spider_navigation_prepare import generate as agent_spider_navigation_prepare
+        from explorer.schema_landscape import generate as schema_landscape
+        _REGISTRY["schema_landscape"] = schema_landscape
         _REGISTRY["agent_schema_prepare"] = agent_schema_prepare
         _REGISTRY["agent_relation_disambiguation_review"] = agent_relation_disambiguation_review
         _REGISTRY["agent_description_audit"] = agent_description_audit
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
         _REGISTRY["agent_bird_profile"] = agent_bird_profile
         _REGISTRY["agent_readme"] = agent_readme
-    except ImportError:
-        pass
-
-    # 可选模块（可能被删除或未安装依赖）
-    try:
-        from extractor.modules.ai_db_summary import generate as ai_db_summary
-        from extractor.modules.ai_db_table_summary import generate as ai_db_table_summary
-        from extractor.modules.ai_json_summary import generate as ai_json_summary
-        _REGISTRY["ai_db_summary"] = ai_db_summary
-        _REGISTRY["ai_db_table_summary"] = ai_db_table_summary
-        _REGISTRY["ai_json_summary"] = ai_json_summary
+        _REGISTRY["agent_topic_group"] = agent_topic_group
+        _REGISTRY["agent_spider_navigation_prepare"] = agent_spider_navigation_prepare
     except ImportError:
         pass
 
@@ -168,7 +166,7 @@ def init_workspace(target: str, config_path: str = None, verbose: bool = False) 
 
     供各类提取脚本共用的初始化逻辑。
     """
-    from extractor.modules.utils.loader import load_config
+    from extractor.utils.loader import load_config
     from pathlib import Path
 
     level = logging.DEBUG if verbose else logging.INFO

@@ -15,7 +15,7 @@ from scripts.BIRD.common import (
     get_run_name,
     set_run_id,
 )
-from extractor.engine import (
+from scripts.preprocess_engine import (
     RunOptions,
     file_log_handler,
     get_registry,
@@ -31,11 +31,8 @@ STATIC_PIPELINE = [
     "db_column_overlap",
 ]
 
-AI_PIPELINE = [
-]
-
 OFFICIAL_DESCRIPTION_PIPELINE = [
-    "official_description_extract",
+    "bird_official_description_extract",
 ]
 
 AGENT_PIPELINE = [
@@ -93,9 +90,6 @@ def extract_one(
     result = {
         "name": name,
         "static": 0.0,
-        "ai_columns": 0.0,
-        "ai_tables": 0.0,
-        "ai_db": 0.0,
         "agent": 0.0,
         "schema_prepare": 0.0,
         "relation_review": 0.0,
@@ -139,24 +133,12 @@ def extract_one(
                 config=config,
                 options=RunOptions(continue_on_error=False, collect_timing=True),
             )
-            result["description_review"] = official_timings.get("official_description_extract", 0.0)
+            result["description_review"] = official_timings.get("bird_official_description_extract", 0.0)
             if result["description_review"]:
                 logger.info(f"Official description phase done: {result['description_review']:.1f}s")
 
         if not no_ai:
             registry = get_registry()
-
-            if not agent_only:
-                ai_pipeline = [name for name in AI_PIPELINE if name in registry]
-                ai_timings = run_modules(
-                    ai_pipeline,
-                    workspace,
-                    config=config,
-                    options=RunOptions(continue_on_error=False, collect_timing=True),
-                )
-                result["ai_columns"] = ai_timings.get("ai_db_column_summary", 0.0)
-                result["ai_tables"] = ai_timings.get("ai_db_table_summary", 0.0)
-                result["ai_db"] = ai_timings.get("ai_db_summary", 0.0)
 
             agent_pipeline = [name for name in AGENT_PIPELINE if name in registry]
             agent_timings = run_modules(
@@ -175,12 +157,6 @@ def extract_one(
             result["disambiguate"] = agent_timings.get("agent_disambiguate", 0.0)
             result["readme"] = agent_timings.get("agent_readme", 0.0)
 
-            if result["ai_columns"]:
-                logger.info(f"AI columns phase done: {result['ai_columns']:.1f}s")
-            if result["ai_tables"]:
-                logger.info(f"AI tables phase done: {result['ai_tables']:.1f}s")
-            if result["ai_db"]:
-                logger.info(f"AI db phase done: {result['ai_db']:.1f}s")
             if result["agent"]:
                 logger.info(f"Schema prepare phase done: {result['agent']:.1f}s")
             if result["relation_review"]:
@@ -302,7 +278,7 @@ def main() -> None:
     elif agent_only:
         mode = "static + agent only" if not ai_only else "agent only"
     else:
-        mode = "AI only" if ai_only else "static + AI"
+        mode = "agent only" if ai_only else "static + agent"
     split = "train" if train else "dev"
     print(f"=== BIRD Extract ({split}, {mode}) ===")
     print(f"Databases: {len(db_dirs)}\n")
@@ -319,7 +295,7 @@ def main() -> None:
 
     success, failed = [], []
     all_results = []
-    total_static = total_ai_col = total_ai_tbl = total_ai_db = 0.0
+    total_static = 0.0
     total_agent = total_relation_review = total_desc_review = total_desc_audit = total_disambig = total_readme = 0.0
     total_preprocess_llm_input_tokens = 0
     total_preprocess_llm_cached_input_tokens = 0
@@ -332,7 +308,7 @@ def main() -> None:
     def run_db(db_dir: Path) -> dict:
         name = db_dir.name
         if selected_modules:
-            from extractor.engine import RunOptions, init_workspace, run_modules
+            from scripts.preprocess_engine import RunOptions, init_workspace, run_modules
 
             workspace, config = init_workspace(str(db_dir), verbose=debug)
             pontis_dir = get_preprocess_dir(name, train)
@@ -343,9 +319,6 @@ def main() -> None:
             result = {
                 "name": name,
                 "static": 0.0,
-                "ai_columns": 0.0,
-                "ai_tables": 0.0,
-                "ai_db": 0.0,
                 "agent": 0.0,
                 "schema_prepare": 0.0,
                 "relation_review": 0.0,
@@ -376,7 +349,7 @@ def main() -> None:
                 result["schema_prepare"] = timings.get("agent_schema_prepare", 0.0)
                 result["agent"] = result["schema_prepare"]
                 result["relation_review"] = timings.get("agent_relation_disambiguation_review", 0.0)
-                result["description_review"] = timings.get("official_description_extract", 0.0)
+                result["description_review"] = timings.get("bird_official_description_extract", 0.0)
                 result["description_audit"] = timings.get("agent_description_audit", 0.0)
                 result["disambiguate"] = timings.get("agent_disambiguate", 0.0)
                 result["readme"] = timings.get("agent_readme", 0.0)
@@ -397,16 +370,13 @@ def main() -> None:
         )
 
     def record_result(result: dict) -> None:
-        nonlocal total_static, total_ai_col, total_ai_tbl, total_ai_db
+        nonlocal total_static
         nonlocal total_agent, total_relation_review, total_desc_review, total_desc_audit, total_disambig, total_readme
         nonlocal total_preprocess_llm_input_tokens, total_preprocess_llm_cached_input_tokens
         nonlocal total_preprocess_llm_uncached_input_tokens, total_preprocess_llm_output_tokens
         nonlocal total_preprocess_llm_tokens, total_preprocess_embedding_tokens
         nonlocal total_preprocess_tokens
         total_static += result["static"]
-        total_ai_col += result["ai_columns"]
-        total_ai_tbl += result["ai_tables"]
-        total_ai_db += result["ai_db"]
         total_agent += result["agent"]
         total_relation_review += result.get("relation_review", 0.0)
         total_desc_review += result.get("description_review", 0.0)
@@ -426,12 +396,6 @@ def main() -> None:
         parts = []
         if result["static"]:
             parts.append(f"Static: {result['static']:.1f}s")
-        if result["ai_columns"]:
-            parts.append(f"AI Cols: {result['ai_columns']:.1f}s")
-        if result["ai_tables"]:
-            parts.append(f"AI Tables: {result['ai_tables']:.1f}s")
-        if result["ai_db"]:
-            parts.append(f"AI DB: {result['ai_db']:.1f}s")
         if result["agent"]:
             parts.append(f"Schema: {result['agent']:.1f}s")
         if result.get("relation_review"):
@@ -493,12 +457,11 @@ def main() -> None:
     print("=" * 40)
     print(f"Done: {len(success)} ok, {len(failed)} failed")
     total_all = (
-        total_static + total_ai_col + total_ai_tbl + total_ai_db +
-        total_agent + total_relation_review + total_desc_review + total_desc_audit + total_disambig + total_readme
+        total_static + total_agent + total_relation_review + total_desc_review
+        + total_desc_audit + total_disambig + total_readme
     )
     print(
-        f"Time: static {total_static:.1f}s, AI cols {total_ai_col:.1f}s, "
-        f"AI tables {total_ai_tbl:.1f}s, AI db {total_ai_db:.1f}s, "
+        f"Time: static {total_static:.1f}s, "
         f"schema {total_agent:.1f}s, rel/disambig review {total_relation_review:.1f}s, "
         f"official description {total_desc_review:.1f}s, "
         f"description audit {total_desc_audit:.1f}s, "
@@ -520,9 +483,6 @@ def main() -> None:
         "failed": failed,
         "time_seconds": {
             "static": total_static,
-            "ai_columns": total_ai_col,
-            "ai_tables": total_ai_tbl,
-            "ai_db": total_ai_db,
             "schema": total_agent,
             "relation_review": total_relation_review,
             "description_review": total_desc_review,

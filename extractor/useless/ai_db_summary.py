@@ -13,9 +13,9 @@ import os
 import logging
 from typing import List
 from storage.workspace import Workspace
-from extractor.modules.utils.loader import load_config
-from extractor.modules.utils.ai_utils import generate_detail_and_brief
-from extractor.modules.utils.refs import db_column_ref, db_table_ref, db_view_ref, get_entity_meta
+from extractor.utils.loader import load_config
+from extractor.utils.ai_utils import generate_detail_and_brief
+from extractor.utils.refs import db_column_ref, db_table_ref, db_view_ref, get_entity_meta
 
 logger = logging.getLogger(__name__)
 

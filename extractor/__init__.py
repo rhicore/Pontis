@@ -1,6 +1,10 @@
-"""Pontis metadata extractor engine."""
+"""Pontis deterministic extractor modules.
 
-from extractor.engine import RunOptions, get_registry, init_workspace, run_modules
-from extractor.modules.utils.loader import Config
+Modules are intentionally flat, matching the explorer package structure:
 
-__all__ = ["RunOptions", "get_registry", "init_workspace", "run_modules", "Config"]
+    from extractor.db_column_stats_approx import generate
+"""
+
+from extractor.utils.loader import Config
+
+__all__ = ["Config"]

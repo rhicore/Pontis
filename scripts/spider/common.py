@@ -231,7 +231,7 @@ def spider2_snow_project_config_block(db_ids: Iterable[str] | None = None) -> st
             [
                 f"  {db_id}:",
                 "    source:",
-                "      type: snowflake",
+                "      type: spider2_snow",
                 f"      path: ../workspace/baselines/pontis/spider2_snow/projects/{db_id}",
                 f"      database: {db_id}",
                 "      credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json",

@@ -360,10 +360,13 @@ def _bm25_search(workspace, query: str, ref: str = "",
 
         brief = n.get("brief", "") or ""
         detail = n.get("detail", "") or ""
+        official_table_description = n.get("official_table_description", "") or ""
+        official_view_description = n.get("official_view_description", "") or ""
         official_column_description = n.get("official_column_description", "") or ""
         official_value_description = n.get("official_value_description", "") or ""
         doc_text = (
             f"{name} {brief} {detail} "
+            f"{official_table_description} {official_view_description} "
             f"{official_column_description} {official_value_description}"
         )
         if not doc_text.strip():

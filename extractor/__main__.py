@@ -16,7 +16,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from extractor.engine import get_registry, run_pipeline, init_workspace
+from scripts.preprocess_engine import get_registry, run_pipeline, init_workspace
 
 def _run_modules(args):
     """运行指定的模块（逗号分隔）。"""

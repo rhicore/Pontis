@@ -15,12 +15,13 @@ from storage.stores.fs import FSModule
 from storage.stores.text import TextModule
 from storage.stores.csv_schema import CSVSchemaModule
 from storage.stores.db_schema import SQLiteSchemaModule
-from storage.stores.snowflake import SnowflakeSchemaModule
+from storage.stores.snowflake import SnowflakeAccessModule, SnowflakeSchemaModule
 from storage.stores.postgresql import PostgreSQLSchemaModule
 
 _MODULE_REGISTRY = {
     "fs": [FSModule, TextModule, CSVSchemaModule, SQLiteSchemaModule],
     "snowflake": [FSModule, TextModule, CSVSchemaModule, SnowflakeSchemaModule],
+    "spider2_snow": [SnowflakeAccessModule],
     "postgresql": [PostgreSQLSchemaModule],
     "postgres": [PostgreSQLSchemaModule],
 }
@@ -68,6 +69,7 @@ __all__ = [
     "CSVSchemaModule",
     "SQLiteSchemaModule",
     "SnowflakeSchemaModule",
+    "SnowflakeAccessModule",
     "PostgreSQLSchemaModule",
     "create_store",
     "register_module",

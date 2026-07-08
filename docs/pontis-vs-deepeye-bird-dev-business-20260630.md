@@ -136,7 +136,9 @@
 | thrombosis_prediction | 36 | 35 | 1 |
 | toxicology | 20 | 13 | 7 |
 
-结论：Pontis 与 DeepEye 的差距主体不是知识图谱缺字段，而是生成 SQL 时没有贴住 BIRD gold 的行粒度和原始字段口径。`financial` 和 `toxicology` 的 schema/linking 占比相对更高。
+结论：Pontis 与 DeepEye 的差距主体不是知识图谱缺字段，而是生成 SQL 时没有贴住 BIRD gold 的行粒度、原始字段和最小答案表口径。需要特别注意：表里的 `Meta/schema linking` 不能直接解释成“全部可通过更懂 schema 修掉”。复查 schema 错题后可以看到，其中混有大量 BIRD 特殊 schema 口径、gold/text 冲突和异常角色选择。`financial` 和 `toxicology` 的 schema/linking 占比相对更高，但仍要逐题区分：一部分是真实数据库理解错误；一部分只是 Pontis 选了日常业务更自然的路径，而 BIRD gold 固定采用另一条不自然路径；还有一部分本身就是 question/evidence/gold 角色冲突。后两类不应该算进“无限聪明且懂 schema 的模型也自然能做对”的集合。
+
+换句话说，schema/linking 错题只能说明 Pontis 和 gold 落到了不同数据库对象，不能自动说明 gold 代表唯一自然业务解释。这里面有些确实是可通过更好的 schema role hint 修掉的题，例如 join key、home/away、driver/constructor、bond endpoint 选错；但也有大量题属于 BIRD 特殊理解，例如 `card_games` 固定走 `set_translations` 的异常路径、`formula_1` 固定用 `results.fastestLap` 而不是重新解释 lap 明细、`codebase_community` 在 owner/editor/postHistory/comment 之间采用不直观角色。后者更像是数据集口径适配，不是“充分理解数据库结构后必然能推出”的普通 schema linking 问题。
 
 ## 前 150 道 Pontis business wrong 人工分类
 
@@ -579,9 +581,38 @@
 
 ### Schema / table / role linking
 
-这一类是真正的 schema linking 或 role linking 错误：Pontis 选错了表、字段、join path、关系端点或同名字段的角色。它和 BIRD 风格类不同，因为这里不是“同一事实的两种输出写法”，而是 SQL 落到了不同的数据库对象上，结果语义已经变了。常见原因是多个表里有相似字段，多个 ID/Name/Date/Status 字段看起来都能解释题面，或者关系表两端角色需要严格区分。
+这一类记录 SQL 落到不同数据库对象上的错误：Pontis 选错了表、字段、join path、关系端点或同名字段的角色。它和“输出形状”不同，因为这里通常不是同一结果集合的展示差异，而是事实来源已经变了。
 
-典型模式包括：`schools.County` vs `satscores.cname`、`client.district_id` vs account/disposition 路径、post owner vs last editor vs postHistory user、home team vs away team、driver result vs constructor result、`connected.atom_id` vs `connected.atom_id2`。判断这类错题时，要看 Pontis 是否选择了错误事实表、错误实体角色、错误 join key 或错误端点；即使 SQL 形式干净、业务解释合理，只要字段角色与 gold 的 schema 口径不一致，就归到这里。
+但这类不能直接等价为“模型不懂 schema，所以一定可做对”。复查后需要拆成三种情况：
+
+- **可通过 schema/role 理解修正的 linking 错**：多个表里有相似字段，多个 ID/Name/Date/Status 字段都能解释题面，但 gold 的字段角色在数据库结构中是相对清楚的。典型如 `schools.CDSCode` vs school name join、home team vs away team、driver result vs constructor result、`connected.atom_id` vs `connected.atom_id2`。这类可以通过更好的外键、角色 hint、事实表说明改善。
+- **BIRD 特殊 schema 口径**：gold 选的字段路径不一定是日常业务最自然的路径，而是 BIRD 数据集里的固定口径。典型如 `card_games` 用 `set_translations.id/cards.id` 而不是正常的 `setCode` 路径，`formula_1` 直接用 `results.fastestLap/fastestLapTime` 而不是去 `lapTimes` 重新找最快圈，`european_football_2` 把题里的 player id 落到 `Player_Attributes.id` 而不是 `Player.id/player_api_id`。这类不是“无限聪明模型必然能从业务语义推出”，必须作为 BIRD 风格先验写进 hint 或评测时单独标注。
+- **question/evidence/gold 冲突或异常角色**：题面或 evidence 指向一个自然角色，gold 却走另一个角色。典型如 `codebase_community` Q582 evidence 写 last edited，但 gold 用 `posts.OwnerUserId`；Q584 题面说 comments，gold 用 `postHistory.Comment`；Q632 问 votes made by Harlan，gold 通过 Harlan 的 postHistory 关联到这些 post 上的 votes，而不是 Harlan 自己投出的 votes。这类不能简单算作 Pontis 数据库理解错误。
+
+因此，下面清单里的 schema/linking 题只说明“Pontis 与 gold 选择了不同数据库对象”，不能把它们直接计入“只要更懂数据库就能做对”的集合。很多 schema/linking case 的真实难点不是 schema 缺失，而是 BIRD gold 固定采用某个不自然字段路径，或者 question/evidence/gold 本身给了相互冲突的角色线索。
+
+后续分析“可做对”时应使用更窄的定义：只有当 gold 的表、字段、join path 或 role 能从 schema 结构、外键关系、字段含义和题面/evidence 中稳定推出时，才算真实可修复的数据库理解错误。需要预先知道 BIRD 偏好的固定口径才能选中的题，只能算 BIRD-style 可适配；question/evidence/gold 冲突的题，应进入标注问题或评测口径问题，而不是算 Pontis 没理解数据库。
+
+后续做 explorer/hint 时，只应把第一类和一部分稳定的第二类写入图谱；第三类更适合进入 benchmark 标注问题或 BIRD-gold-style 风险提示。换句话说，schema/linking 错题不能整体算作“可做对题”。真正可做对的 schema 错题，必须满足 gold 的数据库对象选择能从题面、evidence、schema 结构、字段命名和外键关系里稳定推出；如果只能靠“知道 BIRD 这套数据集偏好某个奇怪字段路径”才能选中，就属于 BIRD-style 适配题，而不是普通数据库理解题。
+
+进一步复核下面 87 条 schema/linking 清单后，需要把“schema 错题”和“可做对错题”彻底拆开。这里大量 case 只是表现为表、字段、join path 或 role 不同，但错误根因并不是 Pontis 没看懂数据库结构，而是 BIRD gold 采用了数据集内部固定口径、原始表口径或异常角色口径。
+
+更准确的判断是：
+
+- `financial` 里的 `client.district_id`、district A2/A3、loan/account path，`california_schools` 里的 CDSCode join，`toxicology` 里一部分 bond endpoint，确实更接近真实 schema/role linking 错。这些题可以通过 explorer 写入字段角色、外键路径和事实表说明来修。
+- `card_games` 里的 `set_translations`、`foreign_data`、`rulings/legalities`，很多不是普通 schema linking，而是 BIRD 把 set/card/translation/foreign card 的粒度固定到某张表。业务上更自然的路径未必等于 gold 路径。
+- `formula_1` 里的 `results.fastestLap/fastestLapTime/fastestLapSpeed` vs `lapTimes`，不是简单字段选错。Pontis 常常重新解释最快圈事实；gold 更倾向直接返回 result 表里的原始记录字段。这是 BIRD 原始字段口径。
+- `codebase_community` 里的 owner/editor/postHistory/comment/vote role 很多有自然语言和 gold role 的冲突。比如题面说 editor、comment、votes made by 某人时，gold 可能走 owner 或 postHistory 关联路径。这些不能算作“聪明模型理解 schema 后自然会做对”。
+- `thrombosis_prediction` 的 Laboratory/Examination/Patient 选择，经常和“患者唯一实体 vs 检查记录明细”混在一起。它表面是表选择问题，本质仍是 BIRD 行粒度和检查项原始字段口径。
+- `european_football_2` 的 `Player` vs `Player_Attributes` 也是典型：题面说 player id 时，gold 有时落到属性历史表行 id。这个选择不是由正常业务语义唯一推出的。
+
+所以后续如果要统计“数据库理解错误导致 Pontis 没做对”的集合，不能直接拿本节 87 条作为分母。必须逐题再标：
+
+- **schema-fixable**：gold 路径能从 schema、字段名、外键和题面稳定推出。
+- **bird-style-schema**：必须知道 BIRD 偏好的表粒度、原始字段或固定路径才能贴 gold。
+- **annotation/role-conflict**：question/evidence/gold 的角色线索冲突，或者 gold 路径明显不自然。
+
+只有第一类应该算“可做对的 schema 错题”。第二类是可通过 BIRD-style hint 适配，但不应该被解释成普通数据库理解能力缺陷。第三类更接近 benchmark 标注/口径问题。
 
 - `california_schools` Q10：gold 直接 `satscores.cds = frpm.CDSCode`，Pontis 试图给 `cds` 补 0，join key 处理错。
 - `california_schools` Q11：gold 通过 schools-frpm join 限定学校集合，Pontis 只查 frpm，可能多出无 school 匹配行。

@@ -21,7 +21,7 @@ sys.path.insert(0, ROOT)
 from storage.workspace import Workspace
 from agent.agent import PontusAgent
 from agent.guardrail.sql_utils import get_meta_read
-from extractor.modules.utils.refs import get_entity_meta
+from extractor.utils.refs import get_entity_meta
 from tool.query.tool import query_command
 from tool.grep.tool import grep_command
 from tool.read.tool import read_command

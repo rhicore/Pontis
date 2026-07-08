@@ -12,8 +12,8 @@
 import os
 import logging
 from storage.workspace import Workspace
-from extractor.modules.utils.loader import load_config
-from extractor.modules.utils.ai_utils import generate_detail_and_brief
+from extractor.utils.loader import load_config
+from extractor.utils.ai_utils import generate_detail_and_brief
 
 logger = logging.getLogger(__name__)
 

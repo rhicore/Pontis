@@ -118,10 +118,12 @@ INFO_TYPE_CONFIG = {
     # 结构段
     "table":    InfoTypeConfig(info_fn=lambda m: {
                     "stats": _count_stats(m, ("row_count", "rows"), ("column_count", "cols")),
+                    "brief": _first_present(m, ["brief", "official_table_description"], default="-"),
                     "links": ", ".join(filter(None, [_c(m,'fk'), _c(m,'rel'), _c(m,'hint')])),
                 }),
     "view":     InfoTypeConfig(info_fn=lambda m: {
                     "stats": f"{_v(m,'column_count')} cols",
+                    "brief": _first_present(m, ["brief", "official_view_description"], default="-"),
                     "links": ", ".join(filter(None, [_c(m,'fk'), _c(m,'disambig'), _c(m,'hint')])),
                 }),
     "col":      InfoTypeConfig(info_fn=lambda m: {
@@ -203,12 +205,12 @@ META_TYPE_CONFIG = {
     ),
     # 结构段
     "table": MetaTypeConfig(
-        default_keys=["row_count", "column_count", "primary_key", "fk", "rel", "disambig", "brief", "detail"],
+        default_keys=["row_count", "column_count", "primary_key", "official_table_description", "fk", "rel", "disambig", "brief", "detail"],
         hidden_keys={"name", "labels", "project", "path", "db_name", "db_path", "table_name"},
         adjacency_keys={"col", "fk", "rel"},
     ),
     "view": MetaTypeConfig(
-        default_keys=["row_count", "column_count", "brief", "detail"],
+        default_keys=["row_count", "column_count", "official_view_description", "brief", "detail"],
         hidden_keys={"name", "labels", "project", "path", "db_name", "db_path", "table_name"},
         adjacency_keys={"col", "fk"},
     ),
