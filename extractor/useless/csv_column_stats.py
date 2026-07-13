@@ -1,4 +1,4 @@
-"""Approximate CSV column profiler.
+"""Legacy approximate CSV column profiler.
 
 This replaces the old per-column CSV passes. Each CSV/TSV file is scanned once
 and all column profiles are updated together.
@@ -9,6 +9,9 @@ Outputs per column:
 - distinct sample
 - approximate top-k via Space-Saving
 - numeric/text lightweight stats
+
+It depends on the inactive CSV schema projection and is therefore not part of
+the default preprocess registry.
 """
 
 from __future__ import annotations

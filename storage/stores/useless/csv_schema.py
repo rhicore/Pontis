@@ -1,4 +1,8 @@
-"""CSV schema module — expose CSV/TSV columns as virtual graph nodes."""
+"""Legacy CSV schema projection, intentionally not registered by default.
+
+CSV files remain ``file:csv:text`` nodes and can still be queried directly,
+but their headers are no longer projected into ``csv_table``/``col`` nodes.
+"""
 
 from __future__ import annotations
 
