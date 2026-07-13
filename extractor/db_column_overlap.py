@@ -15,6 +15,7 @@ from extractor.utils.overlap_candidates import (
     _collect_pipeline_candidate_pairs,
     _collect_value_candidate_pairs,
     _normalized_key_name,
+    _prepare_pipeline_comparison_units,
     _should_keep_value_candidate,
 )
 from extractor.utils.overlap_evidence import (
@@ -26,10 +27,10 @@ from extractor.utils.overlap_evidence import (
 )
 from extractor.utils.overlap_options import TABLE_COLUMN_BATCH_SIZE, OverlapOptions, _resolve_options
 from extractor.utils.overlap_filter_pipeline import count_pre_value_candidates, run_overlap_filter_pipeline
+from extractor.utils.overlap_group_policy import apply_overlap_group_policy
 from extractor.utils.overlap_value_matchers import (
     _detect_column_overlaps,
     _detect_column_overlaps_metadata_sample,
-    _split_domain_pair_overlaps,
 )
 from extractor.utils.refs import neo4j_props
 from storage.workspace import Workspace
@@ -72,6 +73,26 @@ def generate(
     sample_bloom_growth_factor: int | None = None,
     sample_bloom_min_hits: int | None = None,
     sample_bloom_sample_rows: int | None = None,
+    sample_bloom_max_domain_members: int | None = None,
+    adaptive_sample_initial_size: int | None = None,
+    adaptive_sample_size: int | None = None,
+    adaptive_sample_max_size: int | None = None,
+    adaptive_sample_min_overlap: float | None = None,
+    adaptive_sample_confidence: float | None = None,
+    adaptive_probe_parallel_queries: int | None = None,
+    adaptive_probe_tables_per_query: int | None = None,
+    adaptive_probe_target_columns_per_query: int | None = None,
+    adaptive_probe_full_membership_enabled: bool | None = None,
+    adaptive_probe_name_fallback_enabled: bool | None = None,
+    adaptive_probe_name_fallback_top_k: int | None = None,
+    adaptive_probe_profile_columns_per_query: int | None = None,
+    adaptive_probe_profile_sample_rows: int | None = None,
+    group_policy_enabled: bool | None = None,
+    group_drop_name_only: bool | None = None,
+    group_drop_local_ordinal: bool | None = None,
+    group_drop_low_overlap_text: bool | None = None,
+    group_low_overlap_text_threshold: float | None = None,
+    group_auto_accept_min_overlap: float | None = None,
     column_domain_enabled: bool | None = None,
     pattern_table_domain_enabled: bool | None = None,
     pattern_table_domain_threshold: float | None = None,
@@ -113,6 +134,26 @@ def generate(
         sample_bloom_growth_factor=sample_bloom_growth_factor,
         sample_bloom_min_hits=sample_bloom_min_hits,
         sample_bloom_sample_rows=sample_bloom_sample_rows,
+        sample_bloom_max_domain_members=sample_bloom_max_domain_members,
+        adaptive_sample_initial_size=adaptive_sample_initial_size,
+        adaptive_sample_size=adaptive_sample_size,
+        adaptive_sample_max_size=adaptive_sample_max_size,
+        adaptive_sample_min_overlap=adaptive_sample_min_overlap,
+        adaptive_sample_confidence=adaptive_sample_confidence,
+        adaptive_probe_parallel_queries=adaptive_probe_parallel_queries,
+        adaptive_probe_tables_per_query=adaptive_probe_tables_per_query,
+        adaptive_probe_target_columns_per_query=adaptive_probe_target_columns_per_query,
+        adaptive_probe_full_membership_enabled=adaptive_probe_full_membership_enabled,
+        adaptive_probe_name_fallback_enabled=adaptive_probe_name_fallback_enabled,
+        adaptive_probe_name_fallback_top_k=adaptive_probe_name_fallback_top_k,
+        adaptive_probe_profile_columns_per_query=adaptive_probe_profile_columns_per_query,
+        adaptive_probe_profile_sample_rows=adaptive_probe_profile_sample_rows,
+        group_policy_enabled=group_policy_enabled,
+        group_drop_name_only=group_drop_name_only,
+        group_drop_local_ordinal=group_drop_local_ordinal,
+        group_drop_low_overlap_text=group_drop_low_overlap_text,
+        group_low_overlap_text_threshold=group_low_overlap_text_threshold,
+        group_auto_accept_min_overlap=group_auto_accept_min_overlap,
         column_domain_enabled=column_domain_enabled,
         pattern_table_domain_enabled=pattern_table_domain_enabled,
         pattern_table_domain_threshold=pattern_table_domain_threshold,
@@ -196,21 +237,38 @@ def _generate_for_database(
         filter_stats,
     )
 
-    domain_value_overlaps, physical_pair_overlaps = _split_domain_pair_overlaps(pair_overlaps)
-    value_overlaps = domain_value_overlaps + [
+    # Logical column domains are first-class columns from this point onward.
+    # Group them exactly like physical columns; expand physical members only
+    # when graph edges are written.
+    value_overlaps = [
         overlap
         for overlap in (
-            _collapse_same_table_group_columns(overlap, table_group_memberships)
-            for overlap in _group_pair_overlaps(physical_pair_overlaps)
+            (
+                overlap
+                if overlap.get("domain_sides")
+                else _collapse_same_table_group_columns(overlap, table_group_memberships)
+            )
+            for overlap in _group_pair_overlaps(pair_overlaps)
         )
         if overlap is not None
     ]
-    name_overlaps = (
-        _detect_name_overlaps(columns_info, table_group_memberships)
-        if options.name_overlap_enabled
-        else []
-    )
+    if options.name_overlap_enabled:
+        logical_units, _logical_stats = _prepare_pipeline_comparison_units(
+            table_columns,
+            table_group_memberships,
+            options=options,
+        )
+        logical_columns = {
+            column["entity_name"]: column
+            for columns in logical_units.values()
+            for column in columns
+        }
+        name_overlaps = _detect_name_overlaps(list(logical_columns.values()), table_group_memberships)
+    else:
+        name_overlaps = []
     overlap_groups = _merge_overlap_evidence(value_overlaps + name_overlaps)
+    overlap_groups, group_policy_stats = apply_overlap_group_policy(overlap_groups, options)
+    logger.info("  Overlap group policy for %s: %s", db_ref, group_policy_stats)
     created_count = 0
     for overlap in overlap_groups:
         if _create_overlap_entity(db_ref, overlap, workspace):
@@ -268,6 +326,7 @@ def _load_db_columns(workspace: Workspace, db_ref: str) -> list[Dict]:
                 "null_percentage": _optional_float(col.get("null_percentage")),
                 "sample": _decode_jsonish(col.get("sample"), default=[]),
                 "topk": _decode_jsonish(col.get("topk"), default=[]),
+                "domain_profile": _decode_jsonish(col.get("domain_profile"), default={}),
             })
     return columns
 
@@ -467,7 +526,6 @@ def _create_overlap_entity(db_ref: str, overlap: Dict, workspace: Workspace) -> 
                 "name": overlapname,
                 "props": neo4j_props({
                     "labels": ["overlap"],
-                    "table_scope": _table_scope([from_table, to_table]),
                     "sources": overlap.get("sources", ["value_domain"]),
                     "stats": overlap["stats"],
                     "filter_evidence": overlap.get("filter_evidence", {}),
@@ -487,14 +545,14 @@ def _create_overlap_entity(db_ref: str, overlap: Dict, workspace: Workspace) -> 
 
 
 def _create_group_overlap_entity(db_ref: str, overlap: Dict, workspace: Workspace) -> bool:
-    """Create one overlap entity for a fully-connected value-domain column group."""
+    """Create one overlap entity for a grouped set of logical columns."""
     try:
         columns = overlap["columns"]
         overlapname = _group_overlap_name(columns)
 
         existing = workspace.cypher("MATCH (n {name: $name}) RETURN n", params={"name": overlapname})
         if existing:
-            _connect_group_overlap_edges(workspace, overlapname, columns)
+            _connect_group_overlap_edges(workspace, overlapname, columns, overlap.get("domain_sides", []))
             return False
 
         _write_cypher(
@@ -504,17 +562,18 @@ def _create_group_overlap_entity(db_ref: str, overlap: Dict, workspace: Workspac
                 "name": overlapname,
                 "props": neo4j_props({
                     "labels": ["overlap"],
-                    "table_scope": _table_scope([column["table"] for column in columns]),
                     "sources": overlap.get("sources", ["value_domain"]),
                     "pair_stats": overlap.get("pair_stats", []),
                     "domain_sides": overlap.get("domain_sides", []),
+                    "review_status": overlap.get("review_status"),
+                    "group_policy_evidence": overlap.get("group_policy_evidence", {}),
                     "stats": overlap["stats"],
                     "created_at": __import__("datetime").datetime.now().isoformat(),
                 }),
             },
         )
 
-        _connect_group_overlap_edges(workspace, overlapname, columns)
+        _connect_group_overlap_edges(workspace, overlapname, columns, overlap.get("domain_sides", []))
         return True
 
     except Exception as e:
@@ -526,11 +585,45 @@ def _table_scope(tables: list[str]) -> str:
     return "intra_table" if len(set(tables)) == 1 else "inter_table"
 
 
-def _connect_group_overlap_edges(workspace: Workspace, overlap_name: str, columns: list[Dict]) -> None:
-    table_refs = {column["table"] for column in columns}
-    column_refs = {column["ref"] for column in columns}
+def _group_overlap_table_refs(columns: list[Dict], domain_sides: list[Dict]) -> list[str]:
+    domain_refs = {str(side.get("domain_ref") or "") for side in domain_sides}
+    table_refs = {
+        str(member.get("table_ref") or member.get("table") or "")
+        for side in domain_sides
+        for member in side.get("members") or []
+    }
+    table_refs.update(
+        str(column.get("table_ref") or column.get("table") or "")
+        for column in columns
+        if str(column.get("ref") or "") not in domain_refs
+    )
+    return sorted(ref for ref in table_refs if ref)
+
+
+def _connect_group_overlap_edges(
+    workspace: Workspace,
+    overlap_name: str,
+    columns: list[Dict],
+    domain_sides: list[Dict] | None = None,
+) -> None:
+    domain_sides = domain_sides or []
+    domain_refs = {str(side.get("domain_ref") or "") for side in domain_sides}
+    table_refs = set(_group_overlap_table_refs(columns, domain_sides))
+    column_refs = {
+        str(column.get("ref") or "")
+        for column in columns
+        if str(column.get("ref") or "") not in domain_refs
+    }
+    column_refs.update(
+        str(member.get("ref") or "")
+        for side in domain_sides
+        for member in side.get("members") or []
+    )
+    # Also connect a logical domain node when the ontology materializes one.
+    column_refs.update(ref for ref in domain_refs if ref)
     for entity_ref in sorted(table_refs | column_refs):
-        _connect_overlap_edge(workspace, overlap_name, entity_ref)
+        if entity_ref:
+            _connect_overlap_edge(workspace, overlap_name, entity_ref)
 
 
 def _connect_overlap_edges(

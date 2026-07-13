@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import sys
 import time
 from collections import Counter, defaultdict
@@ -22,6 +23,8 @@ from extractor import db_column_overlap as overlap
 from extractor import db_table_group
 from extractor.spider2_snow_schema import _load_official_schema
 from extractor.utils.overlap_candidates import _iter_pipeline_candidate_pairs, _prepare_pipeline_comparison_units
+from extractor.utils.overlap_evidence import _detect_name_overlaps, _group_pair_overlaps, _merge_overlap_evidence
+from extractor.utils.overlap_group_policy import apply_overlap_group_policy
 from extractor.utils.overlap_filter_pipeline import (
     FILTER_RUNNERS,
     FilterContext,
@@ -46,6 +49,7 @@ GOLD_PAIR_CSV = ANALYSIS_DIR / "gold_value_overlap_lineage_after_shape_fix" / "g
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = _parse_args()
     if args.source == "project":
         ensure_spider2_snow_neo4j()
@@ -69,6 +73,12 @@ def main() -> int:
     pre_value_rows: list[dict] = []
     overlap_rows: list[dict] = []
 
+    if args.resume:
+        db_rows = _read_csv(out_dir / "db_overlap_counts.csv")
+        completed = {row.get("db_id") for row in db_rows if row.get("status") == "ok"}
+        db_rows = [row for row in db_rows if row.get("status") == "ok"]
+        db_ids = [db_id for db_id in db_ids if db_id not in completed]
+
     for db_id in db_ids:
         db_options = replace(options, **SPIDER_OVERLAP_DB_OVERRIDES.get(db_id, {}))
         started = time.time()
@@ -81,6 +91,13 @@ def main() -> int:
             "multi_column_domains": 0,
             "pre_value_candidates": 0,
             "overlap_candidates": 0,
+            "value_overlap_groups": 0,
+            "final_overlap_entities": 0,
+            "auto_accept_groups": 0,
+            "ai_review_groups": 0,
+            "rejected_name_only_groups": 0,
+            "rejected_local_ordinal_groups": 0,
+            "rejected_low_overlap_text_groups": 0,
             "candidate_seconds": 0.0,
             "value_seconds": 0.0,
             "gold_sql_db": db_id in gold_sql_dbs,
@@ -88,6 +105,7 @@ def main() -> int:
             "gold_recalled": 0,
             "gold_missed": 0,
             "gold_recall": "",
+            "gold_missed_pairs_json": "[]",
             "lazo_estimated": 0,
             "lazo_uncertain": 0,
             "lazo_profile_unavailable": 0,
@@ -109,6 +127,10 @@ def main() -> int:
                 overlap_rows.extend(_overlap_rows(db_id, db_overlaps))
             db_gold_pairs = {pair for gold_db, pair in gold_pairs if gold_db == db_id}
             recalled = _recalled_gold_count_from_overlaps(db_gold_pairs, db_overlaps)
+            recalled_pairs = _expanded_overlap_pair_set(db_overlaps)
+            missed_gold_pairs = sorted(db_gold_pairs - recalled_pairs)
+            final_groups = result.get("final_groups") or []
+            group_recalled = _recalled_gold_count_from_groups(db_gold_pairs, final_groups)
             pre_recalled = _recalled_gold_count_from_candidates(db_gold_pairs, db_pre_pairs)
             decisions = Counter(
                 str((item.get("stats") or {}).get("decision") or "")
@@ -121,11 +143,22 @@ def main() -> int:
                 "multi_column_domains": result["stats"].get("multi_column_domain_count", 0),
                 "pre_value_candidates": result["pre_value_candidate_count"],
                 "overlap_candidates": len(db_overlaps),
+                "value_overlap_groups": result.get("value_overlap_group_count", 0),
+                "final_overlap_entities": len(final_groups),
+                "auto_accept_groups": result.get("group_policy_stats", {}).get("auto_accept", 0),
+                "ai_review_groups": result.get("group_policy_stats", {}).get("ai_review", 0),
+                "rejected_name_only_groups": result.get("group_policy_stats", {}).get("rejected_name_only", 0),
+                "rejected_local_ordinal_groups": result.get("group_policy_stats", {}).get("rejected_local_ordinal", 0),
+                "rejected_low_overlap_text_groups": result.get("group_policy_stats", {}).get("rejected_low_overlap_text", 0),
                 "candidate_seconds": round(result["candidate_seconds"], 3),
                 "value_seconds": round(result["value_seconds"], 3),
                 "gold_recalled": recalled,
                 "gold_missed": len(db_gold_pairs) - recalled,
                 "gold_recall": round(recalled / len(db_gold_pairs), 6) if db_gold_pairs else "",
+                "gold_missed_pairs_json": json.dumps(missed_gold_pairs, ensure_ascii=False),
+                "gold_group_recalled": group_recalled,
+                "gold_group_missed": len(db_gold_pairs) - group_recalled,
+                "gold_group_recall": round(group_recalled / len(db_gold_pairs), 6) if db_gold_pairs else "",
                 "gold_pre_value_recalled": pre_recalled,
                 "gold_pre_value_missed": len(db_gold_pairs) - pre_recalled,
                 "gold_pre_value_recall": round(pre_recalled / len(db_gold_pairs), 6) if db_gold_pairs else "",
@@ -143,18 +176,23 @@ def main() -> int:
         db_rows.append(row)
         print(row, flush=True)
 
-    db_csv = out_dir / "db_overlap_counts.csv"
-    pre_value_csv = out_dir / "pre_value_candidates.csv"
-    overlap_csv = out_dir / "overlap_candidates.csv"
-    _write_csv(db_csv, db_rows)
-    _write_csv(pre_value_csv, pre_value_rows)
-    _write_csv(overlap_csv, overlap_rows)
-    summary = _summary(db_rows, pre_value_rows, overlap_rows, gold_pairs, gold_sql_dbs)
-    summary["db_csv"] = str(db_csv)
-    summary["pre_value_csv"] = str(pre_value_csv)
-    summary["overlap_csv"] = str(overlap_csv)
-    summary_path = out_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _write_audit_outputs(
+            out_dir,
+            db_rows,
+            pre_value_rows,
+            overlap_rows,
+            gold_pairs,
+            gold_sql_dbs,
+        )
+
+    summary = _write_audit_outputs(
+        out_dir,
+        db_rows,
+        pre_value_rows,
+        overlap_rows,
+        gold_pairs,
+        gold_sql_dbs,
+    )
     print("OUT", out_dir)
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
@@ -182,6 +220,11 @@ def _parse_args() -> argparse.Namespace:
         help="Write only per-database counts and recall; do not retain detailed candidate rows in memory.",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Keep successful rows already checkpointed in the output directory and run the rest.",
+    )
+    parser.add_argument(
         "--fail-fast",
         action="store_true",
         help="Abort immediately if any database/profile query fails; never continue with partial counts.",
@@ -193,7 +236,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--value-match-method",
-        choices=("sql", "minhash", "minhash_then_sql", "snowflake_minhash", "snowflake_lazo", "hash_index", "sample_bloom", "sample_bloom_then_sql", "metadata_sample"),
+        choices=("sql", "minhash", "minhash_then_sql", "snowflake_minhash", "snowflake_lazo", "snowflake_adaptive_probe", "hash_index", "sample_bloom", "sample_bloom_then_sql", "adaptive_sample_bloom", "metadata_sample"),
         help="Override db_column_overlap value matching method.",
     )
     return parser.parse_args()
@@ -404,6 +447,12 @@ def _run_snowflake_schema_db(db_id: str, options: overlap.OverlapOptions) -> dic
     t2 = time.time()
     filter_stats.update(value_filter_stats)
     stats["filter_pipeline"] = filter_stats
+    final_groups, value_group_count, group_policy_stats = _build_final_overlap_groups(
+        db_overlaps,
+        table_columns,
+        memberships,
+        options,
+    )
     pre_value_candidate_count = (
         filter_stats["value_overlap"]["input"]
         if "value_overlap" in filter_stats
@@ -418,7 +467,37 @@ def _run_snowflake_schema_db(db_id: str, options: overlap.OverlapOptions) -> dic
         "pre_value_candidate_count": pre_value_candidate_count,
         "candidate_seconds": t1 - t0,
         "value_seconds": t2 - t1,
+        "final_groups": final_groups,
+        "value_overlap_group_count": value_group_count,
+        "group_policy_stats": group_policy_stats,
     }
+
+
+def _build_final_overlap_groups(
+    pair_overlaps: list[dict],
+    table_columns: dict[str, list[dict]],
+    memberships: dict[str, set[str]],
+    options: overlap.OverlapOptions,
+) -> tuple[list[dict], int, dict[str, int]]:
+    value_groups = _group_pair_overlaps(pair_overlaps)
+    logical_units, _stats = _prepare_pipeline_comparison_units(
+        table_columns,
+        memberships,
+        options=options,
+    )
+    logical_columns = {
+        column["entity_name"]: column
+        for columns in logical_units.values()
+        for column in columns
+    }
+    name_groups = (
+        _detect_name_overlaps(list(logical_columns.values()), memberships)
+        if options.name_overlap_enabled
+        else []
+    )
+    merged = _merge_overlap_evidence(value_groups + name_groups)
+    final_groups, policy_stats = apply_overlap_group_policy(merged, options)
+    return final_groups, len(value_groups), policy_stats
 
 
 def _collect_snowflake_value_candidates_streaming(
@@ -735,6 +814,43 @@ def _recalled_gold_count_from_overlaps(
     return recalled
 
 
+def _recalled_gold_count_from_groups(
+    gold_pairs: set[tuple[str, str]],
+    groups: list[dict],
+) -> int:
+    if not gold_pairs:
+        return 0
+    normalized_gold = {
+        _canonical_pair(_normalize_ref(left), _normalize_ref(right))
+        for left, right in gold_pairs
+    }
+    recalled: set[tuple[str, str]] = set()
+    for group in groups:
+        domain_members = {
+            str(side.get("domain_ref") or ""): {
+                _normalize_ref(str(member.get("ref") or ""))
+                for member in side.get("members") or []
+                if member.get("ref")
+            }
+            for side in group.get("domain_sides") or []
+        }
+        for pair in group.get("pair_stats") or []:
+            left_ref = str(pair.get("from_ref") or "")
+            right_ref = str(pair.get("to_ref") or "")
+            left_members = domain_members.get(left_ref) or {_normalize_ref(left_ref)}
+            right_members = domain_members.get(right_ref) or {_normalize_ref(right_ref)}
+            for gold_pair in normalized_gold - recalled:
+                gold_left, gold_right = gold_pair
+                if (
+                    (gold_left in left_members and gold_right in right_members)
+                    or (gold_left in right_members and gold_right in left_members)
+                ):
+                    recalled.add(gold_pair)
+        if len(recalled) == len(normalized_gold):
+            break
+    return len(recalled)
+
+
 def _physical_ref_set(col: dict) -> set[str]:
     return {_normalize_ref(ref) for ref in _physical_refs(col) if ref}
 
@@ -803,6 +919,40 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
+def _read_csv(path: Path) -> list[dict]:
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    with path.open(encoding="utf-8", newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def _write_audit_outputs(
+    out_dir: Path,
+    db_rows: list[dict],
+    pre_value_rows: list[dict],
+    overlap_rows: list[dict],
+    gold_pairs: list[tuple[str, tuple[str, str]]],
+    gold_sql_dbs: list[str],
+) -> dict:
+    db_csv = out_dir / "db_overlap_counts.csv"
+    pre_value_csv = out_dir / "pre_value_candidates.csv"
+    overlap_csv = out_dir / "overlap_candidates.csv"
+    _write_csv(db_csv, db_rows)
+    _write_csv(pre_value_csv, pre_value_rows)
+    _write_csv(overlap_csv, overlap_rows)
+    summary = _summary(db_rows, pre_value_rows, overlap_rows, gold_pairs, gold_sql_dbs)
+    summary.update({
+        "db_csv": str(db_csv),
+        "pre_value_csv": str(pre_value_csv),
+        "overlap_csv": str(overlap_csv),
+    })
+    (out_dir / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return summary
+
+
 def _summary(
     db_rows: list[dict],
     pre_value_rows: list[dict],
@@ -814,6 +964,7 @@ def _summary(
     gold_unique = set(gold_pairs)
     total_gold = sum(int(row.get("gold_pairs") or 0) for row in ok_rows)
     total_recalled = sum(int(row.get("gold_recalled") or 0) for row in ok_rows)
+    total_group_recalled = sum(int(row.get("gold_group_recalled") or 0) for row in ok_rows)
     total_pre_recalled = sum(int(row.get("gold_pre_value_recalled") or 0) for row in ok_rows)
     return {
         "db_count": len(db_rows),
@@ -827,6 +978,14 @@ def _summary(
         "total_gold_pre_value_recall": round(total_pre_recalled / total_gold, 6) if total_gold else None,
         "total_gold_recalled": total_recalled,
         "total_gold_recall": round(total_recalled / total_gold, 6) if total_gold else None,
+        "total_gold_group_recalled": total_group_recalled,
+        "total_gold_group_recall": round(total_group_recalled / total_gold, 6) if total_gold else None,
+        "total_final_overlap_entities": sum(int(row.get("final_overlap_entities") or 0) for row in ok_rows),
+        "total_auto_accept_groups": sum(int(row.get("auto_accept_groups") or 0) for row in ok_rows),
+        "total_ai_review_groups": sum(int(row.get("ai_review_groups") or 0) for row in ok_rows),
+        "total_rejected_name_only_groups": sum(int(row.get("rejected_name_only_groups") or 0) for row in ok_rows),
+        "total_rejected_local_ordinal_groups": sum(int(row.get("rejected_local_ordinal_groups") or 0) for row in ok_rows),
+        "total_rejected_low_overlap_text_groups": sum(int(row.get("rejected_low_overlap_text_groups") or 0) for row in ok_rows),
         "gold_unique_pairs_all": len(gold_unique),
         "gold_sql_db_count": len(gold_sql_dbs),
         "gold_sql_dbs_in_run": sum(1 for row in ok_rows if row.get("gold_sql_db")),

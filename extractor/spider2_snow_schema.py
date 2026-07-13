@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from extractor.utils.refs import neo4j_props
+from extractor.utils.semantic_domain import classify_semantic_domain
 from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
@@ -512,6 +513,7 @@ def _write_schema(
             "name": db_id,
             "table_count": table_count,
             "view_count": view_count,
+            "_source_anchor": True,
             "labels": ["db", "snowflake"],
         }]
         schema_rows = [
@@ -554,6 +556,12 @@ def _write_schema(
             for col in ordered_columns:
                 type_label = _normalize_type_label(col.data_type)
                 col_ref = f"{relation_ref}--{col.name}"
+                semantic_profile = classify_semantic_domain(
+                    col.name,
+                    col.data_type,
+                    official_description=col.official_column_description,
+                    sample_values=col.sample,
+                )
                 props = {
                     "_ref": col_ref,
                     "_db_ref": db_ref,
@@ -567,6 +575,13 @@ def _write_schema(
                     "default_value": col.default_value,
                     "official_column_description": col.official_column_description,
                     "sample": col.sample,
+                    "semantic_domain_profile": semantic_profile,
+                    "domain_role": semantic_profile["primary_role"],
+                    "join_likelihood": semantic_profile["join_likelihood"],
+                    "domain_classification_confidence": semantic_profile["classification_confidence"],
+                    "semantic_domains": semantic_profile["semantic_domains"],
+                    "representation_domains": semantic_profile["representation_domains"],
+                    "domain_blocking_keys": semantic_profile["blocking_keys"],
                     "labels": ["col", type_label],
                 }
                 column_rows_by_label.setdefault(type_label, []).append(props)

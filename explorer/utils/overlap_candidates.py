@@ -65,7 +65,7 @@ def relation_candidate_groups(workspace: Workspace, label: str) -> list[Candidat
         WHERE $label IN coalesce(r.labels, [])
           AND 'col' IN coalesce(c.labels, [])
         OPTIONAL MATCH (t)--(c)
-        WHERE any(table_label IN coalesce(t.labels, []) WHERE table_label IN ['table', 'view', 'csv_table'])
+        WHERE any(table_label IN coalesce(t.labels, []) WHERE table_label IN ['table', 'view'])
         WITH r, collect(DISTINCT {col: c, table_name: t.name}) AS endpoints
         WHERE size(endpoints) >= 2
         RETURN r AS r, endpoints AS endpoints
@@ -125,7 +125,7 @@ def _with_disambig_links(workspace: Workspace, columns: tuple[ColumnInfo, ...]) 
         OPTIONAL MATCH (d)--(dc)
         WHERE 'col' IN coalesce(dc.labels, [])
         OPTIONAL MATCH (dt)--(dc)
-        WHERE any(table_label IN coalesce(dt.labels, []) WHERE table_label IN ['table', 'view', 'csv_table'])
+        WHERE any(table_label IN coalesce(dt.labels, []) WHERE table_label IN ['table', 'view'])
         WITH col_ref, d
         WHERE d IS NOT NULL
         RETURN col_ref AS ref,

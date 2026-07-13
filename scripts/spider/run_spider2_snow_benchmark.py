@@ -129,7 +129,7 @@ def _build_spider_snow_agent_spec(db_id: str) -> AgentSpec:
         projects=[db_id],
         effort="mid",
         max_rounds=18,
-        tools=["find", "grep", "read", "jd", "meta", "query"],
+        tools=["find", "grep", "read", "jd", "meta", "query", "agent"],
         prompts=[
             "base",
             "tool",

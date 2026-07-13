@@ -15,7 +15,7 @@ from storage.workspace import Workspace
 logger = logging.getLogger(__name__)
 
 # 需要传 config 参数的模块
-CONFIG_MODULES = {"db_column_overlap", "semantic_embedding"}
+CONFIG_MODULES = {"db_column_overlap", "db_value_domain", "semantic_embedding"}
 
 _REGISTRY = None
 
@@ -62,12 +62,10 @@ def get_registry() -> Dict[str, object]:
         return _REGISTRY
 
     from extractor.db_column_stats import generate as db_column_stats
-    from extractor.csv_column_stats import generate as csv_column_stats
-    from extractor.csv_column_sample import generate as csv_column_sample
-    from extractor.csv_column_topk import generate as csv_column_topk
     from extractor.json_pattern import generate as json_pattern
     from extractor.db_fk_validate import generate as db_fk_validate
     from extractor.db_column_overlap import generate as db_column_overlap
+    from extractor.db_value_domain import generate as db_value_domain
     from extractor.db_table_group import generate as db_table_group
     from extractor.spider2_snow_schema import generate as spider2_snow_schema
     from extractor.semantic_embedding import generate as semantic_embedding
@@ -75,12 +73,10 @@ def get_registry() -> Dict[str, object]:
 
     _REGISTRY = {
         "db_column_stats": db_column_stats,
-        "csv_column_stats": csv_column_stats,
-        "csv_column_sample": csv_column_sample,
-        "csv_column_topk": csv_column_topk,
         "json_pattern": json_pattern,
         "db_fk_validate": db_fk_validate,
         "db_column_overlap": db_column_overlap,
+        "db_value_domain": db_value_domain,
         "db_table_group": db_table_group,
         "spider2_snow_schema": spider2_snow_schema,
         "bird_official_description_extract": bird_official_description_extract,
@@ -91,6 +87,7 @@ def get_registry() -> Dict[str, object]:
     try:
         from explorer.schema_prepare import generate as agent_schema_prepare
         from explorer.relation_disambiguation_review import generate as agent_relation_disambiguation_review
+        from explorer.value_domain_review import generate as agent_value_domain_review
         from explorer.description_audit import generate as agent_description_audit
         from explorer.disambiguate import generate as agent_disambiguate
         from explorer.bird_profile import generate as agent_bird_profile
@@ -101,6 +98,7 @@ def get_registry() -> Dict[str, object]:
         _REGISTRY["schema_landscape"] = schema_landscape
         _REGISTRY["agent_schema_prepare"] = agent_schema_prepare
         _REGISTRY["agent_relation_disambiguation_review"] = agent_relation_disambiguation_review
+        _REGISTRY["agent_value_domain_review"] = agent_value_domain_review
         _REGISTRY["agent_description_audit"] = agent_description_audit
         _REGISTRY["agent_disambiguate"] = agent_disambiguate
         _REGISTRY["agent_bird_profile"] = agent_bird_profile

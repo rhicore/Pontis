@@ -12,6 +12,8 @@ import logging
 from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
+LARGE_SCHEMA_MIN_LOGICAL_UNITS = 20
+MAX_COMPLETION_ROUNDS = 3
 
 PROMPT = """\
 你是 Pontis 的 topic grouping explorer。当前图谱已经有官方结构层：
@@ -146,8 +148,77 @@ def generate(workspace: Workspace) -> dict:
     )
     agent = create_agent(workspace.project_path, spec)
     agent.chat(PROMPT)
+    for round_no in range(1, MAX_COMPLETION_ROUNDS + 1):
+        missing = _uncovered_large_schema_units(workspace)
+        if not missing:
+            logger.info("Topic coverage check passed")
+            logger.info("=== Agent Topic Grouping Explorer done ===")
+            return _preprocess_metrics(agent)
+        logger.warning(
+            "Topic coverage has %d uncovered logical units; completion round %d/%d",
+            len(missing),
+            round_no,
+            MAX_COMPLETION_ROUNDS,
+        )
+        agent.chat(_completion_prompt(missing, round_no))
+
+    missing = _uncovered_large_schema_units(workspace)
+    if missing:
+        sample = "\n".join(f"- {item}" for item in missing[:80])
+        raise RuntimeError(
+            "Topic grouping 未覆盖大型 schema 的全部一阶认知单元；"
+            f"剩余 {len(missing)} 个。\n{sample}"
+        )
     logger.info("=== Agent Topic Grouping Explorer done ===")
     return _preprocess_metrics(agent)
+
+
+def _uncovered_large_schema_units(workspace: Workspace) -> list[str]:
+    rows = workspace.cypher(
+        """
+        MATCH (s:schema)
+        OPTIONAL MATCH (s)--(tg:table_group)
+        WITH s, count(DISTINCT tg) AS table_group_count
+        OPTIONAL MATCH (s)--(t:table)
+        WHERE NOT (t)--(:table_group)
+        WITH s, table_group_count, count(DISTINCT t) AS standalone_count
+        WHERE table_group_count + standalone_count >= $minimum_units
+        MATCH (s)--(unit)
+        WHERE (unit:table_group OR (unit:table AND NOT (unit)--(:table_group)))
+          AND NOT (unit)--(:topic)
+        RETURN coalesce(unit._ref, unit.name) AS ref,
+               s.name AS schema_name,
+               CASE WHEN unit:table_group THEN 'table_group' ELSE 'standalone_table' END AS kind
+        ORDER BY schema_name, kind, ref
+        """,
+        params={"minimum_units": LARGE_SCHEMA_MIN_LOGICAL_UNITS},
+    )
+    return [
+        f"{row.get('ref')} ({row.get('schema_name')}/{row.get('kind')})"
+        for row in rows
+        if row.get("ref")
+    ]
+
+
+def _completion_prompt(missing: list[str], round_no: int) -> str:
+    shown = missing[:100]
+    lines = [
+        "大型 schema 的 topic 覆盖尚未完成。以下 table_group/standalone table 没有连接任何 topic。",
+        "请根据已有 topic 边界把它们补入合适 topic；确有独立主题时创建新 topic。",
+        "不要把对象随意塞入语义不相干的 topic，也不要改写 schema/table_group 官方结构。",
+        f"完成轮次：{round_no}",
+        "",
+        "未覆盖实体：",
+    ]
+    lines.extend(f"- {item}" for item in shown)
+    if len(missing) > len(shown):
+        lines.append(f"- 还有 {len(missing) - len(shown)} 个；先完成已列出的实体。")
+    lines.extend([
+        "",
+        "已有 topic 用 add_edge 补连接；需要新 topic 时用 create_entity 并同时连接 schema 和相关认知单元。",
+        "完成后回复 DONE。",
+    ])
+    return "\n".join(lines)
 
 
 def _preprocess_metrics(agent) -> dict:

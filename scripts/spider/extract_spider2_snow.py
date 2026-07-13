@@ -37,17 +37,18 @@ EXTRACT_PIPELINE = [
     "spider2_snow_schema",
     "db_table_group",
     "db_column_stats",
-    "db_column_overlap",
+    "db_value_domain",
 ]
 TOPIC_PIPELINE = ["agent_topic_group"]
+VALUE_DOMAIN_REVIEW_PIPELINE = ["agent_value_domain_review"]
 NAVIGATION_PIPELINE = ["agent_spider_navigation_prepare"]
 LANDSCAPE_PIPELINE = ["schema_landscape"]
 EMBEDDING_PIPELINE = ["semantic_embedding"]
 
 SPIDER_OVERLAP_KWARGS = {
-    # Use the widest useful non-zero Jaccard gate. With 256 permutations,
-    # 0.0001 is effectively the requirement of at least one MinHash collision.
-    "value_match_method": "snowflake_minhash",
+    # Estimate overlap/min with cached bottom-k profiles and Snowflake-side
+    # membership probes from the smaller logical domain.
+    "value_match_method": "snowflake_adaptive_probe",
     "filter_pipeline": [
         {"name": "same_schema", "threshold": 1},
         {"name": "different_table_group", "threshold": 1},
@@ -63,23 +64,47 @@ SPIDER_OVERLAP_KWARGS = {
     "key_like_only": False,
     "require_name_token_overlap": True,
     "name_token_overlap_first": False,
-    "minhash_num_perm": 256,
-    "minhash_min_matching_hashes": 1,
-    "minhash_jaccard_threshold": 0.0001,
     "max_value_candidate_pairs": 1_000_000,
-    "snowflake_minhash_column_batch_size": 1,
-    "snowflake_minhash_value_partitions": 2,
-    "snowflake_minhash_max_warehouse_running": 2,
-    "snowflake_minhash_warehouse_poll_seconds": 30,
+    "sample_bloom_sample_size": 4096,
+    "sample_bloom_false_positive_rate": 0.0001,
+    "sample_bloom_initial_capacity": 8192,
+    "sample_bloom_growth_factor": 4,
+    "sample_bloom_min_hits": 1,
+    "sample_bloom_sample_rows": 0,
+    # Logical domains sample evenly spaced physical shards. Scanning every
+    # yearly/daily shard defeats the purpose of approximate membership.
+    "sample_bloom_max_domain_members": 8,
+    "adaptive_sample_initial_size": 256,
+    "adaptive_sample_size": 1024,
+    "adaptive_sample_max_size": 4096,
+    "adaptive_sample_min_overlap": 0.01,
+    "adaptive_sample_confidence": 0.99,
+    "adaptive_probe_parallel_queries": 2,
+    "adaptive_probe_tables_per_query": 1,
+    "adaptive_probe_target_columns_per_query": 4,
+    "adaptive_probe_full_membership_enabled": False,
+    "adaptive_probe_name_fallback_enabled": False,
+    "adaptive_probe_name_fallback_top_k": 5,
+    "adaptive_probe_profile_columns_per_query": 16,
+    "adaptive_probe_profile_sample_rows": 4096,
+    "group_policy_enabled": True,
+    "group_drop_name_only": True,
+    "group_drop_local_ordinal": True,
+    "group_drop_low_overlap_text": True,
+    "group_low_overlap_text_threshold": 0.1,
+    "group_auto_accept_min_overlap": 0.1,
     "column_domain_enabled": True,
     "pattern_table_domain_enabled": True,
     "pattern_table_domain_threshold": 0.8,
 }
 
-SPIDER_OVERLAP_DB_OVERRIDES = {
-    "BRAZE_USER_EVENT_DEMO_DATASET": {
-        "snowflake_minhash_value_partitions": 8,
-    },
+SPIDER_OVERLAP_DB_OVERRIDES = {}
+
+SPIDER_VALUE_DOMAIN_KWARGS = {
+    "overlap_threshold": 0.5,
+    "min_anchor_support": 0.75,
+    "max_anchors": 8,
+    "min_members": 2,
 }
 
 SPIDER_COLUMN_STATS_KWARGS = {
@@ -98,6 +123,7 @@ def extract_one(
     extract_only: bool = False,
     agent_only: bool = False,
     skip_topic: bool = False,
+    skip_value_domain_review: bool = False,
     skip_navigation: bool = False,
     skip_landscape: bool = False,
     skip_embedding: bool = False,
@@ -113,10 +139,6 @@ def extract_one(
         workspace.clear_graph()
 
     registry = get_registry()
-    overlap_kwargs = {
-        **SPIDER_OVERLAP_KWARGS,
-        **SPIDER_OVERLAP_DB_OVERRIDES.get(db_id, {}),
-    }
     pipeline: list[str] = []
     if not agent_only:
         pipeline.extend(name for name in EXTRACT_PIPELINE if name in registry)
@@ -125,6 +147,8 @@ def extract_one(
             pipeline.extend(name for name in TOPIC_PIPELINE if name in registry)
         if not skip_navigation:
             pipeline.extend(name for name in NAVIGATION_PIPELINE if name in registry)
+        if not skip_value_domain_review:
+            pipeline.extend(name for name in VALUE_DOMAIN_REVIEW_PIPELINE if name in registry)
         if not skip_landscape:
             pipeline.extend(name for name in LANDSCAPE_PIPELINE if name in registry)
     if not extract_only and not skip_embedding:
@@ -138,6 +162,7 @@ def extract_one(
         "timings": {},
         "extract": 0.0,
         "topic": 0.0,
+        "value_domain_review": 0.0,
         "navigation": 0.0,
         "landscape": 0.0,
         "embedding": 0.0,
@@ -160,13 +185,17 @@ def extract_one(
                 collect_timing=True,
                 module_kwargs={
                     "db_column_stats": SPIDER_COLUMN_STATS_KWARGS,
-                    "db_column_overlap": overlap_kwargs,
+                    "db_value_domain": SPIDER_VALUE_DOMAIN_KWARGS,
                 },
             ),
         )
         result["timings"] = {name: round(value, 3) for name, value in timings.items()}
         result["extract"] = round(sum(timings.get(name, 0.0) for name in EXTRACT_PIPELINE), 3)
         result["topic"] = round(sum(timings.get(name, 0.0) for name in TOPIC_PIPELINE), 3)
+        result["value_domain_review"] = round(
+            sum(timings.get(name, 0.0) for name in VALUE_DOMAIN_REVIEW_PIPELINE),
+            3,
+        )
         result["navigation"] = round(sum(timings.get(name, 0.0) for name in NAVIGATION_PIPELINE), 3)
         result["landscape"] = round(sum(timings.get(name, 0.0) for name in LANDSCAPE_PIPELINE), 3)
         result["embedding"] = round(sum(timings.get(name, 0.0) for name in EMBEDDING_PIPELINE), 3)
@@ -196,9 +225,10 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--run-id")
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--extract-only", action="store_true", help="Run only official schema/table-group extraction.")
+    parser.add_argument("--extract-only", action="store_true", help="Run deterministic schema, grouping, stats, and value-domain extraction.")
     parser.add_argument("--agent-only", action="store_true", help="Skip extraction and rerun explorer/embedding on the existing graph.")
     parser.add_argument("--skip-topic", action="store_true")
+    parser.add_argument("--skip-value-domain-review", action="store_true")
     parser.add_argument("--skip-navigation", action="store_true")
     parser.add_argument("--skip-landscape", action="store_true")
     parser.add_argument("--skip-embedding", action="store_true")
@@ -244,6 +274,7 @@ def main() -> int:
                     extract_only=args.extract_only,
                     agent_only=args.agent_only,
                     skip_topic=args.skip_topic,
+                    skip_value_domain_review=args.skip_value_domain_review,
                     skip_navigation=args.skip_navigation,
                     skip_landscape=args.skip_landscape,
                     skip_embedding=args.skip_embedding,
@@ -261,6 +292,7 @@ def main() -> int:
                     extract_only=args.extract_only,
                     agent_only=args.agent_only,
                     skip_topic=args.skip_topic,
+                    skip_value_domain_review=args.skip_value_domain_review,
                     skip_navigation=args.skip_navigation,
                     skip_landscape=args.skip_landscape,
                     skip_embedding=args.skip_embedding,

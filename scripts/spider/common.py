@@ -37,6 +37,8 @@ SPIDER_NEO4J_HEAP_MAX = os.environ.get("PONTIS_SPIDER_NEO4J_HEAP_MAX", "4g")
 SPIDER_NEO4J_PAGECACHE = os.environ.get("PONTIS_SPIDER_NEO4J_PAGECACHE", "1g")
 SPIDER_PONTIS_CONFIG_MARKER_BEGIN = "# BEGIN Spider2-Snow projects"
 SPIDER_PONTIS_CONFIG_MARKER_END = "# END Spider2-Snow projects"
+LEGACY_SPIDER_CONFIG_MARKER_BEGIN = "  # BEGIN Spider2 projects"
+LEGACY_SPIDER_CONFIG_MARKER_END = "  # END Spider2 projects"
 
 _RUN_ID = (
     os.environ.get("PONTIS_SPIDER_RUN_ID")
@@ -349,6 +351,12 @@ def sync_spider2_snow_pontis_config(config_path: Path | None = None) -> Path:
     path = config_path or (PONTIS_ROOT / "pontis.yml")
     text = path.read_text(encoding="utf-8")
     block = spider2_snow_project_config_block()
+    legacy_pattern = re.compile(
+        rf"\n?{re.escape(LEGACY_SPIDER_CONFIG_MARKER_BEGIN)}\n.*?"
+        rf"{re.escape(LEGACY_SPIDER_CONFIG_MARKER_END)}\n?",
+        re.DOTALL,
+    )
+    text = legacy_pattern.sub("\n", text)
     pattern = re.compile(
         rf"\n?{re.escape(SPIDER_PONTIS_CONFIG_MARKER_BEGIN)}\n.*?{re.escape(SPIDER_PONTIS_CONFIG_MARKER_END)}\n?",
         re.DOTALL,

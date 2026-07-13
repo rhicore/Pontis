@@ -58,6 +58,18 @@ class Config:
     overlap_snowflake_minhash_warehouse_poll_seconds: int = 30
     overlap_lazo_containment_threshold: float = 0.01
     overlap_lazo_confidence: float = 0.99
+    overlap_sample_bloom_sample_size: int = 2048
+    overlap_sample_bloom_false_positive_rate: float = 0.0001
+    overlap_sample_bloom_initial_capacity: int = 8192
+    overlap_sample_bloom_growth_factor: int = 4
+    overlap_sample_bloom_min_hits: int = 1
+    overlap_sample_bloom_sample_rows: int = 0
+    overlap_sample_bloom_max_domain_members: int = 0
+    overlap_adaptive_sample_initial_size: int = 256
+    overlap_adaptive_sample_size: int = 1024
+    overlap_adaptive_sample_max_size: int = 4096
+    overlap_adaptive_sample_min_overlap: float = 0.01
+    overlap_adaptive_sample_confidence: float = 0.99
     preprocess_token_metrics: Counter = field(default_factory=Counter)
 
     def get_llm(self) -> Optional[LLMClient]:
@@ -143,6 +155,18 @@ def load_config(path: Optional[str] = None) -> Config:
         "overlap_snowflake_minhash_warehouse_poll_seconds": 30,
         "overlap_lazo_containment_threshold": 0.01,
         "overlap_lazo_confidence": 0.99,
+        "overlap_sample_bloom_sample_size": 2048,
+        "overlap_sample_bloom_false_positive_rate": 0.0001,
+        "overlap_sample_bloom_initial_capacity": 8192,
+        "overlap_sample_bloom_growth_factor": 4,
+        "overlap_sample_bloom_min_hits": 1,
+        "overlap_sample_bloom_sample_rows": 0,
+        "overlap_sample_bloom_max_domain_members": 0,
+        "overlap_adaptive_sample_initial_size": 256,
+        "overlap_adaptive_sample_size": 1024,
+        "overlap_adaptive_sample_max_size": 4096,
+        "overlap_adaptive_sample_min_overlap": 0.01,
+        "overlap_adaptive_sample_confidence": 0.99,
     }
 
     EXTRACTOR_YAML_MAPPING = {
@@ -188,6 +212,18 @@ def load_config(path: Optional[str] = None) -> Config:
         "overlap_snowflake_minhash_warehouse_poll_seconds": "overlap_snowflake_minhash_warehouse_poll_seconds",
         "overlap_lazo_containment_threshold": "overlap_lazo_containment_threshold",
         "overlap_lazo_confidence": "overlap_lazo_confidence",
+        "overlap_sample_bloom_sample_size": "overlap_sample_bloom_sample_size",
+        "overlap_sample_bloom_false_positive_rate": "overlap_sample_bloom_false_positive_rate",
+        "overlap_sample_bloom_initial_capacity": "overlap_sample_bloom_initial_capacity",
+        "overlap_sample_bloom_growth_factor": "overlap_sample_bloom_growth_factor",
+        "overlap_sample_bloom_min_hits": "overlap_sample_bloom_min_hits",
+        "overlap_sample_bloom_sample_rows": "overlap_sample_bloom_sample_rows",
+        "overlap_sample_bloom_max_domain_members": "overlap_sample_bloom_max_domain_members",
+        "overlap_adaptive_sample_initial_size": "overlap_adaptive_sample_initial_size",
+        "overlap_adaptive_sample_size": "overlap_adaptive_sample_size",
+        "overlap_adaptive_sample_max_size": "overlap_adaptive_sample_max_size",
+        "overlap_adaptive_sample_min_overlap": "overlap_adaptive_sample_min_overlap",
+        "overlap_adaptive_sample_confidence": "overlap_adaptive_sample_confidence",
     }
 
     # 1. ~/.pontis/config.yml
@@ -285,6 +321,20 @@ def load_config(path: Optional[str] = None) -> Config:
         ),
         overlap_lazo_containment_threshold=float(cfg.get("overlap_lazo_containment_threshold") or 0.01),
         overlap_lazo_confidence=float(cfg.get("overlap_lazo_confidence") or 0.99),
+        overlap_sample_bloom_sample_size=int(cfg.get("overlap_sample_bloom_sample_size") or 2048),
+        overlap_sample_bloom_false_positive_rate=float(
+            cfg.get("overlap_sample_bloom_false_positive_rate") or 0.0001
+        ),
+        overlap_sample_bloom_initial_capacity=int(cfg.get("overlap_sample_bloom_initial_capacity") or 8192),
+        overlap_sample_bloom_growth_factor=int(cfg.get("overlap_sample_bloom_growth_factor") or 4),
+        overlap_sample_bloom_min_hits=int(cfg.get("overlap_sample_bloom_min_hits") or 1),
+        overlap_sample_bloom_sample_rows=int(cfg.get("overlap_sample_bloom_sample_rows") or 0),
+        overlap_sample_bloom_max_domain_members=int(cfg.get("overlap_sample_bloom_max_domain_members") or 0),
+        overlap_adaptive_sample_initial_size=int(cfg.get("overlap_adaptive_sample_initial_size") or 256),
+        overlap_adaptive_sample_size=int(cfg.get("overlap_adaptive_sample_size") or 1024),
+        overlap_adaptive_sample_max_size=int(cfg.get("overlap_adaptive_sample_max_size") or 4096),
+        overlap_adaptive_sample_min_overlap=float(cfg.get("overlap_adaptive_sample_min_overlap") or 0.01),
+        overlap_adaptive_sample_confidence=float(cfg.get("overlap_adaptive_sample_confidence") or 0.99),
     )
 
 

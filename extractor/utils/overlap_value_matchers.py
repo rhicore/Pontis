@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import csv
+import gzip
 import hashlib
 import heapq
 import json
@@ -9,16 +11,25 @@ import logging
 import math
 import os
 import re
+import tempfile
 import time
 from array import array
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 from statistics import NormalDist
 from typing import Any, Dict, Iterable, List, Optional
 
-from extractor.utils.overlap_candidates import _name_token_overlap_candidate
+from extractor.utils.overlap_candidates import (
+    _id_family,
+    _name_token_overlap_candidate,
+    _table_name_tokens,
+    _tokens,
+)
 from extractor.utils.overlap_options import (
     BOOLEAN_VALUES,
+    GENERIC_KEY_TOKENS,
+    AdaptiveProbeProfile,
     BloomLayer,
     HASH_INDEX_FETCH_SIZE,
     INTERSECTION_SAMPLE_LIMIT,
@@ -115,6 +126,8 @@ def _detect_column_overlaps(
         "hash_index",
         "sample_bloom",
         "sample_bloom_then_sql",
+        "adaptive_sample_bloom",
+        "snowflake_adaptive_probe",
         "metadata_sample",
         "snowflake_minhash",
         "snowflake_lazo",
@@ -130,9 +143,11 @@ def _detect_column_overlaps(
         return _detect_column_overlaps_snowflake_minhash(db_connect, dialect, candidates, options)
     if options.value_match_method == "snowflake_lazo":
         return _detect_column_overlaps_snowflake_lazo(db_connect, dialect, candidates, options)
+    if options.value_match_method == "snowflake_adaptive_probe":
+        return _detect_column_overlaps_snowflake_adaptive_probe(db_connect, dialect, candidates, options)
     if options.value_match_method == "metadata_sample":
         return _detect_column_overlaps_metadata_sample(candidates)
-    if options.value_match_method in {"sample_bloom", "sample_bloom_then_sql"}:
+    if options.value_match_method in {"sample_bloom", "sample_bloom_then_sql", "adaptive_sample_bloom"}:
         return _detect_column_overlaps_sample_bloom(db_connect, dialect, candidates, options)
     return _detect_column_overlaps_minhash(db_connect, dialect, candidates, options)
 
@@ -179,6 +194,41 @@ def _detect_column_overlaps_metadata_sample(
     return overlaps
 
 
+def _limit_sample_name_fallbacks(overlaps: list[Dict], top_k: int) -> list[Dict]:
+    if top_k <= 0:
+        return overlaps
+    positives = [item for item in overlaps if (item.get("stats") or {}).get("decision") != "name_fallback_uncertain"]
+    fallbacks = [item for item in overlaps if (item.get("stats") or {}).get("decision") == "name_fallback_uncertain"]
+    priority = {
+        "left_table_id_family": 6,
+        "right_table_id_family": 6,
+        "left_table_context": 5,
+        "right_table_context": 5,
+        "shared_id_family": 4,
+        "specific_name_token": 3,
+        "exact_column_name": 2,
+    }
+    by_ref: dict[str, list[Dict]] = defaultdict(list)
+    for item in fallbacks:
+        by_ref[str(item["from_ref"])].append(item)
+        by_ref[str(item["to_ref"])].append(item)
+    selected: set[tuple[str, str]] = set()
+    for items in by_ref.values():
+        items.sort(key=lambda item: (
+            -priority.get(str((item.get("stats") or {}).get("fallback_reason") or ""), 0),
+            str(item["from_ref"]),
+            str(item["to_ref"]),
+        ))
+        for item in items[:top_k]:
+            selected.add(tuple(sorted((str(item["from_ref"]), str(item["to_ref"])))))
+    retained = positives + [
+        item for item in fallbacks
+        if tuple(sorted((str(item["from_ref"]), str(item["to_ref"])))) in selected
+    ]
+    logger.info("  Name fallback top-k retained %s/%s uncertain candidates", len(retained) - len(positives), len(fallbacks))
+    return retained
+
+
 def _metadata_sample_values(col: Dict) -> set[str]:
     values: set[str] = set()
     for member in _domain_members(col) or [col]:
@@ -192,6 +242,625 @@ def _metadata_sample_values(col: Dict) -> set[str]:
             if normalized:
                 values.add(normalized)
     return values
+
+
+def _detect_column_overlaps_snowflake_adaptive_probe(
+    db_connect,
+    dialect: str,
+    candidates: list[tuple[Dict, Dict]],
+    options: OverlapOptions,
+) -> List[Dict]:
+    """Estimate overlap/min without downloading complete distinct value sets."""
+
+    if dialect != "snowflake":
+        logger.warning("snowflake_adaptive_probe requires Snowflake; falling back to adaptive_sample_bloom")
+        return _detect_column_overlaps_sample_bloom(
+            db_connect,
+            dialect,
+            candidates,
+            replace(options, value_match_method="adaptive_sample_bloom"),
+        )
+    if not candidates:
+        return []
+
+    conn = _open_db_connection(db_connect, readonly=True)
+    try:
+        cursor = conn.cursor()
+        try:
+            started = time.time()
+            profiles = _build_snowflake_adaptive_probe_profiles(cursor, candidates, options)
+            logger.info("  Adaptive probe profiles ready in %.1fs", time.time() - started)
+            missing = sorted({
+                col["entity_name"]
+                for pair in candidates
+                for col in pair
+                if col["entity_name"] not in profiles
+            })
+            if missing:
+                raise RuntimeError(f"Missing {len(missing)} adaptive probe profiles: {', '.join(missing[:5])}")
+            if not options.adaptive_probe_full_membership_enabled:
+                sample_started = time.time()
+                overlaps = _sample_profile_overlaps(candidates, profiles, options)
+                logger.info("  Local sample overlap finished in %.1fs", time.time() - sample_started)
+                return overlaps
+            temp_table = _create_snowflake_probe_table(cursor)
+            probe_started = time.time()
+            overlaps = _snowflake_adaptive_probe_overlaps(cursor, temp_table, candidates, profiles, options)
+            logger.info("  Adaptive membership probes finished in %.1fs", time.time() - probe_started)
+            return overlaps
+        finally:
+            cursor.close()
+    finally:
+        conn.close()
+
+
+def _sample_profile_overlaps(
+    candidates: list[tuple[Dict, Dict]],
+    profiles: dict[str, AdaptiveProbeProfile],
+    options: OverlapOptions,
+) -> list[Dict]:
+    """Estimate overlap/min from bounded value samples only."""
+
+    sample_sets = {
+        ref: set(profile.sample_hashes)
+        for ref, profile in profiles.items()
+    }
+    overlaps: list[Dict] = []
+    threshold = options.adaptive_sample_min_overlap
+    for left_col, right_col in candidates:
+        left = sample_sets[left_col["entity_name"]]
+        right = sample_sets[right_col["entity_name"]]
+        denominator = min(len(left), len(right))
+        if denominator == 0:
+            continue
+        small, large = (left, right) if len(left) <= len(right) else (right, left)
+        shared = sum(value_hash in large for value_hash in small)
+        coefficient = shared / denominator
+        if coefficient < threshold:
+            fallback_reason = _sample_name_fallback_reason(left_col, right_col)
+            if not options.adaptive_probe_name_fallback_enabled or fallback_reason is None:
+                continue
+            overlaps.append(_pair_overlap_payload(left_col, right_col, {
+                "overlap_coefficient": round(coefficient, 8),
+                "filter_score": 1.0,
+                "sample_intersection": shared,
+                "sample_min_cardinality": denominator,
+                "left_sample_cardinality": len(left),
+                "right_sample_cardinality": len(right),
+                "min_overlap_threshold": threshold,
+                "decision": "name_fallback_uncertain",
+                "fallback_reason": fallback_reason,
+                "estimated": True,
+                "method": "snowflake_sample_overlap",
+            }))
+            continue
+        overlaps.append(_pair_overlap_payload(left_col, right_col, {
+            "overlap_coefficient": round(coefficient, 8),
+            "sample_intersection": shared,
+            "sample_min_cardinality": denominator,
+            "left_sample_cardinality": len(left),
+            "right_sample_cardinality": len(right),
+            "min_overlap_threshold": threshold,
+            "decision": "sample_above_threshold",
+            "estimated": True,
+            "method": "snowflake_sample_overlap",
+        }))
+    overlaps = _limit_sample_name_fallbacks(
+        overlaps,
+        options.adaptive_probe_name_fallback_top_k,
+    )
+    overlaps.sort(key=lambda item: (
+        -item["stats"]["overlap_coefficient"],
+        item["from_ref"],
+        item["to_ref"],
+    ))
+    logger.info("  Sample overlap retained %s/%s candidates", len(overlaps), len(candidates))
+    return overlaps
+
+
+def _sample_name_fallback_reason(left: Dict, right: Dict) -> str | None:
+    left_name = re.sub(r"[^a-z0-9]+", "_", str(left.get("column") or "").lower()).strip("_")
+    right_name = re.sub(r"[^a-z0-9]+", "_", str(right.get("column") or "").lower()).strip("_")
+    if left_name and left_name == right_name:
+        return "exact_column_name"
+    left_tokens = _tokens(left_name)
+    right_tokens = _tokens(right_name)
+    left_specific = left_tokens - GENERIC_KEY_TOKENS
+    right_specific = right_tokens - GENERIC_KEY_TOKENS
+    shared_specific = left_specific & right_specific
+    if shared_specific:
+        return "specific_name_token"
+    if not left_specific and _table_name_tokens(left) & right_specific:
+        return "left_table_context"
+    if not right_specific and _table_name_tokens(right) & left_specific:
+        return "right_table_context"
+    left_family = _id_family(left_name)
+    right_family = _id_family(right_name)
+    if left_family == right_family and left_family not in {"", "id"}:
+        return "shared_id_family"
+    if left_family == "id" and right_family not in {"", "id"} and right_family in _table_name_tokens(left):
+        return "left_table_id_family"
+    if right_family == "id" and left_family not in {"", "id"} and left_family in _table_name_tokens(right):
+        return "right_table_id_family"
+    return None
+
+
+def _build_snowflake_adaptive_probe_profiles(
+    cursor,
+    candidates: list[tuple[Dict, Dict]],
+    options: OverlapOptions,
+) -> dict[str, AdaptiveProbeProfile]:
+    physical_columns, domain_columns = _sample_bloom_profile_columns(candidates, options=options)
+    profiles: dict[str, AdaptiveProbeProfile] = {}
+    missing_by_table: dict[str, list[Dict]] = defaultdict(list)
+    for col in sorted(physical_columns.values(), key=lambda item: item["entity_name"]):
+        profile = _read_adaptive_probe_profile(col, options)
+        if profile is not None:
+            profiles[col["entity_name"]] = profile
+        else:
+            missing_by_table[_column_table_key(col)].append(col)
+
+    built = len(profiles)
+    batch_size = max(1, int(options.adaptive_probe_profile_columns_per_query))
+    for table_key, table_columns in missing_by_table.items():
+        available, reason = _hash_index_table_available(cursor, table_columns[0], "snowflake")
+        if not available:
+            logger.warning("Skipping inaccessible adaptive-probe relation %s: %s", table_key, reason)
+            for col in table_columns:
+                profiles[col["entity_name"]] = AdaptiveProbeProfile(cardinality=0, sample_hashes=())
+            continue
+        for offset in range(0, len(table_columns), batch_size):
+            batch = table_columns[offset : offset + batch_size]
+            built_profiles = _build_snowflake_column_probe_profiles_batch(cursor, batch, options)
+            for col in batch:
+                profile = built_profiles[col["entity_name"]]
+                profiles[col["entity_name"]] = profile
+                _write_adaptive_probe_profile(col, profile, options)
+                built += 1
+            if built % 25 < len(batch):
+                logger.info("  Built/loaded adaptive probe samples for %s/%s columns", built, len(physical_columns))
+
+    for ref, domain in sorted(domain_columns.items()):
+        members = _sample_bloom_domain_members(domain, options)
+        member_profiles = [profiles[member["entity_name"]] for member in members if member["entity_name"] in profiles]
+        if not member_profiles:
+            continue
+        # Snowflake ORDER BY uses signed HASH values.  Preserve that same total
+        # order when unioning physical member sketches into a logical domain.
+        samples = tuple(sorted({
+            value_hash
+            for profile in member_profiles
+            for value_hash in profile.sample_hashes
+        })[: options.adaptive_sample_max_size])
+        profiles[ref] = AdaptiveProbeProfile(
+            cardinality=sum(profile.cardinality for profile in member_profiles),
+            sample_hashes=samples,
+            member_refs=tuple(member["entity_name"] for member in members if member["entity_name"] in profiles),
+        )
+    return profiles
+
+
+def _build_snowflake_column_probe_profiles_batch(
+    cursor,
+    columns: list[Dict],
+    options: OverlapOptions,
+) -> dict[str, AdaptiveProbeProfile]:
+    """Build several column profiles from one bounded physical-table sample."""
+
+    if not columns:
+        return {}
+    table = _qualified_table_sql(columns[0], "snowflake")
+    expressions = []
+    for col in columns:
+        column_sql = _quote_identifier(col["column"], "snowflake")
+        normalized = f"LOWER(TRIM(TO_VARCHAR({column_sql})))"
+        value_hash = f"IFF({column_sql} IS NULL OR {normalized} = '', NULL, HASH({normalized}))"
+        expressions.append(f"{value_hash} AS PONTIS_HASH_{len(expressions)}")
+    sample_rows = int(options.adaptive_probe_profile_sample_rows)
+    sql = f"SELECT {', '.join(expressions)} FROM {table} LIMIT {sample_rows}"
+    started = time.time()
+    logger.info("  Sampling %s columns from %s (up to %s rows)", len(columns), table, sample_rows)
+    try:
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+    except Exception as exc:
+        if len(columns) > 1:
+            midpoint = len(columns) // 2
+            return {
+                **_build_snowflake_column_probe_profiles_batch(cursor, columns[:midpoint], options),
+                **_build_snowflake_column_probe_profiles_batch(cursor, columns[midpoint:], options),
+            }
+        col = columns[0]
+        logger.warning(
+            "Skipping unsupported adaptive-probe column %s: %s",
+            col.get("entity_name"),
+            exc,
+        )
+        return {
+            col["entity_name"]: AdaptiveProbeProfile(cardinality=0, sample_hashes=())
+        }
+
+    samples: list[set[int]] = [set() for _ in columns]
+    for row in rows:
+        for index, value in enumerate(row):
+            if value is not None:
+                samples[index].add(int(value))
+    logger.info(
+        "  Sampled %s columns from %s in %.1fs",
+        len(columns),
+        table,
+        time.time() - started,
+    )
+    return {
+        col["entity_name"]: AdaptiveProbeProfile(
+            cardinality=max(int(col.get("cardinality") or 0), len(samples[index])),
+            sample_hashes=tuple(sorted(samples[index])[: options.adaptive_sample_max_size]),
+        )
+        for index, col in enumerate(columns)
+    }
+
+
+def _build_snowflake_column_probe_profile(cursor, col: Dict, options: OverlapOptions) -> AdaptiveProbeProfile:
+    last_exc: Exception | None = None
+    for column_sql in _column_sql_variants(col["column"], "snowflake"):
+        normalized = f"LOWER(TRIM(TO_VARCHAR({column_sql})))"
+        sql = f"""
+WITH vals AS (
+  SELECT DISTINCT HASH({normalized}) AS h
+  FROM {_qualified_table_sql(col, 'snowflake')}
+  WHERE {column_sql} IS NOT NULL AND {normalized} <> ''
+)
+SELECT h, COUNT(*) OVER () AS cardinality
+FROM vals
+ORDER BY h
+LIMIT {int(options.adaptive_sample_max_size)}
+"""
+        try:
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            cardinality = int(_row_value(rows[0], 1) or 0) if rows else 0
+            return AdaptiveProbeProfile(
+                cardinality=cardinality,
+                sample_hashes=tuple(int(_row_value(row, 0)) for row in rows),
+            )
+        except Exception as exc:
+            last_exc = exc
+    raise RuntimeError(f"Could not build adaptive probe sample for {col.get('entity_name')}") from last_exc
+
+
+def _adaptive_probe_profile_path(col: Dict, options: OverlapOptions) -> Path:
+    db_ref = _safe_path_part(col.get("db_ref") or "unknown_db")
+    key = hashlib.sha1(str(col.get("entity_name") or "").encode("utf-8")).hexdigest()
+    version = f"rows{options.adaptive_probe_profile_sample_rows}_k{options.adaptive_sample_max_size}"
+    return _hash_index_root() / "snowflake_adaptive_probe" / version / db_ref / f"{key}.json"
+
+
+def _read_adaptive_probe_profile(col: Dict, options: OverlapOptions) -> AdaptiveProbeProfile | None:
+    path = _adaptive_probe_profile_path(col, options)
+    if _hash_index_force_rebuild() or not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("entity_name") != col.get("entity_name") or payload.get("method") != "snowflake_row_sample_v1":
+            return None
+        return AdaptiveProbeProfile(
+            cardinality=int(payload.get("cardinality") or 0),
+            sample_hashes=tuple(int(value) for value in payload.get("sample_hashes") or []),
+        )
+    except Exception:
+        return None
+
+
+def _write_adaptive_probe_profile(col: Dict, profile: AdaptiveProbeProfile, options: OverlapOptions) -> None:
+    path = _adaptive_probe_profile_path(col, options)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "method": "snowflake_row_sample_v1",
+        "entity_name": col.get("entity_name"),
+        "cardinality": profile.cardinality,
+        "sample_hashes": list(profile.sample_hashes),
+    }
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _create_snowflake_probe_table(cursor) -> str:
+    cursor.execute("SHOW DATABASES LIKE 'USER$%'")
+    rows = cursor.fetchall()
+    user_dbs = [str(_row_value(row, 1)) for row in rows if str(_row_value(row, 1) or "").upper().startswith("USER$")]
+    if not user_dbs:
+        raise RuntimeError("No writable USER$ Snowflake database is visible")
+    table = f'{_quote_identifier(user_dbs[0], "snowflake")}.PUBLIC.PONTIS_OVERLAP_PROBES'
+    cursor.execute(f"CREATE OR REPLACE TEMPORARY TABLE {table} (target_ref VARCHAR, h NUMBER(38,0))")
+    return table
+
+
+def _snowflake_adaptive_probe_overlaps(
+    cursor,
+    temp_table: str,
+    candidates: list[tuple[Dict, Dict]],
+    profiles: dict[str, AdaptiveProbeProfile],
+    options: OverlapOptions,
+) -> list[Dict]:
+    probe_candidates = []
+    kmv_rejected = 0
+    kmv_bounds: dict[tuple[str, str], tuple[float, float]] = {}
+    for left_col, right_col in candidates:
+        left_profile = profiles[left_col["entity_name"]]
+        right_profile = profiles[right_col["entity_name"]]
+        estimate, upper = _adaptive_probe_kmv_overlap_bounds(left_profile, right_profile, options)
+        kmv_bounds[(left_col["entity_name"], right_col["entity_name"])] = (estimate, upper)
+        if upper < options.adaptive_sample_min_overlap:
+            kmv_rejected += 1
+            continue
+        probe_candidates.append((left_col, right_col))
+    logger.info(
+        "  KMV upper-bound prefilter retained %s/%s candidates",
+        len(probe_candidates),
+        len(candidates),
+    )
+
+    by_target: dict[str, list[tuple[Dict, Dict, AdaptiveProbeProfile]]] = defaultdict(list)
+    target_columns: dict[str, Dict] = {}
+    for left_col, right_col in probe_candidates:
+        left = profiles[left_col["entity_name"]]
+        right = profiles[right_col["entity_name"]]
+        if left.cardinality <= right.cardinality:
+            small_col, target_col, small = left_col, right_col, left
+        else:
+            small_col, target_col, small = right_col, left_col, right
+        by_target[target_col["entity_name"]].append((left_col, right_col, small))
+        target_columns[target_col["entity_name"]] = target_col
+
+    probes_by_target = {
+        target_ref: sorted({
+            value
+            for _left, _right, small in pairs
+            for value in small.sample_hashes[: options.adaptive_sample_size]
+        })
+        for target_ref, pairs in by_target.items()
+    }
+    probe_row_count = sum(len(probes) for probes in probes_by_target.values())
+    upload_started = time.time()
+    _copy_snowflake_probe_rows(cursor, temp_table, probes_by_target)
+    logger.info(
+        "  Uploaded %s adaptive probe hashes for %s targets in %.1fs",
+        probe_row_count,
+        len(probes_by_target),
+        time.time() - upload_started,
+    )
+
+    members_by_table: dict[str, list[tuple[str, Dict]]] = defaultdict(list)
+    for target_ref, target in target_columns.items():
+        for member in _sample_bloom_domain_members(target, options) or [target]:
+            members_by_table[_column_table_key(member)].append((target_ref, member))
+
+    matched_by_target: dict[str, set[int]] = defaultdict(set)
+    membership_started = time.time()
+    target_columns_per_query = max(1, int(options.adaptive_probe_target_columns_per_query))
+    table_entries = []
+    for entries in members_by_table.values():
+        unique_entries = list({
+            (target_ref, member["entity_name"]): (target_ref, member)
+            for target_ref, member in entries
+        }.values())
+        table_entries.extend(
+            unique_entries[offset : offset + target_columns_per_query]
+            for offset in range(0, len(unique_entries), target_columns_per_query)
+        )
+    tables_per_query = max(1, int(options.adaptive_probe_tables_per_query))
+    query_batches = [
+        table_entries[offset : offset + tables_per_query]
+        for offset in range(0, len(table_entries), tables_per_query)
+    ]
+    parallelism = max(1, int(options.adaptive_probe_parallel_queries))
+    completed_tables = 0
+    for offset in range(0, len(query_batches), parallelism):
+        batch = query_batches[offset : offset + parallelism]
+        pending = []
+        for query_entries in batch:
+            query_cursor = cursor.connection.cursor()
+            query_cursor.execute_async(_snowflake_probe_membership_sql(query_entries, temp_table))
+            pending.append((query_cursor, query_cursor.sfqid, len(query_entries)))
+        for query_cursor, query_id, table_count in pending:
+            try:
+                query_cursor.get_results_from_sfqid(query_id)
+                for row in query_cursor.fetchall():
+                    matched_by_target[str(_row_value(row, 0))].add(int(_row_value(row, 1)))
+            finally:
+                query_cursor.close()
+            completed_tables += table_count
+        logger.info(
+            "  Probed %s/%s target-table chunks in %.1fs",
+            completed_tables,
+            len(table_entries),
+            time.time() - membership_started,
+        )
+
+    overlaps: list[Dict] = []
+    for target_ref, pairs in sorted(by_target.items()):
+        matched = matched_by_target.get(target_ref, set())
+        for left_col, right_col, small in pairs:
+            result = _estimate_overlap_from_probe_hits(
+                left_col,
+                right_col,
+                small,
+                matched,
+                profiles,
+                options,
+                max_stage_size=options.adaptive_sample_size,
+            )
+            if result is not None:
+                kmv_estimate, kmv_upper = kmv_bounds[(left_col["entity_name"], right_col["entity_name"])]
+                result.update({
+                    "kmv_overlap_estimate": round(kmv_estimate, 8),
+                    "kmv_overlap_upper": round(kmv_upper, 8),
+                    "kmv_confidence": options.adaptive_sample_confidence,
+                    "kmv_profile_size": options.adaptive_sample_max_size,
+                })
+                overlaps.append(_pair_overlap_payload(left_col, right_col, result))
+    overlaps.sort(key=lambda item: (-item["stats"]["overlap_coefficient"], item["from_ref"], item["to_ref"]))
+    return overlaps
+
+
+def _adaptive_probe_kmv_overlap_bounds(
+    left: AdaptiveProbeProfile,
+    right: AdaptiveProbeProfile,
+    options: OverlapOptions,
+) -> tuple[float, float]:
+    """Estimate overlap/min and its conservative upper bound from KMV sketches."""
+
+    if left.cardinality <= 0 or right.cardinality <= 0:
+        return 0.0, 0.0
+    left_hashes = set(left.sample_hashes)
+    right_hashes = set(right.sample_hashes)
+    union_sample_size = min(
+        options.adaptive_sample_max_size,
+        len(left_hashes | right_hashes),
+    )
+    if union_sample_size <= 0:
+        return 0.0, 0.0
+    union_sample = sorted(left_hashes | right_hashes)[:union_sample_size]
+    shared = sum(1 for value_hash in union_sample if value_hash in left_hashes and value_hash in right_hashes)
+    jaccard = shared / union_sample_size
+    exact = (
+        len(left_hashes) >= left.cardinality
+        and len(right_hashes) >= right.cardinality
+    )
+    jaccard_upper = (
+        jaccard
+        if exact
+        else _binomial_proportion_upper_bound(shared, union_sample_size, options.adaptive_sample_confidence)
+    )
+    return (
+        _jaccard_to_overlap_coefficient(jaccard, left.cardinality, right.cardinality),
+        _jaccard_to_overlap_coefficient(jaccard_upper, left.cardinality, right.cardinality),
+    )
+
+
+def _snowflake_probe_membership_sql(
+    table_entries: list[list[tuple[str, Dict]]],
+    temp_table: str,
+) -> str:
+    branches = []
+    for entries in table_entries:
+        table = _qualified_table_sql(entries[0][1], "snowflake")
+        variants = []
+        for target_ref, member in entries:
+            column_sql = _quote_identifier(member["column"], "snowflake")
+            normalized = f"LOWER(TRIM(TO_VARCHAR({column_sql})))"
+            target_literal = "'" + target_ref.replace("'", "''") + "'"
+            variants.append(f"ARRAY_CONSTRUCT({target_literal}, HASH({normalized}))")
+        branches.append(f"""
+  SELECT
+    f.value[0]::VARCHAR AS target_ref,
+    f.value[1]::NUMBER(38,0) AS h
+  FROM {table} t,
+       LATERAL FLATTEN(INPUT => ARRAY_CONSTRUCT({', '.join(variants)})) f
+  WHERE f.value[1] IS NOT NULL
+""")
+    return f"""
+WITH target_values AS (
+  {' UNION ALL '.join(branches)}
+)
+SELECT p.target_ref, p.h
+FROM {temp_table} p
+JOIN target_values v
+  ON p.target_ref = v.target_ref AND p.h = v.h
+GROUP BY p.target_ref, p.h
+"""
+
+
+def _copy_snowflake_probe_rows(
+    cursor,
+    temp_table: str,
+    probes_by_target: dict[str, list[int]],
+) -> None:
+    """Bulk-load probes through one temporary stage instead of many INSERTs."""
+
+    stage = f"{temp_table.rsplit('.', 1)[0]}.PONTIS_OVERLAP_PROBE_STAGE"
+    cursor.execute(f"CREATE OR REPLACE TEMPORARY STAGE {stage}")
+    with tempfile.TemporaryDirectory(prefix="pontis-overlap-probes-") as temp_dir:
+        path = Path(temp_dir) / "probes.tsv.gz"
+        with gzip.open(path, "wt", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh, delimiter="\t", lineterminator="\n")
+            for target_ref, probes in sorted(probes_by_target.items()):
+                writer.writerows((target_ref, value_hash) for value_hash in probes)
+        cursor.execute(
+            f"PUT 'file://{path}' @{stage} AUTO_COMPRESS=FALSE OVERWRITE=TRUE"
+        )
+        cursor.execute(f"""
+COPY INTO {temp_table} (target_ref, h)
+FROM @{stage}
+FILE_FORMAT = (
+  TYPE = CSV
+  FIELD_DELIMITER = '\\t'
+  FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+  COMPRESSION = GZIP
+)
+PURGE = TRUE
+""")
+
+
+def _estimate_overlap_from_probe_hits(
+    left_col: Dict,
+    right_col: Dict,
+    small: AdaptiveProbeProfile,
+    matched: set[int],
+    profiles: dict[str, AdaptiveProbeProfile],
+    options: OverlapOptions,
+    *,
+    max_stage_size: int | None = None,
+) -> dict | None:
+    max_stage_size = max_stage_size or options.adaptive_sample_max_size
+    stage_sizes = sorted({
+        min(len(small.sample_hashes), max_stage_size, options.adaptive_sample_initial_size),
+        min(len(small.sample_hashes), max_stage_size, options.adaptive_sample_size),
+        min(len(small.sample_hashes), max_stage_size, options.adaptive_sample_max_size),
+    } - {0})
+    stages = []
+    final = None
+    for size in stage_sizes:
+        hits = sum(1 for value in small.sample_hashes[:size] if value in matched)
+        estimate = hits / size
+        exact = not small.member_refs and size >= small.cardinality
+        lower, upper = (estimate, estimate) if exact else _wilson_interval(hits, size, options.adaptive_sample_confidence)
+        final = {
+            "sample_size": size,
+            "sample_hits": hits,
+            "overlap_coefficient": round(estimate, 8),
+            "confidence_lower": round(lower, 8),
+            "confidence_upper": round(upper, 8),
+            "decision": "uncertain",
+        }
+        stages.append(final)
+        if lower >= options.adaptive_sample_min_overlap:
+            final["decision"] = "retained"
+            break
+        if upper < options.adaptive_sample_min_overlap:
+            final["decision"] = "rejected"
+            return None
+    if final is None or final["overlap_coefficient"] < options.adaptive_sample_min_overlap:
+        return None
+    if final["decision"] == "uncertain":
+        final["decision"] = "retained_point_estimate"
+    left_profile = profiles[left_col["entity_name"]]
+    sample_side = "left" if small is left_profile else "right"
+    return {
+        **final,
+        "sample_side": sample_side,
+        "confidence": options.adaptive_sample_confidence,
+        "min_overlap_threshold": options.adaptive_sample_min_overlap,
+        "stages_evaluated": stages,
+        "estimated": True,
+        "method": "snowflake_adaptive_probe",
+    }
+
+
+def _u64_to_signed(value: int) -> int:
+    value &= (1 << 64) - 1
+    return value - (1 << 64) if value >= (1 << 63) else value
 
 
 def _detect_column_overlaps_snowflake_minhash(
@@ -1320,9 +1989,21 @@ def _detect_column_overlaps_sample_bloom(
                 logger.warning("  Skipping sample-bloom value check: %s", reason)
                 return []
             profiles = _build_sample_bloom_profiles(cursor, dialect, candidates, options)
+            if options.value_match_method == "adaptive_sample_bloom":
+                missing = sorted({
+                    col["entity_name"]
+                    for pair in candidates
+                    for col in pair
+                    if col["entity_name"] not in profiles
+                })
+                if missing:
+                    raise RuntimeError(
+                        f"Adaptive sample membership profiles missing for {len(missing)} candidate domains: "
+                        + ", ".join(missing[:5])
+                    )
             retained, overlaps = _sample_bloom_retained(candidates, profiles, options)
             verify_candidates = [(col1, col2) for col1, col2, _estimated in retained]
-            if options.value_match_method == "sample_bloom":
+            if options.value_match_method in {"sample_bloom", "adaptive_sample_bloom"}:
                 return overlaps
             if _has_column_domain_candidates(verify_candidates):
                 logger.warning(
@@ -1354,6 +2035,8 @@ def _detect_column_overlaps_sample_bloom(
             except Exception:
                 pass
     except Exception as exc:
+        if options.value_match_method == "adaptive_sample_bloom":
+            raise RuntimeError("Could not build complete adaptive sample membership profiles") from exc
         logger.debug("Could not calculate Sample-Bloom profiles: %s", exc)
         return []
     finally:
@@ -1525,7 +2208,10 @@ def _sample_bloom_retained(
         right = profiles.get(col2["entity_name"])
         if not left or not right:
             continue
-        estimated = _estimate_overlap_from_sample_bloom(col1, col2, left, right, profiles, options)
+        if options.value_match_method == "adaptive_sample_bloom":
+            estimated = _estimate_overlap_from_adaptive_sample_bloom(col1, col2, left, right, profiles, options)
+        else:
+            estimated = _estimate_overlap_from_sample_bloom(col1, col2, left, right, profiles, options)
         if estimated is None:
             continue
         retained.append((col1, col2, estimated))
@@ -1534,7 +2220,7 @@ def _sample_bloom_retained(
         "  Sample-Bloom retained %s/%s value candidates (sample_size=%s, min_hits=%s)",
         len(retained),
         len(candidates),
-        options.sample_bloom_sample_size,
+        _sample_bloom_profile_sample_size(options),
         options.sample_bloom_min_hits,
     )
     overlaps = [
@@ -1587,7 +2273,7 @@ def _build_column_sample_bloom_profile(
                 continue
             cardinality += 1
             _sample_bloom_add(profile, value_hash, options)
-            _bottomk_offer(sample_heap, value_hash, options.sample_bloom_sample_size)
+            _bottomk_offer(sample_heap, value_hash, _sample_bloom_profile_sample_size(options))
 
     profile.cardinality = cardinality
     profile.sample_hashes = tuple(sorted(-item for item in sample_heap))
@@ -1697,7 +2383,7 @@ def _sample_bloom_profile_add_hash(
 ) -> None:
     profile.cardinality += 1
     _sample_bloom_add(profile, value_hash, options)
-    _bottomk_offer(sample_heap, value_hash, options.sample_bloom_sample_size)
+    _bottomk_offer(sample_heap, value_hash, _sample_bloom_profile_sample_size(options))
 
 
 def _load_or_build_column_sample_bloom_profile(
@@ -1757,7 +2443,7 @@ def _build_domain_sample_bloom_profile(
             if value_hash in seen_samples:
                 continue
             seen_samples.add(value_hash)
-            _bottomk_offer(sample_heap, value_hash, options.sample_bloom_sample_size)
+            _bottomk_offer(sample_heap, value_hash, _sample_bloom_profile_sample_size(options))
     layers = _merge_sample_bloom_layers([profiles[ref] for ref in member_refs])
     return SampleBloomProfile(
         cardinality=cardinality,
@@ -1822,7 +2508,7 @@ def _sample_bloom_meta(col: Dict, options: OverlapOptions) -> dict:
         "column": col.get("column"),
         "data_type": col.get("data_type"),
         "method": "bottomk_sample_scalable_bloom_v5_full_domain",
-        "sample_size": options.sample_bloom_sample_size,
+        "sample_size": _sample_bloom_profile_sample_size(options),
         "false_positive_rate": options.sample_bloom_false_positive_rate,
         "initial_capacity": options.sample_bloom_initial_capacity,
         "growth_factor": options.sample_bloom_growth_factor,
@@ -1999,6 +2685,13 @@ def _bottomk_offer(heap: list[int], value_hash: int, sample_size: int) -> None:
         heapq.heapreplace(heap, item)
 
 
+def _sample_bloom_profile_sample_size(options: OverlapOptions) -> int:
+    size = int(options.sample_bloom_sample_size)
+    if options.value_match_method == "adaptive_sample_bloom":
+        size = max(size, int(options.adaptive_sample_max_size))
+    return max(1, size)
+
+
 def _estimate_overlap_from_sample_bloom(
     col1: Dict,
     col2: Dict,
@@ -2031,6 +2724,137 @@ def _estimate_overlap_from_sample_bloom(
         "estimated": True,
         "method": "sample_bloom",
     }
+
+
+def _estimate_overlap_from_adaptive_sample_bloom(
+    col1: Dict,
+    col2: Dict,
+    left: SampleBloomProfile,
+    right: SampleBloomProfile,
+    profiles: dict[str, SampleBloomProfile],
+    options: OverlapOptions,
+) -> Optional[Dict]:
+    """Estimate overlap/min with staged samples from the smaller domain."""
+
+    if left.cardinality <= 0 or right.cardinality <= 0:
+        return None
+    if left.cardinality <= right.cardinality:
+        small, large = left, right
+        small_is_left = True
+    else:
+        small, large = right, left
+        small_is_left = False
+    if not small.sample_hashes:
+        return None
+
+    available = len(small.sample_hashes)
+    stage_sizes = sorted({
+        min(available, max(1, int(options.adaptive_sample_initial_size))),
+        min(available, max(1, int(options.adaptive_sample_size))),
+        min(available, max(1, int(options.adaptive_sample_max_size))),
+    })
+    threshold = float(options.adaptive_sample_min_overlap)
+    confidence = float(options.adaptive_sample_confidence)
+    false_positive_rate = _profile_false_positive_rate(large, profiles)
+    exact_small_sample = not small.member_refs and available >= small.cardinality
+    stages: list[dict[str, Any]] = []
+    final: dict[str, Any] | None = None
+
+    for sample_size in stage_sizes:
+        sample = small.sample_hashes[:sample_size]
+        sample_hits = sum(1 for value_hash in sample if _profile_might_contain(large, value_hash, profiles))
+        observed = sample_hits / sample_size
+        if exact_small_sample and sample_size >= small.cardinality:
+            observed_lower = observed_upper = observed
+        else:
+            observed_lower, observed_upper = _wilson_interval(sample_hits, sample_size, confidence)
+        estimate = _correct_bloom_probability(observed, false_positive_rate)
+        lower = _correct_bloom_probability(observed_lower, false_positive_rate)
+        upper = _correct_bloom_probability(observed_upper, false_positive_rate)
+        stage = {
+            "sample_size": sample_size,
+            "sample_hits": sample_hits,
+            "overlap_coefficient": round(estimate, 8),
+            "confidence_lower": round(lower, 8),
+            "confidence_upper": round(upper, 8),
+        }
+        stages.append(stage)
+        final = stage
+        if lower >= threshold and sample_hits >= options.sample_bloom_min_hits:
+            stage["decision"] = "retained"
+            break
+        if upper < threshold:
+            stage["decision"] = "rejected"
+            return None
+        stage["decision"] = "uncertain"
+
+    if final is None:
+        return None
+    if (
+        float(final["overlap_coefficient"]) < threshold
+        or int(final["sample_hits"]) < options.sample_bloom_min_hits
+    ):
+        return None
+    if final.get("decision") == "uncertain":
+        final["decision"] = "retained_point_estimate"
+    return {
+        "overlap_coefficient": final["overlap_coefficient"],
+        "sample_hits": final["sample_hits"],
+        "sample_size": final["sample_size"],
+        "sample_side": "left" if small_is_left else "right",
+        "confidence": confidence,
+        "confidence_lower": final["confidence_lower"],
+        "confidence_upper": final["confidence_upper"],
+        "decision": final["decision"],
+        "bloom_false_positive_rate": round(false_positive_rate, 8),
+        "min_overlap_threshold": threshold,
+        "stages_evaluated": stages,
+        "estimated": True,
+        "method": "adaptive_sample_bloom",
+    }
+
+
+def _profile_false_positive_rate(
+    profile: SampleBloomProfile,
+    profiles: dict[str, SampleBloomProfile],
+) -> float:
+    if profile.member_refs:
+        rates = [
+            _profile_false_positive_rate(profiles[ref], profiles)
+            for ref in profile.member_refs
+            if ref in profiles
+        ]
+        return 1.0 - math.prod(1.0 - rate for rate in rates) if rates else 1.0
+    rates = []
+    for layer in profile.layers:
+        if layer.bit_count <= 0 or layer.hash_count <= 0:
+            continue
+        set_bits = sum(int(byte).bit_count() for byte in layer.bits)
+        occupancy = set_bits / layer.bit_count
+        rates.append(occupancy ** layer.hash_count)
+    return min(1.0, 1.0 - math.prod(1.0 - rate for rate in rates)) if rates else 1.0
+
+
+def _correct_bloom_probability(observed: float, false_positive_rate: float) -> float:
+    if false_positive_rate >= 1.0:
+        return 0.0
+    return min(1.0, max(0.0, (observed - false_positive_rate) / (1.0 - false_positive_rate)))
+
+
+def _wilson_interval(hits: int, sample_size: int, confidence: float) -> tuple[float, float]:
+    if sample_size <= 0:
+        return 0.0, 1.0
+    z = NormalDist().inv_cdf(0.5 + confidence / 2.0)
+    proportion = hits / sample_size
+    z2 = z * z
+    denominator = 1.0 + z2 / sample_size
+    centre = (proportion + z2 / (2.0 * sample_size)) / denominator
+    margin = (
+        z
+        * math.sqrt((proportion * (1.0 - proportion) + z2 / (4.0 * sample_size)) / sample_size)
+        / denominator
+    )
+    return max(0.0, centre - margin), min(1.0, centre + margin)
 
 
 def _open_db_connection(db_connect, *, readonly: bool = True):
@@ -2210,6 +3034,8 @@ def _pair_overlap_payload(col1: Dict, col2: Dict, overlap_result: Dict) -> Dict:
         for key, value in overlap_result.items()
         if isinstance(value, (str, int, float, bool)) or value is None
     }
+    if isinstance(overlap_result.get("stages_evaluated"), list):
+        stats["stages_evaluated"] = overlap_result["stages_evaluated"]
     stats["overlap_coefficient"] = overlap_result["overlap_coefficient"]
     payload = {
         "from_table": col1["table"],
@@ -2254,48 +3080,6 @@ def _domain_side_payload(col: Dict) -> Dict:
         "domain_role": col.get("domain_role") or col.get("column"),
         "domain_member_count": len(members),
         "members": [_column_payload(member) for member in members],
-    }
-
-
-def _split_domain_pair_overlaps(pair_overlaps: list[Dict]) -> tuple[list[Dict], list[Dict]]:
-    domain_overlaps: list[Dict] = []
-    physical_overlaps: list[Dict] = []
-    for overlap in pair_overlaps:
-        if overlap.get("domain_sides"):
-            domain_overlaps.append(_domain_pair_overlap_to_group(overlap))
-        else:
-            physical_overlaps.append(overlap)
-    return domain_overlaps, physical_overlaps
-
-
-def _domain_pair_overlap_to_group(overlap: Dict) -> Dict:
-    columns_by_ref: dict[str, Dict] = {}
-    for side in overlap.get("domain_sides") or []:
-        for column in side.get("members") or []:
-            columns_by_ref[column["ref"]] = column
-    columns = sorted(columns_by_ref.values(), key=lambda item: (item["table"], item["column"], item["ref"]))
-    stats = dict(overlap.get("stats") or {})
-    stats.update({
-        "column_count": len(columns),
-        "domain_count": len(overlap.get("domain_sides") or []),
-        "pair_count": 1,
-        "min_overlap_coefficient": stats.get("overlap_coefficient", 0),
-        "max_overlap_coefficient": stats.get("overlap_coefficient", 0),
-    })
-    return {
-        "columns": columns,
-        "sources": overlap.get("sources", ["value_domain"]),
-        "filter_evidence": overlap.get("filter_evidence", {}),
-        "filter_pipeline": overlap.get("filter_pipeline", []),
-        "domain_sides": overlap.get("domain_sides") or [],
-        "pair_stats": [{
-            "from_ref": overlap.get("from_ref"),
-            "to_ref": overlap.get("to_ref"),
-            "from_domain_role": (overlap.get("domain_sides") or [{}])[0].get("domain_role"),
-            "to_domain_role": (overlap.get("domain_sides") or [{}, {}])[1].get("domain_role"),
-            "stats": overlap.get("stats") or {},
-        }],
-        "stats": stats,
     }
 
 

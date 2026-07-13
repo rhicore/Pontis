@@ -25,7 +25,7 @@ def _detect_name_overlaps(
         if len(selected) < 2:
             continue
         selected = selected[:MAX_NAME_GROUP_COLUMNS]
-        overlaps.append({
+        overlap = {
             "columns": [_column_payload(col) for col in selected],
             "sources": ["name_keyword"],
             "stats": {
@@ -33,7 +33,11 @@ def _detect_name_overlaps(
                 "name_token_count": 1,
                 "name_tokens": [token],
             },
-        })
+        }
+        domain_sides = [side for side in (_column_domain_side(col) for col in selected) if side]
+        if domain_sides:
+            overlap["domain_sides"] = domain_sides
+        overlaps.append(overlap)
     return overlaps
 
 
@@ -46,6 +50,12 @@ def _collapse_columns_for_same_table_group(
     selected: list[Dict] = []
     seen_group_refs: set[str] = set()
     for col in sorted(columns, key=lambda item: (item["table"], item["column"], item.get("entity_name") or item.get("ref") or "")):
+        # A logical column domain has already absorbed its physical table-group
+        # members.  It is now a first-class column and must not be collapsed a
+        # second time using physical table membership.
+        if col.get("domain_members"):
+            selected.append(col)
+            continue
         group_refs = (
             memberships.get(str(col.get("table")), set())
             or memberships.get(str(col.get("table_ref")), set())
@@ -114,6 +124,19 @@ def _column_payload(col: Dict) -> Dict:
         "table_ref": col.get("table_ref") or col["table"],
         "column": col["column"],
         "type": col.get("data_type", ""),
+    }
+
+
+def _column_domain_side(col: Dict) -> Dict | None:
+    members = col.get("domain_members")
+    if not isinstance(members, list) or not members:
+        return None
+    return {
+        "domain_ref": col.get("entity_name"),
+        "domain_unit": col.get("domain_unit") or col.get("table"),
+        "domain_role": col.get("domain_role") or col.get("column"),
+        "domain_member_count": len(members),
+        "members": [_column_payload(member) for member in members],
     }
 
 
@@ -188,39 +211,34 @@ def _group_pair_overlaps(pair_overlaps: List[Dict]) -> List[Dict]:
     for overlap in pair_overlaps:
         left = overlap["from_ref"]
         right = overlap["to_ref"]
-        columns[left] = {
-            "ref": left,
-            "table": overlap["from_table"],
-            "table_name": overlap.get("from_table_name") or overlap["from_table"],
-            "table_ref": overlap["from_table"],
-            "column": overlap["from_column"],
-            "type": overlap["from_type"],
-        }
-        columns[right] = {
-            "ref": right,
-            "table": overlap["to_table"],
-            "table_name": overlap.get("to_table_name") or overlap["to_table"],
-            "table_ref": overlap["to_table"],
-            "column": overlap["to_column"],
-            "type": overlap["to_type"],
-        }
+        columns[left] = _overlap_endpoint_column(overlap, "from")
+        columns[right] = _overlap_endpoint_column(overlap, "to")
         by_edge[frozenset((left, right))] = overlap
 
     grouped_edges: set[frozenset[str]] = set()
     groups: list[Dict] = []
+    edges_by_node: dict[str, set[frozenset[str]]] = defaultdict(set)
+    for edge in by_edge:
+        for ref in edge:
+            edges_by_node[ref].add(edge)
 
     for component in _connected_components(set(columns), by_edge):
         if len(component) < MIN_GROUP_SIZE:
             continue
 
-        partition, _selected_edges = _overlap_coefficient_partition_component(component, by_edge)
+        component_edges: set[frozenset[str]] = set()
+        for ref in component:
+            component_edges.update(edges_by_node.get(ref, set()))
+
+        partition, _selected_edges = _overlap_coefficient_partition_component(
+            component,
+            by_edge,
+            component_edges,
+        )
         for refs in partition:
             if len(refs) < MIN_GROUP_SIZE:
                 continue
-            group_edges = {
-                edge for edge in by_edge
-                if edge.issubset(refs)
-            }
+            group_edges = {edge for edge in component_edges if edge.issubset(refs)}
             if not group_edges:
                 continue
             groups.append(_make_group_overlap(tuple(sorted(refs)), columns, by_edge, group_edges))
@@ -230,11 +248,50 @@ def _group_pair_overlaps(pair_overlaps: List[Dict]) -> List[Dict]:
         edge = frozenset((overlap["from_ref"], overlap["to_ref"]))
         if edge in grouped_edges:
             continue
-        groups.append(overlap)
+        if overlap.get("domain_sides"):
+            groups.append(_make_group_overlap(
+                tuple(sorted((overlap["from_ref"], overlap["to_ref"]))),
+                columns,
+                by_edge,
+                {edge},
+            ))
+        else:
+            groups.append(overlap)
 
     groups.sort(key=_overlap_sort_key)
 
     return groups
+
+
+def _overlap_endpoint_column(overlap: Dict, prefix: str) -> Dict:
+    ref = str(overlap[f"{prefix}_ref"])
+    side_index = 0 if prefix == "from" else 1
+    domain_sides = overlap.get("domain_sides") or []
+    domain_side = next(
+        (side for side in domain_sides if str(side.get("domain_ref") or "") == ref),
+        domain_sides[side_index] if len(domain_sides) > side_index else None,
+    )
+    if domain_side:
+        domain_unit = str(domain_side.get("domain_unit") or overlap[f"{prefix}_table"])
+        domain_role = str(domain_side.get("domain_role") or overlap[f"{prefix}_column"])
+        return {
+            "ref": ref,
+            "table": domain_unit,
+            "table_name": domain_unit,
+            "table_ref": domain_unit,
+            "column": domain_role,
+            "type": overlap[f"{prefix}_type"],
+            "_domain_side": domain_side,
+        }
+    table = overlap[f"{prefix}_table"]
+    return {
+        "ref": ref,
+        "table": table,
+        "table_name": overlap.get(f"{prefix}_table_name") or table,
+        "table_ref": table,
+        "column": overlap[f"{prefix}_column"],
+        "type": overlap[f"{prefix}_type"],
+    }
 
 
 def _connected_components(nodes: set[str], by_edge: dict[frozenset[str], Dict]) -> list[set[str]]:
@@ -267,12 +324,12 @@ def _connected_components(nodes: set[str], by_edge: dict[frozenset[str], Dict]) 
 def _overlap_coefficient_partition_component(
     component: set[str],
     by_edge: dict[frozenset[str], Dict],
+    component_edges: set[frozenset[str]] | None = None,
 ) -> tuple[list[set[str]], set[frozenset[str]]]:
     selected_edges: set[frozenset[str]] = set()
     incident: dict[str, list[tuple[frozenset[str], Dict]]] = defaultdict(list)
-    for edge, overlap in by_edge.items():
-        if not edge.issubset(component):
-            continue
+    for edge in component_edges or set(by_edge):
+        overlap = by_edge[edge]
         left, right = tuple(edge)
         incident[left].append((edge, overlap))
         incident[right].append((edge, overlap))
@@ -341,8 +398,18 @@ def _make_group_overlap(
         })
 
     stats_values = [by_edge[edge_key]["stats"] for edge_key in group_edges]
-    return {
-        "columns": [columns[ref] for ref in sorted(refs)],
+    selected_columns = [columns[ref] for ref in sorted(refs)]
+    domain_sides = {
+        str(column["_domain_side"].get("domain_ref") or column["ref"]): column["_domain_side"]
+        for column in selected_columns
+        if column.get("_domain_side")
+    }
+    public_columns = [
+        {key: value for key, value in column.items() if key != "_domain_side"}
+        for column in selected_columns
+    ]
+    payload = {
+        "columns": public_columns,
         "sources": ["value_domain"],
         "pair_stats": pair_stats,
         "stats": {
@@ -352,6 +419,9 @@ def _make_group_overlap(
             "max_overlap_coefficient": max(stat["overlap_coefficient"] for stat in stats_values),
         },
     }
+    if domain_sides:
+        payload["domain_sides"] = [domain_sides[ref] for ref in sorted(domain_sides)]
+    return payload
 
 
 def _overlap_sort_key(overlap: Dict):
@@ -372,19 +442,9 @@ def _overlap_sort_key(overlap: Dict):
 
 
 def _group_overlap_name(columns: list[Dict]) -> str:
-    labels = [_column_display_name(col) for col in columns]
     digest = hashlib.sha1("|".join(sorted(col["ref"] for col in columns)).encode("utf-8")).hexdigest()[:10]
-    readable = "__".join(label.replace("/", "_").replace("\\", "_") for label in labels[:3])
-    suffix = "" if len(labels) <= 3 else f"__plus{len(labels) - 3}"
-    return f"value_domain[{readable}{suffix}]#{digest}"
+    return f"value_domain_{digest}"
 
 
 def _table_scope(tables: list[str]) -> str:
     return "intra_table" if len(set(tables)) == 1 else "inter_table"
-
-
-def _column_display_name(column: Dict) -> str:
-    table_name = column.get("table_name") or column["table"]
-    raw_table = table_name.split("--")[-1] if "--" in table_name else table_name
-    raw_column = column["column"].split("--")[-1] if "--" in column["column"] else column["column"]
-    return f"{raw_table}.{raw_column}"

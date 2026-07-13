@@ -43,6 +43,8 @@ VALUE_MATCH_METHODS = {
     "hash_index",
     "sample_bloom",
     "sample_bloom_then_sql",
+    "adaptive_sample_bloom",
+    "snowflake_adaptive_probe",
     "metadata_sample",
 }
 HASH_INDEX_FETCH_SIZE = 50000
@@ -53,6 +55,16 @@ DEFAULT_SAMPLE_BLOOM_GROWTH_FACTOR = 4
 DEFAULT_SAMPLE_BLOOM_MIN_HITS = 1
 DEFAULT_SAMPLE_BLOOM_SAMPLE_ROWS = 0
 DEFAULT_SAMPLE_BLOOM_MAX_DOMAIN_MEMBERS = 0
+DEFAULT_ADAPTIVE_SAMPLE_INITIAL_SIZE = 256
+DEFAULT_ADAPTIVE_SAMPLE_SIZE = 1024
+DEFAULT_ADAPTIVE_SAMPLE_MAX_SIZE = 4096
+DEFAULT_ADAPTIVE_SAMPLE_MIN_OVERLAP = 0.01
+DEFAULT_ADAPTIVE_SAMPLE_CONFIDENCE = 0.99
+DEFAULT_ADAPTIVE_PROBE_PARALLEL_QUERIES = 8
+DEFAULT_ADAPTIVE_PROBE_TABLES_PER_QUERY = 1
+DEFAULT_ADAPTIVE_PROBE_TARGET_COLUMNS_PER_QUERY = 4
+DEFAULT_ADAPTIVE_PROBE_PROFILE_COLUMNS_PER_QUERY = 16
+DEFAULT_ADAPTIVE_PROBE_PROFILE_SAMPLE_ROWS = 4096
 
 STOP_TOKENS = {
     "the", "a", "an", "of", "for", "to", "in", "on", "and", "or",
@@ -125,6 +137,25 @@ class OverlapOptions:
     sample_bloom_min_hits: int = DEFAULT_SAMPLE_BLOOM_MIN_HITS
     sample_bloom_sample_rows: int = DEFAULT_SAMPLE_BLOOM_SAMPLE_ROWS
     sample_bloom_max_domain_members: int = DEFAULT_SAMPLE_BLOOM_MAX_DOMAIN_MEMBERS
+    adaptive_sample_initial_size: int = DEFAULT_ADAPTIVE_SAMPLE_INITIAL_SIZE
+    adaptive_sample_size: int = DEFAULT_ADAPTIVE_SAMPLE_SIZE
+    adaptive_sample_max_size: int = DEFAULT_ADAPTIVE_SAMPLE_MAX_SIZE
+    adaptive_sample_min_overlap: float = DEFAULT_ADAPTIVE_SAMPLE_MIN_OVERLAP
+    adaptive_sample_confidence: float = DEFAULT_ADAPTIVE_SAMPLE_CONFIDENCE
+    adaptive_probe_parallel_queries: int = DEFAULT_ADAPTIVE_PROBE_PARALLEL_QUERIES
+    adaptive_probe_tables_per_query: int = DEFAULT_ADAPTIVE_PROBE_TABLES_PER_QUERY
+    adaptive_probe_target_columns_per_query: int = DEFAULT_ADAPTIVE_PROBE_TARGET_COLUMNS_PER_QUERY
+    adaptive_probe_full_membership_enabled: bool = False
+    adaptive_probe_name_fallback_enabled: bool = False
+    adaptive_probe_name_fallback_top_k: int = 0
+    adaptive_probe_profile_columns_per_query: int = DEFAULT_ADAPTIVE_PROBE_PROFILE_COLUMNS_PER_QUERY
+    adaptive_probe_profile_sample_rows: int = DEFAULT_ADAPTIVE_PROBE_PROFILE_SAMPLE_ROWS
+    group_policy_enabled: bool = False
+    group_drop_name_only: bool = False
+    group_drop_local_ordinal: bool = False
+    group_drop_low_overlap_text: bool = False
+    group_low_overlap_text_threshold: float = 0.1
+    group_auto_accept_min_overlap: float = 0.1
     column_domain_enabled: bool = False
     pattern_table_domain_enabled: bool = False
     pattern_table_domain_threshold: float = DEFAULT_PATTERN_TABLE_DOMAIN_THRESHOLD
@@ -169,6 +200,15 @@ class SampleBloomProfile:
     cardinality: int
     sample_hashes: tuple[int, ...]
     layers: tuple[BloomLayer, ...]
+    member_refs: tuple[str, ...] = ()
+
+
+@dataclass
+class AdaptiveProbeProfile:
+    """Server-side bottom-k sample without a downloaded full membership index."""
+
+    cardinality: int
+    sample_hashes: tuple[int, ...]
     member_refs: tuple[str, ...] = ()
 
 
@@ -301,6 +341,70 @@ def _resolve_options(config=None, **overrides) -> OverlapOptions:
             "sample_bloom_max_domain_members",
             DEFAULT_SAMPLE_BLOOM_MAX_DOMAIN_MEMBERS,
         ),
+        adaptive_sample_initial_size=max(
+            1,
+            int_value("adaptive_sample_initial_size", DEFAULT_ADAPTIVE_SAMPLE_INITIAL_SIZE),
+        ),
+        adaptive_sample_size=max(1, int_value("adaptive_sample_size", DEFAULT_ADAPTIVE_SAMPLE_SIZE)),
+        adaptive_sample_max_size=max(
+            1,
+            int_value("adaptive_sample_max_size", DEFAULT_ADAPTIVE_SAMPLE_MAX_SIZE),
+        ),
+        adaptive_sample_min_overlap=min(
+            1.0,
+            float_value("adaptive_sample_min_overlap", DEFAULT_ADAPTIVE_SAMPLE_MIN_OVERLAP),
+        ),
+        adaptive_sample_confidence=min(
+            0.999999,
+            max(0.5, float_value("adaptive_sample_confidence", DEFAULT_ADAPTIVE_SAMPLE_CONFIDENCE)),
+        ),
+        adaptive_probe_parallel_queries=max(
+            1,
+            int_value("adaptive_probe_parallel_queries", DEFAULT_ADAPTIVE_PROBE_PARALLEL_QUERIES),
+        ),
+        adaptive_probe_tables_per_query=max(
+            1,
+            int_value("adaptive_probe_tables_per_query", DEFAULT_ADAPTIVE_PROBE_TABLES_PER_QUERY),
+        ),
+        adaptive_probe_target_columns_per_query=max(
+            1,
+            int_value(
+                "adaptive_probe_target_columns_per_query",
+                DEFAULT_ADAPTIVE_PROBE_TARGET_COLUMNS_PER_QUERY,
+            ),
+        ),
+        adaptive_probe_full_membership_enabled=bool_value(
+            "adaptive_probe_full_membership_enabled",
+            False,
+        ),
+        adaptive_probe_name_fallback_enabled=bool_value(
+            "adaptive_probe_name_fallback_enabled",
+            False,
+        ),
+        adaptive_probe_name_fallback_top_k=int_value(
+            "adaptive_probe_name_fallback_top_k",
+            0,
+        ),
+        adaptive_probe_profile_columns_per_query=max(
+            1,
+            int_value(
+                "adaptive_probe_profile_columns_per_query",
+                DEFAULT_ADAPTIVE_PROBE_PROFILE_COLUMNS_PER_QUERY,
+            ),
+        ),
+        adaptive_probe_profile_sample_rows=max(
+            1,
+            int_value(
+                "adaptive_probe_profile_sample_rows",
+                DEFAULT_ADAPTIVE_PROBE_PROFILE_SAMPLE_ROWS,
+            ),
+        ),
+        group_policy_enabled=bool_value("group_policy_enabled", False),
+        group_drop_name_only=bool_value("group_drop_name_only", False),
+        group_drop_local_ordinal=bool_value("group_drop_local_ordinal", False),
+        group_drop_low_overlap_text=bool_value("group_drop_low_overlap_text", False),
+        group_low_overlap_text_threshold=min(1.0, float_value("group_low_overlap_text_threshold", 0.1)),
+        group_auto_accept_min_overlap=min(1.0, float_value("group_auto_accept_min_overlap", 0.1)),
         column_domain_enabled=bool_value("column_domain_enabled", False),
         pattern_table_domain_enabled=bool_value("pattern_table_domain_enabled", False),
         pattern_table_domain_threshold=float_value("pattern_table_domain_threshold", DEFAULT_PATTERN_TABLE_DOMAIN_THRESHOLD),
