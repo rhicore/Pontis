@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SourceConfig:
     """数据源配置 — 决定怎么发现和访问数据。"""
-    type: str = ""            # fs | docker | s3 | ...
+    type: str = ""            # fs | sqlite | snowflake | postgresql | ...
     path: str = ""
     host: str = ""
     port: int = 0
@@ -29,6 +29,7 @@ class SourceConfig:
     warehouse: str = ""
     sslmode: str = ""
     connect_timeout: int = 0
+    exclude_paths: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -60,7 +61,7 @@ class StoreConfig:
         if not entry:
             return None
         p = os.path.expanduser(entry.source.path)
-        if entry.source.type in {"fs", "snowflake", "spider2_snow"} and p and not os.path.isabs(p):
+        if entry.source.type in {"fs", "sqlite", "snowflake", "spider2_snow"} and p and not os.path.isabs(p):
             p = os.path.abspath(p)
         return p
 
@@ -82,7 +83,7 @@ def _parse_project(name: str, pdata, base_dir: str = "", graph_defaults: dict = 
 
     src = pdata.get("source", {})
     source_path = src.get("path", "")
-    if source_path and src.get("type", "") in {"fs", "snowflake", "spider2_snow"}:
+    if source_path and src.get("type", "") in {"fs", "sqlite", "snowflake", "spider2_snow"}:
         expanded = os.path.expanduser(source_path)
         if not os.path.isabs(expanded) and base_dir:
             source_path = os.path.abspath(os.path.join(base_dir, expanded))
@@ -108,6 +109,7 @@ def _parse_project(name: str, pdata, base_dir: str = "", graph_defaults: dict = 
         warehouse=src.get("warehouse", ""),
         sslmode=src.get("sslmode", ""),
         connect_timeout=int(src.get("connect_timeout") or 0),
+        exclude_paths=list(src.get("exclude_paths") or []),
     )
     graph = {**(graph_defaults or {}), **(pdata.get("graph", {}) or {})}
     graph_cfg = GraphConfig(

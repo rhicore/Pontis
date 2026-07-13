@@ -17,16 +17,41 @@ from tool.utils.workspace_access import resolve_file_sources, workspace_allows_d
 
 logger = logging.getLogger(__name__)
 
-# 匹配非 SELECT 的写操作关键词
-_WRITE_PATTERN = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|REPLACE|ATTACH|DETACH)\b",
-    re.IGNORECASE,
-)
-
 _DEFAULT_LIMIT = 20
 _DEFAULT_QUERY_TIMEOUT_SECONDS = 30.0
 _MAX_RESULT_CHARS = 8000
 _JSON_RECORD_KEYS = ("records", "data", "items", "rows", "results")
+_READONLY_PRAGMAS = frozenset({
+    "collation_list",
+    "compile_options",
+    "database_list",
+    "foreign_key_list",
+    "function_list",
+    "index_info",
+    "index_list",
+    "index_xinfo",
+    "module_list",
+    "pragma_list",
+    "table_info",
+    "table_list",
+    "table_xinfo",
+})
+_MUTATING_SQL_NODES = tuple(
+    node_type
+    for node_type in (
+        getattr(exp, "Insert", None),
+        getattr(exp, "Update", None),
+        getattr(exp, "Delete", None),
+        getattr(exp, "Create", None),
+        getattr(exp, "Drop", None),
+        getattr(exp, "Alter", None),
+        getattr(exp, "Merge", None),
+        getattr(exp, "Command", None),
+        getattr(exp, "Attach", None),
+        getattr(exp, "Detach", None),
+    )
+    if node_type is not None
+)
 _TYPE_SAMPLE_ROWS = 5000
 _CSV_CACHE_FORMAT_VERSION = "typed-v1"
 _INTEGER_RE = re.compile(r"^[+-]?(?:0|[1-9]\d*)$")
@@ -59,14 +84,27 @@ def _is_readonly_sql(sql: str) -> bool:
     if not stripped:
         return False
 
-    upper = stripped.upper()
-    if upper.startswith("PRAGMA"):
-        return True
-    if upper.startswith("SELECT"):
-        return True
-    if upper.startswith("WITH"):
-        return True
-    return False
+    try:
+        statements = [
+            statement
+            for statement in sqlglot.parse(stripped, read="sqlite")
+            if statement is not None
+        ]
+    except Exception:
+        return False
+
+    if len(statements) != 1:
+        return False
+
+    statement = statements[0]
+    if isinstance(statement, exp.Pragma):
+        match = re.match(r"PRAGMA\s+(?:\w+\.)?([A-Za-z_][A-Za-z0-9_]*)", stripped, re.IGNORECASE)
+        return bool(match and match.group(1).lower() in _READONLY_PRAGMAS)
+
+    if not isinstance(statement, exp.Query):
+        return False
+
+    return not any(isinstance(node, _MUTATING_SQL_NODES) for node in statement.walk())
 
 
 def _sqlite_compatible_sql(sql: str) -> str:
@@ -1117,7 +1155,9 @@ def query_command(workspace, sql: str, ref: str = "", limit: int = _DEFAULT_LIMI
         ref: DB/CSV/TSV/JSON file ref or "." for workspace query
         limit: Max rows to return
     """
-    limit = _DEFAULT_LIMIT if limit is None else max(0, int(limit))
+    limit = _DEFAULT_LIMIT if limit is None else int(limit)
+    if limit < 1:
+        return "错误：query limit 必须大于或等于 1。"
     selector = (ref or "").strip()
     if not selector:
         return "错误：缺少 ref。请传入数据库或表格文件 ref。"
@@ -1126,9 +1166,6 @@ def query_command(workspace, sql: str, ref: str = "", limit: int = _DEFAULT_LIMI
     stripped = sql.strip()
     if not _is_readonly_sql(stripped):
         return "错误：只允许只读 SELECT / PRAGMA 查询（WITH ... SELECT 也允许）。不允许 INSERT、UPDATE、DELETE 等写操作。"
-
-    if _WRITE_PATTERN.search(stripped):
-        return "错误：SQL 中包含写操作关键词，只允许 SELECT 查询。"
 
     stripped = _sqlite_compatible_sql(stripped)
 

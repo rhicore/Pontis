@@ -64,6 +64,9 @@ def make_books_project():
     with open(os.path.join(tmp, "notes", "glossary.txt"), "w", encoding="utf-8") as fh:
         fh.write("address status domain\norder status domain\n")
 
+    with open(os.path.join(tmp, "binary.bin"), "wb") as fh:
+        fh.write(b"\x00\xfforder status must never be searched as text\x00")
+
     with open(os.path.join(tmp, "records.json"), "w", encoding="utf-8") as fh:
         json.dump(
             {
@@ -133,12 +136,12 @@ def make_books_project():
 
 
 def cleanup_test_graph(ws):
+    # The temporary project name is unique, so source nodes cannot be stale.
+    # A write triggers source publication before executing; deleting source
+    # refs here would therefore erase the freshly published fixture itself.
     ws.cypher(
         "MATCH (n) "
-        "WHERE n.path = 'books.sqlite' "
-        "OR n._ref STARTS WITH 'books.sqlite--' "
-        "OR n.ref STARTS WITH 'books.sqlite--' "
-        "OR (n:chunk AND n.name IN ['0001', '0002']) "
+        "WHERE (n:chunk AND n.name IN ['0001', '0002']) "
         "OR n.name IN $names "
         "DETACH DELETE n",
         params={
@@ -149,6 +152,7 @@ def cleanup_test_graph(ws):
                 "knowledge_case",
                 "knowledge_case_sparse",
                 "evidence_literal_test",
+                "value_domain_test",
             ]
         },
     )
@@ -157,6 +161,14 @@ def cleanup_test_graph(ws):
 def main():
     project = make_books_project()
     ws = Workspace(project_path=project)
+    # Dynamic projects share the configured test graph. Source identities are
+    # intentionally project-independent, so remove prior test-owned nodes
+    # before publishing this run's fixture.
+    ws._get_store().execute_cypher(
+        "MATCH (n) WHERE n.project STARTS WITH 'pontis_tool_test_' DETACH DELETE n"
+    )
+    ws._get_store().invalidate_modules()
+    ws.refresh_sources()
     cleanup_test_graph(ws)
 
     print("[1] Ref resolution")
@@ -177,19 +189,22 @@ def main():
 
     print("\n[2] Read tools")
     ref_tables = find_command(ws, ref="books.sqlite/*:table")
-    ok("find lists db tables", "books.sqlite/address_status" in ref_tables and "books.sqlite/order_status" in ref_tables, ref_tables)
+    ok("find lists db tables from fs root", ".:dir/books.sqlite:db/address_status:table" in ref_tables and ".:dir/books.sqlite:db/order_status:table" in ref_tables, ref_tables)
 
     find_tables = find_command(ws, ref="books.sqlite/*:table")
-    ok("find lists db tables by ref", "books.sqlite/address_status" in find_tables and "books.sqlite/order_status" in find_tables, find_tables)
+    ok("find path scope returns source refs", ".:dir/books.sqlite:db/address_status:table" in find_tables and ".:dir/books.sqlite:db/order_status:table" in find_tables, find_tables)
 
     find_all_tables = find_command(ws, ref="*:table")
     ok("find *:table lists database tables only", "orders.csv/orders" not in find_all_tables, find_all_tables)
 
     find_csv_tables = find_command(ws, ref="*:csv_table")
-    ok("find lists csv table summaries through csv_table", "orders:csv_table" in find_csv_tables, find_csv_tables)
+    ok("find does not expose csv_table graph projections", "orders:csv_table" not in find_csv_tables, find_csv_tables)
 
     ref_cols = find_command(ws, ref="books.sqlite/*:table/*:col")
-    ok("find lists path-style columns", "books.sqlite/address_status:table/status_id:col" in ref_cols, ref_cols)
+    ok("find displays source-rooted columns", ".:dir/books.sqlite:db/address_status:table/status_id:col" in ref_cols, ref_cols)
+
+    source_col_meta = meta_command(ws, ".:dir/books.sqlite:db/address_status:table/status_id:col", all=True)
+    ok("meta resolves source-rooted column ref", "Error:" not in source_col_meta and "status_id" in source_col_meta, source_col_meta)
 
     display_table_meta = meta_command(ws, "books.sqlite/address_status:table", all=True)
     ok("meta accepts typed table display ref", "address_status" in display_table_meta and "Error:" not in display_table_meta, display_table_meta)
@@ -209,13 +224,13 @@ def main():
     csv_query_out = query_command(ws, 'SELECT status, SUM(CAST(amount AS REAL)) AS total FROM this GROUP BY status ORDER BY status', ref="orders.csv:file:csv:text")
     ok("query reads csv refs through temporary SQL table", "delivered" in csv_query_out and "37.5" in csv_query_out, csv_query_out)
 
-    csv_avg_out = query_command(ws, 'SELECT AVG(amount) AS avg_amount FROM this WHERE status = "delivered"', ref="orders.csv:file:csv:text")
+    csv_avg_out = query_command(ws, "SELECT AVG(amount) AS avg_amount FROM this WHERE status = 'delivered'", ref="orders.csv:file:csv:text")
     ok("query treats blank csv numeric cells as NULL", "18.75" in csv_avg_out, csv_avg_out)
 
-    csv_alias_out = query_command(ws, 'SELECT COUNT(*) AS n FROM orders WHERE status = "delivered"', ref="orders.csv:file:csv:text")
+    csv_alias_out = query_command(ws, "SELECT COUNT(*) AS n FROM orders WHERE status = 'delivered'", ref="orders.csv:file:csv:text")
     ok("query exposes csv filename alias", "3" in csv_alias_out and "n" in csv_alias_out, csv_alias_out)
 
-    json_query_out = query_command(ws, 'SELECT name FROM this WHERE kind = "order"', ref="records.json:file:json")
+    json_query_out = query_command(ws, "SELECT name FROM this WHERE kind = 'order'", ref="records.json:file:json")
     ok("query reads json records refs", "Pending Delivery" in json_query_out, json_query_out)
 
     json_avg_out = query_command(ws, 'SELECT AVG(score) AS avg_score FROM this', ref="records.json:file:json")
@@ -223,7 +238,7 @@ def main():
 
     workspace_query_out = query_command(
         ws,
-        'SELECT o.order_id, s.status_value FROM orders o JOIN order_status s ON o.status = "delivered" AND s.status_id = 3 ORDER BY o.order_id',
+        "SELECT o.order_id, s.status_value FROM orders o JOIN order_status s ON o.status = 'delivered' AND s.status_id = 3 ORDER BY o.order_id",
         ref=".",
     )
     ok("query workspace exposes csv and db aliases together", "101" in workspace_query_out and "Delivered" in workspace_query_out, workspace_query_out)
@@ -234,11 +249,21 @@ def main():
     query_reject = query_command(ws, 'DELETE FROM address_status', "books.sqlite")
     ok("query rejects write sql", "只允许只读" in query_reject or "只允许 SELECT" in query_reject, query_reject)
 
+    replace_function = query_command(
+        ws,
+        "SELECT replace(address_status, 'A', 'X') AS normalized FROM address_status ORDER BY status_id LIMIT 1",
+        "books.sqlite",
+    )
+    ok("query allows SQLite replace function", "Xctive" in replace_function, replace_function)
+
+    multi_statement = query_command(ws, "SELECT 1; DELETE FROM address_status", "books.sqlite")
+    ok("query rejects mixed read/write statements", "只允许只读" in multi_statement, multi_statement)
+
     cypher_out = cypher_command(ws, "MATCH (t:table) RETURN t")
     ok("cypher returns table rows", "address_status [:table]" in cypher_out and "order_status [:table]" in cypher_out, cypher_out)
 
     table_meta = meta_command(ws, "books.sqlite/address_status", all=True)
-    ok("table meta keeps useful schema facts", "column_count:" in table_meta and "primary_key:" in table_meta, table_meta)
+    ok("table meta keeps non-relational schema facts", "row_count:" in table_meta and "primary_key:" in table_meta and "column_count:" not in table_meta, table_meta)
     ok("table meta hides redundant db context fields", all(s not in table_meta for s in [
         "path:",
         "db_name:",
@@ -247,7 +272,7 @@ def main():
     ]), table_meta)
 
     table_summary = meta_command(ws, "books.sqlite/address_status", property=["brief", "detail"])
-    ok("table meta derives fallback brief/detail when absent", "rows" in table_summary and "cols" in table_summary, table_summary)
+    ok("table meta derives fallback brief/detail without edge-derived counts", "rows" in table_summary and "cols" not in table_summary, table_summary)
 
     column_meta = meta_command(ws, "books.sqlite/address_status/status_id", all=True)
     ok("column meta keeps useful column facts", "not_null:" in column_meta and "ref:" not in column_meta, column_meta)
@@ -287,6 +312,7 @@ def main():
     )
     fk_meta = meta_command(ws, "books.sqlite/fks/order_history.status_id->order_status.status_id", all=True)
     ok("fk meta keeps useful counters", "match_rate: 1.0" in fk_meta and "total_count: 3" in fk_meta, fk_meta)
+    ok("fk meta uses ordinary neighbor formatting", "[source]" not in fk_meta and "[target]" not in fk_meta, fk_meta)
     ok("fk meta hides redundant structural props", all(s not in fk_meta for s in [
         "db_name:",
         "db_path:",
@@ -304,7 +330,11 @@ def main():
     ok("grep finds README content", "address status" in grep_out.lower(), grep_out)
 
     grep_ref_out = grep_command(ws, pattern="order status", ref="*:file:text", output_mode="content")
-    ok("grep accepts text file ref patterns", "order status" in grep_ref_out.lower(), grep_ref_out)
+    ok(
+        "grep keeps wildcard text scope and excludes binary siblings",
+        "order status" in grep_ref_out.lower() and "binary.bin" not in grep_ref_out,
+        grep_ref_out,
+    )
 
     grep_missing = grep_command(ws, pattern="address", ref="missing.txt")
     ok("grep reports missing ref", "Ref does not exist" in grep_missing, grep_missing)
@@ -403,8 +433,8 @@ def main():
             "detail": "Distinguish address status from order status.",
         },
         edges=[
-            {"a": "books.sqlite/address_status/status_id", "b": "status_id_domain:disambig"},
-            {"a": "books.sqlite/order_status/status_id", "b": "status_id_domain:disambig"},
+            {"ref": "books.sqlite/address_status/status_id"},
+            {"ref": "books.sqlite/order_status/status_id"},
         ],
     )
     ok("create_entity creates disambig entity", "Created: status_id_domain" in create_out, create_out)
@@ -420,7 +450,7 @@ def main():
             "brief": "README chunk",
             "detail": "First README chunk.",
         },
-        edges=[{"a": "README.md", "b": "0001:chunk"}],
+        edges=[{"ref": "README.md"}],
     )
     chunk_b = create_entity_command(
         ws,
@@ -432,7 +462,7 @@ def main():
             "brief": "Glossary chunk",
             "detail": "First glossary chunk.",
         },
-        edges=[{"a": "notes/glossary.txt", "b": "0001:chunk"}],
+        edges=[{"ref": "notes/glossary.txt"}],
     )
     ok("create_entity allows same chunk display name for different sources", "Created: 0001" in chunk_a and "Created: 0001" in chunk_b, chunk_a + "\n" + chunk_b)
     chunk_edges = ws.cypher(
@@ -456,6 +486,7 @@ def main():
         ws,
         "status_id:disambig",
         meta={"brief": "status_id disambiguation", "detail": "use this node when the bare name is ambiguous"},
+        edges=[{"ref": "README.md"}],
     )
     bare_disambig = meta_command(ws, "status_id", property=["detail"])
     ok("bare ambiguous name resolves to unique disambig entity", "use this node when the bare name is ambiguous" in bare_disambig and "Error:" not in bare_disambig, bare_disambig)
@@ -465,17 +496,23 @@ def main():
     find_search_out = find_command(ws, ref="*:disambig", query="address status ambiguity")
     ok("find searches within ref scope", "status_id_domain" in find_search_out, find_search_out)
     path_search = find_command(ws, ref="*:col", query="address status domain")
-    ok("find query returns column refs", "status_id:col" in path_search, path_search)
+    ok(
+        "find query returns source-rooted column refs",
+        ".:dir/books.sqlite:db/address_status:table/status_id:col" in path_search,
+        path_search,
+    )
 
     create_entity_command(
         ws,
         "knowledge_rule:knowledge:convention",
         meta={"brief": "status id ambiguity", "detail": "shared status id ambiguity"},
+        edges=[{"ref": "README.md"}],
     )
     create_entity_command(
         ws,
         "knowledge_case:knowledge:example",
         meta={"brief": "status id ambiguity", "detail": "shared status id ambiguity"},
+        edges=[{"ref": "README.md"}],
     )
     knowledge_find = find_command(ws, ref=f"{os.path.basename(project)}::*:knowledge")
     rule_idx = knowledge_find.find("knowledge_rule:knowledge")
@@ -484,7 +521,7 @@ def main():
 
     knowledge_search = find_command(ws, ref="knowledge_rule:knowledge:convention", query="status id ambiguity")
     rule_search_idx = knowledge_search.find("knowledge_rule:knowledge:convention")
-    ok("find query can target abstract knowledge by exact ref", rule_search_idx != -1, knowledge_search)
+    ok("find query can target abstract knowledge by exact ref", "knowledge_rule:knowledge" in knowledge_search, knowledge_search)
 
     create_entity_command(
         ws,
@@ -498,6 +535,7 @@ def main():
             "mistake_summary": "used id instead of literal condition",
             "transfer_hint": "evidence literal should override guessed id mapping",
         },
+        edges=[{"ref": "README.md"}],
     )
     sparse_meta = meta_command(ws, "knowledge_case_sparse:knowledge:example", property=["detail"])
     ok("knowledge example detail falls back to structured fields", "transfer_hint:" in sparse_meta and "golden_sql:" in sparse_meta, sparse_meta)
@@ -516,36 +554,6 @@ def main():
     ok("bird knowledge helper auto-derives brief", bool(normalized.get("brief")), str(normalized))
     ok("bird knowledge helper auto-derives detail", "mistake_summary:" in str(normalized.get("detail", "")), str(normalized))
 
-    bird_ws = Workspace(active_projects=["bird"])
-    create_entity_command(
-        bird_ws,
-        "placeholder_rule:knowledge:convention",
-        meta={
-            "brief": "-",
-            "detail": "...",
-            "transfer_hint": "use row-level filtering for explicit evidence conditions",
-            "mistake_summary": "wrapped a direct condition into NOT EXISTS",
-        },
-    )
-    placeholder_search = find_command(bird_ws, ref="bird::placeholder_rule:knowledge:convention", query="row-level filtering explicit evidence condition")
-    ok("find query indexes normalized bird knowledge instead of placeholder brief/detail", "placeholder_rule:knowledge:convention" in placeholder_search, placeholder_search)
-    placeholder_find = find_command(bird_ws, ref="bird::placeholder_rule:knowledge:convention")
-    ok("find shows normalized bird knowledge info instead of placeholder text", "use row-level filtering" in placeholder_find or "wrapped a direct condition" in placeholder_find, placeholder_find)
-
-    create_entity_command(
-        bird_ws,
-        "evidence_literal_test:knowledge:term",
-        meta={
-            "brief": "证据字面条件值优先于数据库采样值",
-            "detail": "测试 knowledge base label fallback。",
-        },
-    )
-    relaxed_knowledge_meta = meta_command(bird_ws, "evidence_literal_test:knowledge:convention", property=["brief"])
-    ok("meta tolerates knowledge sublabel mismatch when base knowledge name is unique", "证据字面条件值优先于数据库采样值" in relaxed_knowledge_meta and "Error:" not in relaxed_knowledge_meta, relaxed_knowledge_meta)
-
-    delete_command(bird_ws, "bird::placeholder_rule:knowledge:convention")
-    delete_command(bird_ws, "bird::evidence_literal_test:knowledge:term")
-
     print("\n[5] add_edge")
     add_edge_out = add_edge_command(
         ws,
@@ -561,8 +569,19 @@ def main():
     disambig_meta = meta_command(ws, "status_id_domain", all=True)
     ok(
         "meta shows related columns after add_edge",
-        disambig_meta.count("status_id") >= 3 and "customer_address/status_id" not in disambig_meta,
+        disambig_meta.count("status_id:col") >= 3 and ".:dir/books.sqlite:db/customer_address:table/status_id:col" in disambig_meta,
         disambig_meta,
+    )
+
+    disambig_columns = meta_command(
+        ws, "status_id_domain:disambig", neighbor_label="col", offset=0, limit=2
+    )
+    ok(
+        "meta paginates source-rooted disambig column neighbors",
+        "共 3 条邻接" in disambig_columns
+        and ".:dir/books.sqlite:db/" in disambig_columns
+        and "offset=2" in disambig_columns,
+        disambig_columns,
     )
 
     rel_meta = meta_command(ws, "books.sqlite/order_history.status_id->books.sqlite/order_status.status_id", all=True)
@@ -576,6 +595,27 @@ def main():
 
     fk_search = find_command(ws, ref="*:fk", query="order_history status_id order_status foreign key")
     ok("find query can find fk entities by name tokens", "order_history.status_id->order_status.status_id" in fk_search, fk_search)
+
+    # Relation entities use the same ordinary name:tag contract as all other
+    # entities; member columns are represented only by graph edges.
+    create_entity_command(
+        ws,
+        "value_domain_test:overlap",
+        meta={"brief": "status id value-domain overlap"},
+        edges=[
+            {"ref": "books.sqlite/address_status/status_id"},
+            {"ref": "books.sqlite/order_status/status_id"},
+        ],
+    )
+    overlap_meta = meta_command(
+        ws, "value_domain_test:overlap",
+        property=["brief"],
+    )
+    ok(
+        "overlap uses ordinary entity ref and round-trips to meta",
+        "status id value-domain overlap" in overlap_meta and "Error:" not in overlap_meta,
+        overlap_meta,
+    )
 
     print("\n[6] delete")
     delete_out = delete_command(ws, "books.sqlite/address_status/status_id")

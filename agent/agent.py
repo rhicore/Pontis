@@ -89,8 +89,8 @@ class PontusAgent:
         self._last_guardrail_trace: List[dict] = []
     # ──────────────── LLM 调用 ────────────────
 
-    def _call_llm(self):
-        tool_defs = self.tools.get_definitions()
+    def _call_llm(self, *, tools_enabled: bool = True):
+        tool_defs = self.tools.get_definitions() if tools_enabled else []
         kwargs = {
             "model": self.config["model"],
             "messages": self.messages,
@@ -105,11 +105,12 @@ class PontusAgent:
         dump_llm_context("pontis_agent", kwargs)
         return self.client.chat.completions.create(**kwargs)
 
-    def _call_llm_round(self):
+    def _call_llm_round(self, *, tools_enabled: bool = True):
         """调用 LLM 并将 response 追加到消息历史。"""
-        static_prompt_tokens = self._static_prompt_tokens()
-        prompt_text = serialize_request(self.messages, self.tools.get_definitions())
-        response = self._call_llm()
+        tool_defs = self.tools.get_definitions() if tools_enabled else []
+        static_prompt_tokens = self._static_prompt_tokens(tool_defs)
+        prompt_text = serialize_request(self.messages, tool_defs)
+        response = self._call_llm(tools_enabled=tools_enabled)
         self._record_llm_usage(
             response,
             static_prompt_tokens=static_prompt_tokens,
@@ -120,8 +121,10 @@ class PontusAgent:
         self.messages.append(self._msg_to_dict(msg))
         return msg
 
-    def _static_prompt_tokens(self) -> int:
-        return estimate_messages_tokens(self._system_messages) + estimate_tokens(self.tools.get_definitions())
+    def _static_prompt_tokens(self, tool_defs=None) -> int:
+        if tool_defs is None:
+            tool_defs = self.tools.get_definitions()
+        return estimate_messages_tokens(self._system_messages) + estimate_tokens(tool_defs)
 
     def _record_llm_usage(self, response, *, static_prompt_tokens: int = 0, prompt_text: str | None = None) -> None:
         self._llm_rounds += 1
@@ -388,6 +391,7 @@ class PontusAgent:
 
             if action == "block":
                 sources = "+".join(s for s, v in call_vs if v.action == "block")
+                finalize = any(v.finalize for _, v in call_vs if v.action == "block")
                 self.logger.info(f"Guardrail block [{sources}] call#{i}({name}): {message}")
                 yield {"type": "blocked", "guardrail": sources,
                        "call_index": i, "name": name,
@@ -397,6 +401,12 @@ class PontusAgent:
                     "role": "tool", "tool_call_id": tc.id,
                     "content": message,
                 })
+                if finalize:
+                    yield {
+                        "type": "finalize",
+                        "guardrail": sources,
+                        "content": "Tool phase ended; the next model round has no tools.",
+                    }
                 continue
 
             parsed_args, parse_error = self._parse_args_or_error(tc.function.arguments)
@@ -463,13 +473,14 @@ class PontusAgent:
     def _drive_loop(self, rounds: int = 0) -> Iterator[dict]:
         """Continue the model/tool loop until final text."""
 
+        tools_enabled = True
         while True:
             for event in self._drain_guardrail_messages(rounds):
                 if self._trace_callback:
                     self._trace_callback(event)
                 yield event
 
-            msg = self._call_llm_round()
+            msg = self._call_llm_round(tools_enabled=tools_enabled)
             self._log_response(msg)
 
             pending = [
@@ -487,15 +498,21 @@ class PontusAgent:
             )
 
             done = False
+            finalize = False
             for event in self._guardrail_process(ctx, msg, msg.tool_calls):
                 if self._trace_callback:
                     self._trace_callback(event)
                 yield event
                 if event["type"] == "done":
                     done = True
+                elif event["type"] == "finalize":
+                    finalize = True
 
             if done:
                 return
+
+            if finalize:
+                tools_enabled = False
 
             rounds += 1
 

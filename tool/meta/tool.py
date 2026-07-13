@@ -12,6 +12,8 @@ from tool.utils.formatters import format_entity_name, format_meta_output, get_di
 from tool.utils.resolve import resolve_entity_selector, selector_match_pattern, selector_params
 
 _ADJACENCY_KEYS = {"fk", "rel", "disambig", "hint", "hints", "col", "overlap", "table", "view"}
+_DEFAULT_NEIGHBOR_LIMIT = 20
+_MAX_NEIGHBOR_LIMIT = 100
 
 
 def _get_project_name(workspace) -> str:
@@ -127,15 +129,48 @@ def _compute_column_properties(meta: dict, labels: List[str], props: List[str]) 
     return result
 
 
-def _format_neighbor_list(workspace, project_name: str, project: str | None, neighbors: List[dict]) -> str:
+def _neighbor_display_ref(workspace, project: str | None, meta: dict) -> str:
+    return display_ref_for_node(workspace, project, meta)
+
+
+def _format_neighbor_list(
+    workspace,
+    project_name: str,
+    project: str | None,
+    neighbors: List[dict],
+    offset: int = 0,
+    limit: int = _DEFAULT_NEIGHBOR_LIMIT,
+) -> str:
     if not neighbors:
         return "No matching neighbors found"
+    offset = max(0, int(offset or 0))
+    limit = min(_MAX_NEIGHBOR_LIMIT, max(1, int(limit or _DEFAULT_NEIGHBOR_LIMIT)))
+    neighbors = sorted(
+        neighbors,
+        key=lambda item: (
+            _adjacency_group_key(item.get("labels", [])) or "",
+            str(item.get("name") or "").casefold(),
+        ),
+    )
+    page = neighbors[offset:offset + limit]
+    if not page:
+        return f"No neighbors at offset {offset}. Total neighbors: {len(neighbors)}"
     lines = []
-    for meta in neighbors:
+    for meta in page:
         labels = meta.get("labels", [])
-        name = meta.get("name") or display_ref_for_node(workspace, project, meta)
+        name = _neighbor_display_ref(workspace, project, meta)
         info = get_info(labels, meta)
         lines.append(f"{name}\t{info}")
+    end = offset + len(page)
+    if end < len(neighbors):
+        lines.append(
+            f"(共 {len(neighbors)} 条邻接，当前显示第 {offset + 1}-{end} 条。"
+            f"使用 offset={end}, limit={limit} 查看后续结果)"
+        )
+    else:
+        lines.append(
+            f"(共 {len(neighbors)} 条邻接，当前显示第 {offset + 1}-{end} 条，已到最后一页)"
+        )
     return "\n".join(lines)
 
 
@@ -166,8 +201,6 @@ def _format_related_disambig_notice(
     ]
     for meta in disambigs:
         display_ref = display_ref_for_node(workspace, project, meta)
-        if not display_ref.endswith(":disambig"):
-            display_ref = f"{display_ref}:disambig"
         brief = meta.get("brief")
         line = f'  - meta({{"ref": "{display_ref}"}})'
         if brief and str(brief).strip():
@@ -223,10 +256,30 @@ def meta_command(
     all: bool = False,
     property: Optional[Union[str, List[str]]] = None,
     neighbor_label: Optional[str] = None,
+    offset: int = 0,
+    limit: int = _DEFAULT_NEIGHBOR_LIMIT,
     current_cwd: str = ""
 ) -> str:
     """查看节点元数据。"""
     input_ref = (ref or "").strip()
+    if int(offset or 0) < 0:
+        return "Error: meta offset 必须大于或等于 0。"
+    if int(limit) < 1:
+        return "Error: meta limit 必须大于或等于 1。"
+    # Brackets are ordinary entity-name punctuation; only public glob
+    # operators are rejected here.
+    if any(char in input_ref for char in "*?"):
+        return (
+            "Error: meta 只接受单个确定实体，不能使用通配 ref。"
+            f"请先调用 find(ref={input_ref!r})，再把结果第一列交给 meta。"
+        )
+    if input_ref.rstrip("/").endswith(("/all", "/Related", "/related")):
+        parent = input_ref.rsplit("/", 1)[0]
+        return (
+            "Error: meta 不使用 /all 或 /Related 路径。"
+            f"请调用 meta(ref={parent!r}, neighbor_label=\"col\", offset=0, limit=20)，"
+            "并将 col 替换为需要的邻接标签。"
+        )
     selector, err = resolve_entity_selector(workspace, ref)
     if err:
         return f"Error: {err}"
@@ -266,9 +319,10 @@ def meta_command(
         lines = []
         missing = []
         raw_meta = dict(meta)
+        hidden = set(resolve_meta_config(labels).hidden_keys)
         computed = _compute_column_properties(raw_meta, labels, props)
         for p in props:
-            value = get_display_property_value(raw_meta, labels, p)
+            value = None if p.startswith("_") or p in hidden else get_display_property_value(raw_meta, labels, p)
             if value is None and p in computed:
                 value = computed[p]
             if value is None:
@@ -278,7 +332,7 @@ def meta_command(
         if missing:
             available = sorted(
                 key for key in set(list(raw_meta.keys()) + list(computed.keys()))
-                if not key.startswith("_")
+                if not key.startswith("_") and key not in hidden
             )
             lines.append(f"未找到: {', '.join(missing)}. 可用字段: {', '.join(available)}")
         return _append_notice("\n".join(lines), related_disambig_notice)
@@ -292,7 +346,9 @@ def meta_command(
 
     if neighbor_label:
         filtered = [m for m in neighbors if _label_matches(m.get("labels", []), neighbor_label)]
-        result = _format_neighbor_list(workspace, project_name, project, filtered)
+        result = _format_neighbor_list(
+            workspace, project_name, project, filtered, offset=offset, limit=limit
+        )
         if not _label_matches(["disambig"], neighbor_label):
             result = _append_notice(result, related_disambig_notice)
         return result
@@ -318,7 +374,7 @@ def meta_command(
         group_key = _adjacency_group_key(adj_labels)
         if not group_key:
             continue
-        name = adj_meta.get("name") or display_ref_for_node(workspace, project, adj_meta)
+        name = _neighbor_display_ref(workspace, project, adj_meta)
         info = get_info(adj_labels, adj_meta)
         adjacency.setdefault(group_key, []).append(f"  {name}\t{info}")
         if group_key == "hint":
@@ -354,7 +410,7 @@ def meta_command(
         if missing:
             available = sorted(
                 key for key in set(list(raw_meta.keys()) + list(adjacency.keys()) + list(computed.keys()))
-                if not key.startswith("_")
+                if not key.startswith("_") and key not in hidden_keys
             )
             lines.append(f"未找到: {', '.join(missing)}. 可用字段: {', '.join(available)}")
         return _append_notice("\n".join(lines), related_disambig_notice)
@@ -375,15 +431,36 @@ def meta_command(
     if hint_lines:
         result += "\n\nHints\n" + "\n".join(hint_lines)
 
+    visible_adj = {}
     if adjacency:
-        visible_adj = {k: v for k, v in adjacency.items()
-                       if k != "hint" and (not config.adjacency_keys or k in config.adjacency_keys)}
-        if visible_adj:
-            summary_parts = [f"{k}: {len(v)}" for k, v in sorted(visible_adj.items())]
+        public_adj = {k: v for k, v in adjacency.items() if k != "hint"}
+        visible_adj = {
+            k: v for k, v in public_adj.items()
+            if not config.adjacency_keys or k in config.adjacency_keys
+        }
+        if public_adj:
+            summary_parts = [f"{k}: {len(v)}" for k, v in sorted(public_adj.items())]
             result += f"\n\nRelated ({', '.join(summary_parts)})\n"
             for key in sorted(visible_adj.keys()):
-                result += f"\n{key}:\n" + "\n".join(visible_adj[key]) + "\n"
+                values = sorted(visible_adj[key], key=str.casefold)
+                page = values[:_DEFAULT_NEIGHBOR_LIMIT]
+                result += f"\n{key}:\n" + "\n".join(page) + "\n"
+                if len(values) > len(page):
+                    result += (
+                        f"  ... 共 {len(values)} 条；使用 "
+                        f"meta(ref={display_ref!r}, neighbor_label=\"{key}\", "
+                        f"offset={len(page)}, limit={_DEFAULT_NEIGHBOR_LIMIT}) 继续\n"
+                    )
+            hidden_adj = sorted(set(public_adj) - set(visible_adj))
+            if hidden_adj:
+                result += (
+                    "\n其他邻接只显示计数；neighbor_label 可选: "
+                    + ", ".join(f'"{key}"' for key in hidden_adj)
+                    + "。\n"
+                )
 
+    if "disambig" in visible_adj:
+        related_disambig_notice = ""
     return _append_notice(result, related_disambig_notice)
 
 

@@ -74,7 +74,7 @@ class TableGroupStatusLabels:
 
 
 class ColumnGroupStatusLabels:
-    """Maintain :grouped/:standalone labels for columns covered by column groups."""
+    """Maintain labels for columns covered by structural or logical groups."""
 
     name = "column_group_status_labels"
 
@@ -86,7 +86,8 @@ class ColumnGroupStatusLabels:
                     """
                     MATCH (c:col {project: $project})
                     WHERE EXISTS {
-                        MATCH (c)--(g:column_group {project: $project})
+                        MATCH (c)--(g {project: $project})
+                        WHERE g:column_group OR g:logical_col
                     }
                     SET c:grouped
                     REMOVE c:standalone
@@ -97,7 +98,8 @@ class ColumnGroupStatusLabels:
                     """
                     MATCH (c:col {project: $project})
                     WHERE NOT EXISTS {
-                        MATCH (c)--(g:column_group {project: $project})
+                        MATCH (c)--(g {project: $project})
+                        WHERE g:column_group OR g:logical_col
                     }
                     SET c:standalone
                     REMOVE c:grouped
@@ -147,7 +149,7 @@ class ColumnSingleStructuralParent:
             """
             MATCH (c:col {project: $project})
             OPTIONAL MATCH (c)--(parent {project: $project})
-            WHERE parent:table OR parent:view OR parent:csv_table
+            WHERE parent:table OR parent:view
             WITH c, collect(DISTINCT coalesce(parent._ref, parent.path, parent.name)) AS parents
             WHERE size(parents) <> 1
             RETURN coalesce(c._ref, c.path, c.name) AS col_ref, parents
@@ -166,7 +168,7 @@ class ColumnGroupSingleStructuralParent:
             """
             MATCH (g:column_group {project: $project})
             OPTIONAL MATCH (g)--(parent {project: $project})
-            WHERE parent:table OR parent:view OR parent:csv_table
+            WHERE parent:table OR parent:view
             WITH g, collect(DISTINCT coalesce(parent._ref, parent.path, parent.name)) AS parents
             WHERE size(parents) <> 1
             RETURN coalesce(g._ref, g.path, g.name) AS column_group_ref, parents
@@ -185,11 +187,11 @@ class ColumnGroupMembersShareParent:
             """
             MATCH (g:column_group {project: $project})
             OPTIONAL MATCH (g)--(group_parent {project: $project})
-            WHERE group_parent:table OR group_parent:view OR group_parent:csv_table
+            WHERE group_parent:table OR group_parent:view
             WITH g, collect(DISTINCT coalesce(group_parent._ref, group_parent.path, group_parent.name)) AS group_parents
             MATCH (g)--(c:col {project: $project})
             OPTIONAL MATCH (c)--(col_parent {project: $project})
-            WHERE col_parent:table OR col_parent:view OR col_parent:csv_table
+            WHERE col_parent:table OR col_parent:view
             WITH g, group_parents,
                  collect(DISTINCT coalesce(col_parent._ref, col_parent.path, col_parent.name)) AS col_parents
             WHERE size(group_parents) <> 1
@@ -198,6 +200,42 @@ class ColumnGroupMembersShareParent:
             RETURN coalesce(g._ref, g.path, g.name) AS column_group_ref,
                    group_parents,
                    col_parents
+            LIMIT 100
+            """,
+            params={"project": project},
+        )
+
+
+class LogicalColumnSingleTableGroupParent:
+    name = "logical_column_single_table_group_parent"
+    severity = "hard"
+
+    def check(self, store, project: str) -> list[dict]:
+        return store.execute_cypher(
+            """
+            MATCH (l:logical_col {project: $project})
+            OPTIONAL MATCH (l)--(g:table_group {project: $project})
+            WITH l, collect(DISTINCT coalesce(g._ref, g.name)) AS groups
+            WHERE size(groups) <> 1
+            RETURN coalesce(l._ref, l.name) AS logical_col_ref, groups
+            LIMIT 100
+            """,
+            params={"project": project},
+        )
+
+
+class ColumnSingleLogicalColumn:
+    name = "column_single_logical_column"
+    severity = "hard"
+
+    def check(self, store, project: str) -> list[dict]:
+        return store.execute_cypher(
+            """
+            MATCH (c:col {project: $project})
+            OPTIONAL MATCH (c)--(l:logical_col {project: $project})
+            WITH c, collect(DISTINCT coalesce(l._ref, l.name)) AS logical_columns
+            WHERE size(logical_columns) > 1
+            RETURN coalesce(c._ref, c.path, c.name) AS col_ref, logical_columns
             LIMIT 100
             """,
             params={"project": project},
@@ -289,6 +327,8 @@ DEFAULT_INVARIANT_RULES: list[InvariantRule] = [
     ColumnSingleStructuralParent(),
     ColumnGroupSingleStructuralParent(),
     ColumnGroupMembersShareParent(),
+    LogicalColumnSingleTableGroupParent(),
+    ColumnSingleLogicalColumn(),
 ]
 
 

@@ -63,6 +63,19 @@ def _query_projects(workspace, project: str | None) -> list[str | None]:
     return active or [None]
 
 
+def _ambiguity_error(workspace, ref: str, nodes: list[dict]) -> str:
+    """Return copyable refs rooted at explicit storage source nodes."""
+    from tool.utils.display_ref import display_ref_for_node
+
+    options = []
+    for node in nodes[:20]:
+        option = display_ref_for_node(workspace, node.get("__project") or None, node)
+        if option not in options:
+            options.append(option)
+    suffix = "\n可选 source ref：\n" + "\n".join(f"- {item}" for item in options) if options else ""
+    return f"匹配到多个实体: {ref}{suffix}"
+
+
 def _run_cypher_projects(workspace, query: str, params: dict, project: str | None) -> list[dict]:
     rows = []
     for candidate in _query_projects(workspace, project):
@@ -123,7 +136,9 @@ def resolve_entity(workspace, ref: str) -> tuple[dict | None, str | None]:
     project, local_ref = _split_project_ref(ref)
     local_ref = _strip_outer_quotes(dotted_ref_to_path(local_ref))
 
-    has_wildcards = any(c in local_ref for c in "*?[]")
+    # Brackets are ordinary entity-name punctuation. Only the public glob
+    # operators make a ref a wildcard input.
+    has_wildcards = any(c in local_ref for c in "*?")
     is_path_like = "/" in local_ref
     looks_structured = is_path_like or ("." in local_ref and "->" not in local_ref)
 
@@ -132,7 +147,7 @@ def resolve_entity(workspace, ref: str) -> tuple[dict | None, str | None]:
         if len(nodes) == 1:
             return nodes[0], None
         if len(nodes) > 1:
-            return None, f"匹配到多个实体: {ref}"
+            return None, _ambiguity_error(workspace, ref, nodes)
         if not has_wildcards and not looks_structured:
             return None, f"未找到匹配的实体: {ref}"
 
@@ -146,7 +161,7 @@ def resolve_entity(workspace, ref: str) -> tuple[dict | None, str | None]:
     if not matched:
         return None, f"未找到匹配的实体: {ref}"
     if len(matched) > 1:
-        return None, f"匹配到多个实体: {ref}"
+        return None, _ambiguity_error(workspace, ref, matched)
     return matched[0], None
 
 
@@ -263,6 +278,39 @@ def _lookup_exact_named_nodes(workspace, project: str | None, local_ref: str) ->
 
 
 def _resolve_exact_path(workspace, project: str | None, local_ref: str) -> tuple[dict | None, str | None]:
+    # Public refs are real graph paths rooted at the project source node and may be
+    # longer than the legacy db/table/col shapes. Resolve the exact path first
+    # before applying old shorthand repairs.
+    # ref_match supports fnmatch character classes, so a literal bracketed
+    # path cannot be sent through it as-is. Resolve the terminal entity by its
+    # exact name/label, then verify the actual source-rooted display path.
+    if "[" in local_ref or "]" in local_ref:
+        terminal = local_ref.rsplit("/", 1)[-1]
+        candidates = _lookup_exact_named_nodes(workspace, project, terminal)
+        if candidates:
+            from tool.utils.display_ref import display_ref_for_node
+
+            matched = []
+            for candidate in candidates:
+                candidate_project = candidate.get("__project") or project
+                display_ref = display_ref_for_node(workspace, candidate_project, candidate)
+                if "::" in display_ref:
+                    _, display_ref = display_ref.split("::", 1)
+                if display_ref == local_ref:
+                    matched.append(candidate)
+            matched = _dedupe_nodes(matched)
+            if len(matched) == 1:
+                return matched[0], None
+            if len(matched) > 1:
+                return None, _ambiguity_error(workspace, local_ref, matched)
+
+    exact_urn = f"{project}::{local_ref}" if project else local_ref
+    exact_nodes = _lookup_urn_nodes(workspace, exact_urn)
+    if len(exact_nodes) == 1:
+        return exact_nodes[0], None
+    if len(exact_nodes) > 1:
+        return None, _ambiguity_error(workspace, local_ref, exact_nodes)
+
     normalized_relation_ref = _normalize_relation_ref(local_ref)
     if normalized_relation_ref:
         rows = _run_cypher_projects(

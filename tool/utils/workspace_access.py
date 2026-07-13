@@ -158,9 +158,12 @@ def resolve_file_sources(
 ) -> list[OpenFileSource]:
     """Resolve file nodes to storage-owned FileOpen handles."""
     selector = (path or "").strip()
-    project, local_selector = _split_project_ref(selector)
-    local_selector = _strip_display_labels(local_selector)
-    rel_path = normalize_rel_path(local_selector, current_cwd)
+    project, graph_selector = _split_project_ref(selector)
+    # Keep the graph selector intact for wildcard refs.  In particular,
+    # `*:file:text` must reach ref_match with its labels; stripping the display
+    # suffix first silently widens it to `*` and lets binary files through.
+    path_selector = _strip_display_labels(graph_selector)
+    rel_path = normalize_rel_path(path_selector, current_cwd)
     label_clause = "".join(f":{label}" for label in labels)
     file_patterns = [p.strip() for p in (file_pattern or "").split(",") if p.strip()]
 
@@ -172,9 +175,12 @@ def resolve_file_sources(
             if any(fnmatch(item.path, pat) or fnmatch(item.name, pat) for pat in file_patterns)
         ]
 
-    has_wildcards = any(c in local_selector for c in "*?[]")
+    has_wildcards = any(c in graph_selector for c in "*?[]")
     if selector and has_wildcards:
-        sources = filter_file_patterns(_sources_from_ref_pattern(workspace, local_selector, project))
+        sources = filter_file_patterns(_sources_from_ref_pattern(workspace, graph_selector, project))
+        if labels:
+            wanted = set(labels)
+            sources = [source for source in sources if wanted.issubset(set(source.labels))]
         if sources:
             return sorted(sources, key=lambda s: s.path)
 

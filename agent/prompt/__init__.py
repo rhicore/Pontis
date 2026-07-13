@@ -10,7 +10,7 @@
 
 from agent.prompt._base import get_base_prompt
 from agent.prompt._tool import get_tool_prompt
-from agent.prompt._ontology import get_ontology_prompt
+from agent.prompt._ontology import get_database_ontology_prompt, get_ontology_prompt
 from agent.prompt._effort import get_effort_prompt, VALID_EFFORTS
 from agent.prompt._sql import get_sql_rules
 from agent.prompt._bird import get_bird_sql_prompt
@@ -51,6 +51,10 @@ def build_prompt_parts(spec) -> list[str]:
     # 3. ontology / 图拓扑说明
     if "ontology" in spec.prompts:
         _append_part(parts, get_ontology_prompt())
+
+    # 紧凑数据库 ontology；用于直连 SQLite 等不需要文件系统和大型导航层的任务。
+    if "database_ontology" in spec.prompts:
+        _append_part(parts, get_database_ontology_prompt())
 
     # 4. SQL 任务通用规则
     if "sql" in spec.prompts:

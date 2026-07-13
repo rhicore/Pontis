@@ -61,6 +61,9 @@ class FSModule(StoreModule):
     def project_path(self) -> str:
         return self.ctx.source.root
 
+    def provides_source_anchor(self) -> bool:
+        return (getattr(self.ctx.source_config, "type", "") or "").lower() == "fs"
+
     def should_materialize_for_query(self, parsed, raw_query: str = "") -> bool:
         if ".file_open" in raw_query or "._file_open" in raw_query:
             return True
@@ -239,6 +242,7 @@ class FSModule(StoreModule):
             return None
         entries = self._visible_entries(full)
         return {
+            "_source_anchor": bool(key == "." and self.provides_source_anchor()),
             "labels": ["dir"],
             "child_count": len(entries),
             "file_count": sum(1 for entry in entries if os.path.isfile(os.path.join(full, entry))),

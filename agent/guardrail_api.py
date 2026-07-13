@@ -22,12 +22,16 @@ class CallVerdict:
       - "allow"  → 放行
       - "block"  → 拦截该调用
       - "warn"   → 放行但追加提醒
+
+    finalize:
+      block 当前调用后结束工具阶段；框架下一轮不再向模型提供工具。
     """
     action: str = "allow"
     message: str = ""
     modified_args: Optional[dict] = None
     replace_messages: Optional[List[dict]] = None
     replace_tool_history: Optional[List[Tuple[str, dict, str]]] = None
+    finalize: bool = False
 
 
 @dataclass

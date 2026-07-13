@@ -6,7 +6,6 @@
 - format_entity_name: 将实体名与标签直接拼接
 - meta 格式化
 """
-import json
 from typing import Dict, Any, List, Optional
 
 from tool.config import (
@@ -18,17 +17,6 @@ from storage.query_inspector import normalize_labels
 
 # ========== 标签格式化 ==========
 
-
-def _json_value(value):
-    if not isinstance(value, str):
-        return value
-    text = value.strip()
-    if not text or text[0] not in "[{":
-        return value
-    try:
-        return json.loads(text)
-    except Exception:
-        return value
 
 def format_labels(labels: List[str]) -> str:
     """格式化标签为 Cypher 风格 ':label1:label2'。"""
@@ -85,60 +73,6 @@ def _generic_brief_fallback(meta_dict: Dict[str, Any], labels: List[str]) -> Opt
     return None
 
 
-def _relation_detail_fallback(meta_dict: Dict[str, Any], labels: List[str]) -> Optional[str]:
-    label_set = set(labels or [])
-    if not ({"fk", "rel", "overlap"} & label_set):
-        return None
-
-    brief = meta_dict.get("brief")
-    stats = _json_value(meta_dict.get("stats"))
-    lines: List[str] = []
-    if brief and str(brief).strip() not in ("", "-", "..."):
-        lines.append(str(brief).strip())
-
-    if "fk" in label_set:
-        if meta_dict.get("from_table") and meta_dict.get("from_column") and meta_dict.get("to_table") and meta_dict.get("to_column"):
-            lines.append(
-                f"关系: {meta_dict['from_table']}.{meta_dict['from_column']} -> "
-                f"{meta_dict['to_table']}.{meta_dict['to_column']}"
-            )
-        if meta_dict.get("match_count") is not None or meta_dict.get("violation_count") is not None:
-            match_count = meta_dict.get("match_count", "?")
-            violation_count = meta_dict.get("violation_count", "?")
-            lines.append(f"校验: match_count={match_count}, violation_count={violation_count}")
-
-    if "rel" in label_set and stats and isinstance(stats, dict):
-        parts = []
-        for key in ("jaccard", "coverage_A_in_B", "coverage_B_in_A"):
-            value = stats.get(key)
-            if value is None:
-                continue
-            if isinstance(value, float):
-                parts.append(f"{key}={value:.4f}")
-            else:
-                parts.append(f"{key}={value}")
-        if parts:
-            lines.append("统计: " + ", ".join(parts))
-
-    if "overlap" in label_set and stats and isinstance(stats, dict):
-        parts = []
-        for key in ("card_overlap", "jaccard", "coverage_A_in_B", "coverage_B_in_A"):
-            value = stats.get(key)
-            if value is None:
-                continue
-            if isinstance(value, float):
-                parts.append(f"{key}={value:.4f}")
-            else:
-                parts.append(f"{key}={value}")
-        if parts:
-            lines.append("重叠统计: " + ", ".join(parts))
-        lines.append("该关系记录列值集合的交集；行级匹配关系由 fk/rel/disambig 等其他实体记录。")
-
-    if not lines:
-        return None
-    return "\n".join(lines)
-
-
 def _knowledge_detail_fallback(meta_dict: Dict[str, Any], labels: List[str]) -> Optional[str]:
     label_set = set(labels or [])
     if "knowledge" not in label_set:
@@ -190,9 +124,7 @@ def get_display_property_value(
         if value is None:
             value = _generic_brief_fallback(meta_dict, labels)
     if value is None and key == "detail":
-        value = _relation_detail_fallback(meta_dict, labels)
-        if value is None:
-            value = _knowledge_detail_fallback(meta_dict, labels)
+        value = _knowledge_detail_fallback(meta_dict, labels)
         if value is None:
             value = _generic_brief_fallback(meta_dict, labels)
     return value

@@ -47,6 +47,9 @@ def _clean_identifier(value: str) -> str:
 class SnowflakeSchemaModule(StoreModule):
     name = "snowflake"
     query_labels = {"db", "schema", "table", "view", "col", "snowflake"}
+
+    def provides_source_anchor(self) -> bool:
+        return True
     refresh_interval_seconds = 3600.0
 
     def __init__(self, ctx: ModuleContext):
@@ -181,6 +184,7 @@ class SnowflakeSchemaModule(StoreModule):
             "_db_connect": self.pointer("connect", database),
             "database_name": database,
             "dialect": "snowflake",
+            "_source_anchor": True,
             "labels": ["db", "snowflake"],
         })
 

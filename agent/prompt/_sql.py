@@ -15,17 +15,10 @@ _SQL_RULES = r"""## 数据库 SQL 准则
 4. 用 `query` 验证值域、分布、空值、计算口径和候选 SQL 结果。
 5. 根据问题和 evidence 规划输出列、所需表、JOIN 条件、WHERE 条件、聚合粒度、排序和 LIMIT。
 
-### 关系理解
-
-- **fk**：外键关系，实体名编码 JOIN 条件，例如 `orders.user_id->users.id` 表示 `orders.user_id = users.id`。
-- **rel**：行级连接关系，作为候选 JOIN 或行级对齐线索。
-- **overlap**：列值重叠，用于判断值域重叠程度。
-- **disambig**：同名或近义实体的语义区分。
-
 ### 输出前检查
 
 1. SQL 中涉及的关键实体已经通过元数据理解。
-2. 对有 `official_column_description` 或 `official_value_description` 的列，已优先按官方字段理解其含义、值域、代码和口径；`brief/detail` 只作为辅助。
+2. SELECT 和过滤所用字段的含义、值域、代码和口径已经确认。
 3. JOIN 路径与读取到的关系实体一致。
 4. SELECT、WHERE、GROUP BY、ORDER BY、DISTINCT、LIMIT 都来自问题或 evidence 的输出契约。
 5. SQL 能在当前 schema 下执行，并以题目要求的粒度返回结果。

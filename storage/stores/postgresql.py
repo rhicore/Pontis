@@ -46,6 +46,9 @@ def _clean_identifier(value: str) -> str:
 class PostgreSQLSchemaModule(StoreModule):
     name = "postgresql"
     query_labels = {"db", "schema", "table", "view", "col", "fk", "postgresql"}
+
+    def provides_source_anchor(self) -> bool:
+        return True
     refresh_interval_seconds = 3600.0
 
     def __init__(self, ctx: ModuleContext):
@@ -182,6 +185,7 @@ class PostgreSQLSchemaModule(StoreModule):
             "dialect": "postgresql",
             "host": getattr(self.ctx.source_config, "host", "") or "",
             "port": int(getattr(self.ctx.source_config, "port", 0) or 5432),
+            "_source_anchor": True,
             "labels": ["db", "postgresql"],
         })
 
@@ -301,13 +305,7 @@ class PostgreSQLSchemaModule(StoreModule):
                 "_db_ref": db_ref,
                 "_db_connect": self.pointer("connect", database),
                 "constraint_name": fk.get("constraint_name"),
-                "from_schema": fk["from_schema"],
-                "from_table": fk["from_table"],
-                "from_column": fk["from_column"],
                 "_from_col_ref": from_col_ref,
-                "to_schema": fk["to_schema"],
-                "to_table": fk["to_table"],
-                "to_column": fk["to_column"],
                 "_to_col_ref": to_col_ref,
                 "confidence": 1.0,
                 "labels": ["fk"],

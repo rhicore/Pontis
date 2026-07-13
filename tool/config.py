@@ -85,6 +85,18 @@ def _knowledge_brief(d):
     )
 
 
+def _file_access(d):
+    opener = d.get("_file_open") or d.get("file_open")
+    labels = set(d.get("labels", []))
+    if callable(opener) and "text" in labels:
+        return "readable text"
+    if callable(opener) and labels & {"db", "csv", "tsv"}:
+        return "queryable"
+    if callable(opener) and labels & {"json", "yaml"}:
+        return "structured"
+    return "metadata only"
+
+
 def _c(d, suffix):
     """获取该实体与某类型邻接实体的数量，>0 返回 '2 rels'，否则返回 None。"""
     val = d.get(suffix)
@@ -107,8 +119,10 @@ def _count_stats(d, *items):
 
 INFO_TYPE_CONFIG = {
     # 文件段
-    "file":     InfoTypeConfig(info_fn=lambda m: {"path": _v(m, "path"), "size": _v(m, "file_size")}),
-    "db":       InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'table_count')} tables, {_v(m,'view_count')} views"}),
+    "file":     InfoTypeConfig(info_fn=lambda m: {
+                    "path": _v(m, "path"), "size": _v(m, "file_size"), "access": _file_access(m)
+                }),
+    "db":       InfoTypeConfig(info_fn=lambda m: {"brief": _first_present(m, ["brief", "detail"], default="database")}),
     "csv":      InfoTypeConfig(info_fn=lambda m: {"stats": _count_stats(m, ("row_count", "rows"), ("column_count", "cols"))}),
     "tsv":      InfoTypeConfig(info_fn=lambda m: {"stats": _count_stats(m, ("row_count", "rows"), ("column_count", "cols"))}),
     "json":     InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'structure_type')}, {_v(m,'line_count')} lines"}),
@@ -117,7 +131,7 @@ INFO_TYPE_CONFIG = {
     "text":     InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'line_count')} lines"}),
     # 结构段
     "table":    InfoTypeConfig(info_fn=lambda m: {
-                    "stats": _count_stats(m, ("row_count", "rows"), ("column_count", "cols")),
+                    "stats": _count_stats(m, ("row_count", "rows")),
                     "brief": _first_present(m, ["brief", "official_table_description"], default="-"),
                     "links": ", ".join(filter(None, [_c(m,'fk'), _c(m,'rel'), _c(m,'hint')])),
                 }),
@@ -180,7 +194,7 @@ META_TYPE_CONFIG = {
         default_keys=["path", "file_size", "brief", "detail"],
     ),
     "db": MetaTypeConfig(
-        default_keys=["table_count", "view_count", "index_count", "file_size", "brief", "detail"],
+        default_keys=["index_count", "file_size", "brief", "detail"],
         adjacency_keys={"table", "view"},
     ),
     "csv": MetaTypeConfig(
@@ -205,14 +219,14 @@ META_TYPE_CONFIG = {
     ),
     # 结构段
     "table": MetaTypeConfig(
-        default_keys=["row_count", "column_count", "primary_key", "official_table_description", "fk", "rel", "disambig", "brief", "detail"],
+        default_keys=["row_count", "primary_key", "official_table_description", "fk", "rel", "disambig", "brief", "detail"],
         hidden_keys={"name", "labels", "project", "path", "db_name", "db_path", "table_name"},
-        adjacency_keys={"col", "fk", "rel"},
+        adjacency_keys={"col"},
     ),
     "view": MetaTypeConfig(
         default_keys=["row_count", "column_count", "official_view_description", "brief", "detail"],
         hidden_keys={"name", "labels", "project", "path", "db_name", "db_path", "table_name"},
-        adjacency_keys={"col", "fk"},
+        adjacency_keys={"col"},
     ),
     "col": MetaTypeConfig(
         default_keys=["official_column_description", "official_value_description",
@@ -227,7 +241,10 @@ META_TYPE_CONFIG = {
     ),
     # 关系段
     "fk": MetaTypeConfig(
-        default_keys=["brief", "detail"],
+        default_keys=[
+            "confidence", "match_rate", "total_count", "violation_count",
+            "brief", "detail",
+        ],
         hidden_keys={
             "name",
             "labels",
@@ -235,22 +252,26 @@ META_TYPE_CONFIG = {
             "path",
             "db_name",
             "db_path",
+            "relation_type",
+            "from_schema",
             "from_table",
             "from_column",
+            "to_schema",
             "to_table",
             "to_column",
-            "relation_type",
         },
+        adjacency_keys={"col", "table"},
     ),
     "rel": MetaTypeConfig(
         default_keys=["brief", "detail"],
     ),
     "overlap": MetaTypeConfig(
-        default_keys=["table_scope", "sources", "stats", "brief", "detail"],
+        default_keys=["sources", "stats", "brief", "detail"],
         folded_keys={"stats"},
     ),
     "disambig": MetaTypeConfig(
         default_keys=["level", "brief", "detail"],
+        adjacency_keys={"col", "table"},
     ),
     "hint": MetaTypeConfig(
         default_keys=["brief", "detail"],
@@ -317,10 +338,6 @@ def resolve_meta_config(entity_labels: List[str]) -> MetaTypeConfig:
         "col_type",
         "view_name",
         "source_column",
-        "from_table",
-        "from_column",
-        "to_table",
-        "to_column",
         "relation_type",
         "detail_embedding",
         "detail_embedding_model",

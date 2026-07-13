@@ -3,18 +3,11 @@
 该 guardrail 只拦截最终 SQL 中没有图关系支撑的 JOIN。
 工具使用阶段不插入提醒，JOIN 探索由系统提示和工具元数据引导。
 """
-import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 from agent.guardrail_api import Guardrail, GuardrailContext, CallVerdict
 from agent.guardrail.sql_utils import has_read, extract_join_col_pairs, get_sql_from_messages
-
-
-_ENTITY_PATTERN = re.compile(
-    r'(\w+)\.(\w+)->(\w+)\.(\w+)'
-)
-_OVERLAP_PATTERN = re.compile(r"value_domain\[([^\]]+)\]")
 
 
 class BridgeTableCheck(Guardrail):
@@ -134,7 +127,12 @@ class BridgeTableCheck(Guardrail):
             self._edge_map = dict(edge_map)
             return self._edge_map
 
-        rows = workspace.cypher("MATCH (n) RETURN n")
+        rows = workspace.cypher(
+            "MATCH (n)--(c:col)--(t) "
+            "WHERE any(label IN coalesce(n.labels, []) WHERE label IN ['fk', 'rel', 'overlap']) "
+            "AND any(label IN coalesce(t.labels, []) WHERE label IN ['table', 'view']) "
+            "RETURN n, collect(DISTINCT {table_name: t.name, column_name: c.name}) AS endpoints"
+        )
         for row in rows:
             n = row.get("n", {})
             ename = n.get("name", "")
@@ -150,48 +148,25 @@ class BridgeTableCheck(Guardrail):
             if rel_type is None:
                 continue
 
-            for src_table, _src_col, dst_table, _dst_col in _parse_col_pairs(ename):
-                key = tuple(sorted([src_table.lower(), dst_table.lower()]))
-                edge_map[key].append((ename, rel_type))
+            endpoints = row.get("endpoints", []) or []
+            table_columns: Dict[str, set] = defaultdict(set)
+            for endpoint in endpoints:
+                table_name = str(endpoint.get("table_name") or "")
+                column_name = str(endpoint.get("column_name") or "")
+                if table_name and column_name:
+                    table_columns[table_name].add(column_name)
+            table_names = sorted(table_columns)
+            for index, src_table in enumerate(table_names):
+                for dst_table in table_names[index + 1:]:
+                    key = tuple(sorted([src_table.lower(), dst_table.lower()]))
+                    edge_map[key].append((ename, rel_type))
+            for table_name, columns in table_columns.items():
+                if len(columns) >= 2:
+                    key = (table_name.lower(), table_name.lower())
+                    edge_map[key].append((ename, rel_type))
 
         self._edge_map = dict(edge_map)
         return self._edge_map
-
-
-def _parse_col_pair(entity: str) -> Optional[tuple]:
-    """从关系实体名提取第一个列对 (table1, col1, table2, col2)。"""
-    pairs = _parse_col_pairs(entity)
-    return pairs[0] if pairs else None
-
-
-def _parse_col_pairs(entity: str) -> List[tuple]:
-    """从关系实体名提取列对。
-
-    支持:
-      - table1.col1->table2.col2
-      - value_domain[table1.col1__table2.col2__table3.col3]#...
-    """
-    if "->" in entity:
-        left, right = entity.split("->", 1)
-        parts_l = left.rsplit(".", 1)
-        parts_r = right.rsplit(".", 1)
-        if len(parts_l) == 2 and len(parts_r) == 2:
-            return [(parts_l[0], parts_l[1], parts_r[0], parts_r[1])]
-        return []
-
-    match = _OVERLAP_PATTERN.search(entity)
-    if not match:
-        return []
-    refs = []
-    for raw in match.group(1).split("__"):
-        parts = raw.rsplit(".", 1)
-        if len(parts) == 2 and parts[0] and parts[1]:
-            refs.append((parts[0], parts[1]))
-    pairs = []
-    for i, (table1, col1) in enumerate(refs):
-        for table2, col2 in refs[i + 1:]:
-            pairs.append((table1, col1, table2, col2))
-    return pairs
 
 
 def _get_query_project(ctx) -> str:

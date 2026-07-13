@@ -191,6 +191,14 @@ def test_single_project_complex(ws: Workspace):
     sqlite_labels = next(row for row in files if row["path"] == "app.sqlite")["labels"]
     _assert_true("sqlite" in sqlite_labels, "FS should label .sqlite by suffix.")
 
+    sources = ws.cypher(
+        "MATCH (s {_source_anchor: true}) RETURN s.name AS name, labels(s) AS labels ORDER BY name",
+        project=project,
+    )
+    source_names = {row["name"] for row in sources}
+    _assert_equal(source_names, {"."}, "An fs project should have exactly one root-directory source anchor.")
+    _assert_true("source" not in sources[0]["labels"], "The source anchor should not use a public source label.")
+
     csv_cols = ws.cypher(
         "MATCH (c:col) WHERE c._ref STARTS WITH 'data/people.csv--' "
         "RETURN c.name AS name, c.col_type AS col_type ORDER BY c.ordinal",
@@ -198,12 +206,8 @@ def test_single_project_complex(ws: Workspace):
     )
     _assert_equal(
         csv_cols,
-        [
-            {"name": "id", "col_type": "INT"},
-            {"name": "name", "col_type": "TEXT"},
-            {"name": "score", "col_type": "FLOAT"},
-        ],
-        "CSV schema module should infer nested CSV columns.",
+        [],
+        "CSV headers should not be projected into graph column nodes.",
     )
 
     csv_file = ws.cypher(
@@ -216,13 +220,15 @@ def test_single_project_complex(ws: Workspace):
 
     db = ws.cypher(
         "MATCH (d:db {path: 'app.sqlite'}) "
-        "RETURN d.table_count AS table_count, d.view_count AS view_count",
+        "OPTIONAL MATCH (d)--(relation) "
+        "RETURN count(DISTINCT CASE WHEN relation:table THEN relation END) AS table_count, "
+        "count(DISTINCT CASE WHEN relation:view THEN relation END) AS view_count",
         project=project,
     )
-    _assert_equal(db, [{"table_count": 4, "view_count": 1}], "DB schema module should merge db metadata onto sqlite file node.")
+    _assert_equal(db, [{"table_count": 4, "view_count": 1}], "DB relation counts should be derived from graph edges.")
 
     tables = ws.cypher(
-        "MATCH (t:table) RETURN t.name AS name, t.column_count AS columns ORDER BY name",
+        "MATCH (t:table)--(c:col) RETURN t.name AS name, count(DISTINCT c) AS columns ORDER BY name",
         project=project,
     )
     _assert_equal(
@@ -237,8 +243,9 @@ def test_single_project_complex(ws: Workspace):
     )
 
     explicit_fk = ws.cypher(
-        "MATCH (from:col {_ref: 'app.sqlite--orders--user_id'})--"
-        "(fk:fk)--(to:col {_ref: 'app.sqlite--users--user_id'}) "
+        "MATCH (from:col {_ref: 'app.sqlite--orders--user_id'})-[source:RELATED_TO]->"
+        "(fk:fk)<-[target:RELATED_TO]-(to:col {_ref: 'app.sqlite--users--user_id'}) "
+        "WHERE source.role = 'source' AND target.role = 'target' "
         "RETURN fk.name AS name, fk.confidence AS confidence",
         project=project,
     )
@@ -249,8 +256,9 @@ def test_single_project_complex(ws: Workspace):
     )
 
     inferred_fk = ws.cypher(
-        "MATCH (from:col {_ref: 'app.sqlite--books--author_id'})--"
-        "(fk:fk)--(to:col {_ref: 'app.sqlite--authors--id'}) "
+        "MATCH (from:col {_ref: 'app.sqlite--books--author_id'})-[source:RELATED_TO]->"
+        "(fk:fk)<-[target:RELATED_TO]-(to:col {_ref: 'app.sqlite--authors--id'}) "
+        "WHERE source.role = 'source' AND target.role = 'target' "
         "RETURN fk.name AS name, fk.confidence AS confidence",
         project=project,
     )
@@ -263,7 +271,7 @@ def test_single_project_complex(ws: Workspace):
     view = ws.cypher(
         "MATCH (v:view {_ref: 'app.sqlite--user_names'})--"
         "(c:col {_ref: 'app.sqlite--user_names--name'}) "
-        "RETURN v.name AS view_name, v.column_count AS columns, c.name AS col_name",
+        "RETURN v.name AS view_name, count(DISTINCT c) AS columns, c.name AS col_name",
         project=project,
     )
     _assert_equal(
@@ -347,11 +355,8 @@ def test_same_name_paths_and_label_merging(ws: Workspace):
     )
     _assert_equal(
         csv_columns,
-        [
-            {"ref": "archive/people.csv--score", "col_type": "FLOAT"},
-            {"ref": "data/people.csv--score", "col_type": "FLOAT"},
-        ],
-        "Same-name CSV files in different directories should expose separate column nodes.",
+        [],
+        "CSV files should remain file nodes without projected column nodes.",
     )
 
     csv_files = ws.cypher(
@@ -380,16 +385,15 @@ def test_query_trigger_order_and_pointer_resolution(ws: Workspace):
         "RETURN c.name AS name, c.source_column AS source_column",
         project=project,
     )
-    _assert_equal(len(csv_col), 1, "A first query for :col should trigger CSV schema materialization.")
-    _assert_equal(csv_col[0]["source_column"], "score", "CSV column should preserve the source column.")
+    _assert_equal(len(csv_col), 0, "A :col query should not materialize CSV header nodes.")
 
     text_after_col = fresh.cypher(
         "MATCH (t:text {path: 'data/people.csv'}) "
         "RETURN t.line_count AS lines, t._file_open AS open_file",
         project=project,
     )
-    _assert_equal(len(text_after_col), 1, "A later :text query should add text metadata to an existing CSV file node.")
-    _assert_equal(text_after_col[0]["lines"], 3, "Text refresh after CSV refresh should keep correct line count.")
+    _assert_equal(len(text_after_col), 1, "A later :text query should materialize the CSV file as text.")
+    _assert_equal(text_after_col[0]["lines"], 3, "Text metadata should keep the correct CSV line count.")
     _assert_true(isinstance(text_after_col[0]["open_file"], FileOpen), "Text file should reuse file_open after mixed trigger order.")
 
     db_col = fresh.cypher(
@@ -397,7 +401,7 @@ def test_query_trigger_order_and_pointer_resolution(ws: Workspace):
         "RETURN c._db_connect AS connect, c.name AS name, c.table_name AS table_name, c.column_name AS column_name",
         project=project,
     )
-    _assert_equal(len(db_col), 1, "DB columns should materialize on a :col query even after CSV columns exist.")
+    _assert_equal(len(db_col), 1, "DB columns should materialize on a :col query.")
     _assert_true(isinstance(db_col[0]["connect"], DbConnect), "DB column should expose db_connect.")
     _assert_equal(db_col[0]["table_name"], "orders", "DB column should preserve table name.")
     _assert_equal(db_col[0]["column_name"], "amount", "DB column should preserve column name.")
@@ -528,6 +532,35 @@ projects:
     _assert_equal(config.projects["override"].graph.database, "neo4j")
 
 
+def test_explorer_spec_preserves_active_sqlite_project(tmp_root: Path):
+    """Explorer identity must not be re-derived from a SQLite source filename."""
+    from explorer.utils.agent_spec import explorer_writer_spec
+
+    sqlite_path = tmp_root / "bird_example.sqlite"
+    sqlite_path.touch()
+    config_path = tmp_root / "explorer-pontis.yml"
+    config_path.write_text(
+        f"""
+projects:
+  bird_example:
+    source:
+      type: sqlite
+      path: {sqlite_path}
+    graph:
+      uri: bolt://localhost:7999
+""",
+        encoding="utf-8",
+    )
+    workspace = Workspace(
+        config_path=str(config_path),
+        active_projects=["bird_example"],
+    )
+    _assert_equal(workspace.project_path, str(sqlite_path))
+
+    spec = explorer_writer_spec(workspace, tools=["find", "meta"])
+    _assert_equal(spec.projects, ["bird_example"])
+
+
 def test_source_adapter_root_confinement(alpha_root: Path, beta_root: Path):
     adapter = LocalSourceAdapter(str(alpha_root))
     try:
@@ -578,6 +611,7 @@ def main():
         test_project_node_property_and_reserved_mutation(ws)
         test_project_database_config(alpha, beta)
         test_graph_defaults_config(tmp_root)
+        test_explorer_spec_preserves_active_sqlite_project(tmp_root)
         test_source_adapter_root_confinement(alpha, beta)
         test_pointer_resolution(ws)
 

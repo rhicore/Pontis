@@ -13,14 +13,14 @@ from storage.stores.base import ModuleContext
 from storage.stores.utils.fs_adapter import LocalSourceAdapter
 from storage.stores.fs import FSModule
 from storage.stores.text import TextModule
-from storage.stores.csv_schema import CSVSchemaModule
 from storage.stores.db_schema import SQLiteSchemaModule
 from storage.stores.snowflake import SnowflakeAccessModule, SnowflakeSchemaModule
 from storage.stores.postgresql import PostgreSQLSchemaModule
 
 _MODULE_REGISTRY = {
-    "fs": [FSModule, TextModule, CSVSchemaModule, SQLiteSchemaModule],
-    "snowflake": [FSModule, TextModule, CSVSchemaModule, SnowflakeSchemaModule],
+    "fs": [FSModule, TextModule, SQLiteSchemaModule],
+    "sqlite": [SQLiteSchemaModule],
+    "snowflake": [FSModule, TextModule, SnowflakeSchemaModule],
     "spider2_snow": [SnowflakeAccessModule],
     "postgresql": [PostgreSQLSchemaModule],
     "postgres": [PostgreSQLSchemaModule],
@@ -51,7 +51,7 @@ def create_store(config: ProjectConfig):
             project_config=config,
             source_config=source_cfg,
             graph_config=config.graph,
-            source=LocalSourceAdapter(source_cfg.path),
+            source=LocalSourceAdapter(source_cfg.path, exclude_paths=source_cfg.exclude_paths),
         )
         mod_classes = mod_entry if isinstance(mod_entry, list) else [mod_entry]
         for mod_cls in mod_classes:
@@ -66,7 +66,6 @@ def register_module(name: str, module_cls):
 __all__ = [
     "FSModule",
     "TextModule",
-    "CSVSchemaModule",
     "SQLiteSchemaModule",
     "SnowflakeSchemaModule",
     "SnowflakeAccessModule",

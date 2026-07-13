@@ -17,10 +17,11 @@ DETAIL = """\
 | ref + query | 在 ref 范围内按实体 name / brief / detail / official 字段排序 |
 
 find 检索图谱实体和实体元数据，包括 db/table/col/fk/rel/overlap/disambig/knowledge。原始行级过滤、聚合和 join 属于 `query`；JSON 层级浏览属于 `jd`；文本正文定位属于 `grep/read`。
+`find` 结果中的 file 可能标记为 `metadata only`，这类生成实体只能用 `meta`；只有 `readable text` 文件才能交给 `read/grep`。
 
 ## ref 匹配语法
 
-ref 是图谱路径表达式。未带 project 路由时在当前打开的全部 Project 中匹配；`project::ref` 将匹配范围限定到指定 Project。
+ref 是图谱查询表达式。未带 project 路由时在当前打开的全部 Project 中匹配；`project::ref` 将匹配范围限定到指定 Project。
 
 | 语法 | 含义 |
 |---|---|
@@ -33,7 +34,9 @@ ref 是图谱路径表达式。未带 project 路由时在当前打开的全部 
 | `db.sqlite:db/yearmonth:table/*:col` | 匹配 `yearmonth` 表下的列 |
 
 `ref + query` 先用 ref 限定候选实体，再按 query 在候选实体的 name / brief / detail / official 字段中排序。
-返回结果第一列与输入 ref 使用同一套路径逻辑，可直接给 `meta`。列路径直接扩展表 ref：`db.sqlite:db/yearmonth:table/Consumption:col`。
+返回结果第一列是从存储 source 节点出发的完整图导航 ref，可直接交给 `meta`。每个路径段使用 `name:tag`，但不会暴露内部 `_ref`。
+每个 project 只有一个 source。`source.type=fs` 时以根目录 `.:dir` 为起点；`sqlite`、PostgreSQL、Snowflake 等数据库 project 以数据库节点 `name:db` 为起点。BIRD 示例：`california_schools.sqlite:db/schools:table/CDSCode:col`。
+同名实体会因为 source 路径或中间上下文不同而得到不同 ref，不需要额外消歧参数。
 """
 
 

@@ -178,8 +178,7 @@ Current handle-backed examples:
   columns through `_db_connect`.
 - `db_fk_validate`: discovers `fk` from KG and validates joins through
   `_db_connect`.
-- `csv_column_stats` / `json_pattern`: resolve `file` entities and read content
-  through `_file_open`.
+- `json_pattern`: resolve `file` entities and read content through `_file_open`.
 
 ## Storage graph policy layer
 
@@ -201,8 +200,7 @@ Current hard invariants:
 
 - A `table` must not have both `:grouped` and `:standalone`.
 - A `col` must not have both `:grouped` and `:standalone`.
-- A `col` must connect to exactly one structural parent among `table`, `view`,
-  `csv_table`, and `csv`.
+- A `col` must connect to exactly one structural parent among `table` and `view`.
 - A `column_group` must connect to exactly one structural parent, and its
   member columns must share one structural parent.
 

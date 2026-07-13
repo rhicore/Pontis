@@ -4,7 +4,8 @@ import json
 
 from tool.utils.resolve import resolve_entity_selector, selector_match_pattern, selector_params
 
-_ALLOWED_FIELDS = {"brief", "detail", "hints", "disambig_note"}
+_ALLOWED_FIELDS = {"brief", "detail", "hints", "disambig_note", "review_status"}
+_REVIEW_STATUSES = {"pending_review", "accepted", "needs_split", "rejected"}
 
 
 def _normalize_hints(value) -> list[str]:
@@ -48,11 +49,20 @@ def update_meta_command(workspace, ref: str, fields: dict) -> str:
         except json.JSONDecodeError:
             return "错误: fields 必须是对象；收到的是无法解析为 JSON 对象的字符串"
     if not isinstance(fields, dict):
-        return "错误: fields 必须是对象，只允许包含 brief/detail/hints/disambig_note"
+        return (
+            "错误: fields 必须是对象，只允许包含 "
+            "brief/detail/hints/disambig_note/review_status"
+        )
 
     invalid = set(fields.keys()) - _ALLOWED_FIELDS
     if invalid:
         return f"错误: 不允许修改 {', '.join(sorted(invalid))}。只允许修改: {', '.join(sorted(_ALLOWED_FIELDS))}"
+
+    if "review_status" in fields and fields["review_status"] not in _REVIEW_STATUSES:
+        return (
+            "错误: review_status 必须是以下值之一: "
+            + ", ".join(sorted(_REVIEW_STATUSES))
+        )
 
     safe_fields = {k: v for k, v in fields.items() if not k.startswith("_")}
     if not safe_fields:

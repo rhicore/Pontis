@@ -41,6 +41,16 @@ def read_command(
         allow_directory=False,
     )
     if not sources:
+        try:
+            from tool.utils.resolve import resolve_entity
+            node, _ = resolve_entity(workspace, selector)
+        except Exception:
+            node = None
+        if node and "file" in set(node.get("labels", [])):
+            return (
+                f"Error: {selector} 是 metadata-only file，没有可读取的 text/open_file。"
+                "请用 meta 查看其图谱元数据。"
+            )
         return f"Error: text file not found or not readable via storage: {selector}"
     if len(sources) > 1:
         options = "\n".join(f"- {src.path}" for src in sources[:20])

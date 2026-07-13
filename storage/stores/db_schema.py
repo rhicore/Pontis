@@ -92,6 +92,9 @@ class SQLiteSchemaModule(StoreModule):
     name = "db_schema"
     query_labels = {"db", "table", "view", "col", "fk"}
 
+    def provides_source_anchor(self) -> bool:
+        return (getattr(self.ctx.source_config, "type", "") or "").lower() == "sqlite"
+
     def __init__(self, ctx: ModuleContext):
         super().__init__(ctx)
         self._bundle_cache: Dict[str, tuple[tuple[int, int], dict]] = {}
@@ -223,8 +226,10 @@ class SQLiteSchemaModule(StoreModule):
                     "WITH fk, from_col, to_col, row.labels AS labels "
                     "SET fk.labels = reduce(acc = [], label IN coalesce(fk.labels, []) + labels | "
                     "CASE WHEN label IN acc THEN acc ELSE acc + label END) "
-                    "MERGE (from_col)-[:RELATED_TO]->(fk) "
-                    "MERGE (to_col)-[:RELATED_TO]->(fk)"
+                    "MERGE (from_col)-[from_edge:RELATED_TO]->(fk) "
+                    "SET from_edge.role = 'source' "
+                    "MERGE (to_col)-[to_edge:RELATED_TO]->(fk) "
+                    "SET to_edge.role = 'target'"
                 ),
                 params={"rows": fk_rows},
             ))
@@ -305,10 +310,10 @@ class SQLiteSchemaModule(StoreModule):
                 "path": db_rel,
                 "_ref": db_rel,
                 "_db_connect": self.pointer("connect", db_rel),
-                "table_count": len(tables),
-                "view_count": len(views),
                 "labels": ["file", "db"],
             }
+            if self.provides_source_anchor():
+                db_node["_source_anchor"] = True
             if index_count is not None:
                 db_node["index_count"] = index_count
             register(db_node)
@@ -330,7 +335,6 @@ class SQLiteSchemaModule(StoreModule):
                     "_db_ref": db_rel,
                     "_db_connect": self.pointer("connect", db_rel),
                     "table_name": table_name,
-                    "column_count": len(columns),
                     "primary_key": _primary_key_display(pk_cols),
                     "labels": ["table"],
                 }
@@ -370,11 +374,7 @@ class SQLiteSchemaModule(StoreModule):
                         "_ref": fk_ref,
                         "_db_ref": db_rel,
                         "_db_connect": self.pointer("connect", db_rel),
-                        "from_table": table_name,
-                        "from_column": from_col,
                         "_from_col_ref": f"{table_ref}--{from_col}",
-                        "to_table": to_table,
-                        "to_column": to_col,
                         "_to_col_ref": f"{db_name}--{to_table}--{to_col}",
                         "confidence": 1.0,
                         "labels": ["fk"],
@@ -413,11 +413,7 @@ class SQLiteSchemaModule(StoreModule):
                             "_ref": fk_ref,
                             "_db_ref": db_rel,
                             "_db_connect": self.pointer("connect", db_rel),
-                            "from_table": table_name,
-                            "from_column": col_name,
                             "_from_col_ref": f"{db_name}--{table_name}--{col_name}",
-                            "to_table": ref_table,
-                            "to_column": to_col,
                             "_to_col_ref": f"{db_name}--{ref_table}--{to_col}",
                             "confidence": 0.7,
                             "labels": ["fk"],
@@ -441,7 +437,6 @@ class SQLiteSchemaModule(StoreModule):
                     "_db_ref": db_rel,
                     "_db_connect": self.pointer("connect", db_rel),
                     "view_name": view_name,
-                    "column_count": len(columns),
                     "labels": ["view"],
                 }
                 if row_count is not None:

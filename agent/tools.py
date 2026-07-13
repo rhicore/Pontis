@@ -79,10 +79,13 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                         },
                         "offset": {
                             "type": "integer",
+                            "minimum": 0,
                             "description": "Starting index (0-based), default 0",
                         },
                         "limit": {
                             "type": "integer",
+                            "minimum": 1,
+                            "maximum": 500,
                             "description": "Max results per page, default 50",
                         },
                     },
@@ -196,7 +199,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "Graph ref copied from find output or composed from meta Related as parent_ref/neighbor_name:neighbor_label",
+                            "description": "Source-rooted graph navigation ref copied from find or Related, e.g. '.:dir/results.db:db/table:table/id:col'",
                         },
                         "all": {
                             "type": "boolean",
@@ -208,6 +211,21 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                                 {"type": "array", "items": {"type": "string"}}
                             ],
                             "description": "Show specific property or list of properties when explicitly needed",
+                        },
+                        "neighbor_label": {
+                            "type": "string",
+                            "description": "Only show adjacent entities with this label, e.g. col, fk, disambig, table",
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Starting offset when neighbor_label is used",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Neighbor page size, default 20 and maximum 100",
                         },
                     },
                     "required": ["ref"],
@@ -228,10 +246,11 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                         },
                         "ref": {
                             "type": "string",
-                            "description": "DB/CSV/TSV file graph ref, e.g. 'data.db:file:db' or 'data.csv:file:csv:text'",
+                            "description": "Database source or source-rooted descendant ref, or CSV/TSV/JSON file ref. A DB descendant selects its owning database and does not restrict SQL table scope.",
                         },
                         "limit": {
                             "type": "integer",
+                            "minimum": 1,
                             "description": "Max rows to return, default 20",
                         },
                     },
@@ -438,6 +457,9 @@ def _exec_meta(workspace, arguments: dict) -> str:
         ref=arguments["ref"],
         all=arguments.get("all", False),
         property=arguments.get("property"),
+        neighbor_label=arguments.get("neighbor_label"),
+        offset=arguments.get("offset", 0),
+        limit=arguments.get("limit", 20),
     )
 
 

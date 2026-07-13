@@ -82,9 +82,11 @@ project, and `Workspace.cypher(...)` rewrites external Cypher so node patterns
 can only see that project. Tool syntax such as `bird::*:knowledge` remains a
 query-level project selector, not an entity-authored metadata field.
 
-Other fields such as `name`, `path`, `ref`, `row_count`, `column_count`,
-`brief`, and `detail` are normal properties. Storage must not treat them as
-universal identity fields.
+Other fields such as `name`, `path`, `ref`, `row_count`, `brief`, and `detail`
+are normal properties. Storage must not treat them as universal identity
+fields. Counts or endpoint lists that can be derived from graph edges (for
+example a table's column count) should be computed from those edges instead
+of persisted again as entity metadata.
 
 ## Source Modules
 
@@ -94,8 +96,7 @@ Current source modules are:
   filesystem metadata, and file/database `src` handles.
 - `TextModule`: exposes text-compatible files as `text` and contributes text
   metadata such as encoding, line count, and char count. It can merge onto the
-  same physical file node as `FSModule` or `CSVSchemaModule`.
-- `CSVSchemaModule`: exposes CSV/TSV columns as `col` virtual nodes.
+  same physical file node as `FSModule`.
 - `SQLiteSchemaModule`: exposes SQLite database tables, views, columns, and
   foreign-key relationship nodes.
 - `SnowflakeSchemaModule`: exposes a live Snowflake database as `db`, `schema`,
@@ -104,6 +105,11 @@ Current source modules are:
   Docker-hosted databases are configured as normal PostgreSQL host/port
   endpoints; the source module does not call the Docker API.
 
+Each project has exactly one internal navigation anchor, without a public
+`source` label. An `fs` project anchors at its root `dir`; a `sqlite`,
+PostgreSQL, or Snowflake project anchors at its `db`. Agent-facing refs are rebuilt
+from real graph paths beginning at that anchor and never expose `_ref`.
+
 Every source module is constructed with `ModuleContext` and should only import
 `storage.stores.base` from storage internals. It must not inspect `Store`
 private fields or import peer modules.
@@ -111,8 +117,16 @@ private fields or import peer modules.
 For `source.type: fs`, the registered module chain is:
 
 ```text
-FSModule -> TextModule -> CSVSchemaModule -> SQLiteSchemaModule
+FSModule -> TextModule -> SQLiteSchemaModule
 ```
+
+For `source.type: sqlite`, `source.path` points directly to one SQLite file and
+the only registered module is `SQLiteSchemaModule`. The database node is the
+project's sole navigation anchor; sibling files are not published.
+
+CSV/TSV files remain queryable file data sources, but Pontis does not project
+their headers into `csv_table` or `col` graph nodes. The retired implementation
+is kept under `storage/stores/useless/`.
 
 For any local PostgreSQL database, use the generic `source.type: postgresql`.
 The database may be a normal local PostgreSQL cluster, a port forwarded service,

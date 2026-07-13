@@ -33,8 +33,8 @@ storage/
     ├── base.py           # Source module protocol and ModuleContext
     ├── fs.py             # Filesystem source module
     ├── text.py           # Text metadata source module
-    ├── csv_schema.py     # CSV/TSV schema source module
     ├── db_schema.py      # SQLite schema source module
+    ├── useless/          # Retired source projections, including csv_schema
     └── utils/            # Raw source access helpers used by source modules
 ```
 
@@ -54,6 +54,14 @@ Workspace.cypher(query)
 Neo4j is therefore the only durable graph store and the only full Cypher
 executor. Source modules only produce subgraphs and runtime pointer values.
 
+## Source-rooted refs
+
+Every project publishes one internal navigation anchor without adding a public
+label. An `fs` project anchors at `.:dir`; a `sqlite` or direct database project
+anchors at `<database>:db`. Public `find` and `meta` refs are reconstructed from the
+shortest real graph path beginning there. `_ref`, `path`, entity ids, and the
+internal `_source_anchor` property are not part of the public display contract.
+
 ## Source Modules
 
 `storage/stores/*` modules are intentionally flat:
@@ -67,7 +75,11 @@ executor. Source modules only produce subgraphs and runtime pointer values.
 For `source.type: fs`, the registered module chain is:
 
 ```text
-FSModule -> TextModule -> CSVSchemaModule -> SQLiteSchemaModule
+FSModule -> TextModule -> SQLiteSchemaModule
 ```
 
 The chain is registration order, not module dependency order.
+
+CSV/TSV files may still be queried as file sources. Their headers are not
+projected into `csv_table`/`col`; the legacy projection is under
+`storage/stores/useless/csv_schema.py`.

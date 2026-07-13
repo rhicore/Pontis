@@ -23,6 +23,7 @@ from storage.query_inspector import cypher_label_clause, is_valid_label
 from tool.config import TOOL_PAGINATION
 from tool.utils.formatters import format_entity_name, get_info
 from tool.utils.knowledge_meta import normalize_knowledge_meta
+from tool.utils.display_ref import display_ref_for_node
 
 
 # ═══════════════════════════════════════════════════════════
@@ -403,12 +404,13 @@ def match_ref_command(workspace, ref: str, offset: int = 0,
         path_item = _row_path_ref(row, node_segs, project)
         if not path_item:
             continue
-        entity_name, main_info = path_item
+        _, main_info = path_item
         node_project = main_info.get("__project") or project
         main_info = normalize_knowledge_meta(node_project, main_info.get("labels"), main_info)
         labels = main_info.get("labels", [])
         info_str = get_info(labels, main_info or {})
-        all_items.append((_knowledge_priority(labels), entity_name.lower(), node_project, entity_name, info_str))
+        sort_name = str(main_info.get("name") or "").casefold()
+        all_items.append((_knowledge_priority(labels), sort_name, node_project, main_info, row, info_str))
 
     if not all_items:
         return "No objects found"
@@ -421,7 +423,8 @@ def match_ref_command(workspace, ref: str, offset: int = 0,
         return f"No results at offset {offset}. Total results: {total}"
 
     lines = []
-    for _, _, node_project, entity_name, info in page:
+    for _, _, node_project, main_info, row, info in page:
+        entity_name = display_ref_for_node(workspace, node_project, main_info, row=row)
         lines.append(f"{entity_name}\t{info}")
     output = "\n".join(lines)
 

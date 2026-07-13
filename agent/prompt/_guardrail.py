@@ -25,7 +25,21 @@ def get_guardrail_guidance(spec=None) -> str:
 
     parts = ["## Guardrail 约束"]
     for name in enabled:
-        section = _SECTIONS.get(name)
+        if name == "tool_use_check":
+            limits = getattr(spec, "max_tool_calls", {}) or {}
+            limits_text = []
+            if limits.get("*"):
+                limits_text.append(f"全部工具合计 {limits['*']} 次")
+            for tool_name, limit in limits.items():
+                if tool_name != "*" and limit:
+                    limits_text.append(f"`{tool_name}` {limit} 次")
+            budget = "，其中".join(limits_text)
+            section = (
+                "- `tool_use_check`: 相同调用复用已有结果；"
+                + (f"本次工具额度为{budget}。" if budget else "在配置的工具额度内完成探索。")
+            )
+        else:
+            section = _SECTIONS.get(name)
         if section:
             parts.append(section)
 

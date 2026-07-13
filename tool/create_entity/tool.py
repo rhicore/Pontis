@@ -58,7 +58,9 @@ def _edge_source_for_created_node(edges: list | None, name: str, ref: str) -> st
 
 
 def _has_wildcards(ref: str) -> bool:
-    return any(c in ref for c in '*?[]')
+    # Entity names may contain punctuation. Only explicit glob operators are
+    # treated as wildcards.
+    return any(c in ref for c in '*?')
 
 
 def _has_entity_ref_structure(name: str) -> bool:
@@ -72,8 +74,8 @@ def _link_relation_entity_to_db(workspace, *, project: str | None, node_id: str 
         """
         MATCH (r {id: $id})--(endpoint)
         WHERE any(label IN coalesce(r.labels, []) WHERE label IN ['fk', 'rel', 'overlap'])
-          AND endpoint._db_ref IS NOT NULL
-        WITH r, collect(DISTINCT endpoint._db_ref) AS db_refs
+          AND coalesce(endpoint._db_ref, endpoint.db_ref) IS NOT NULL
+        WITH r, collect(DISTINCT coalesce(endpoint._db_ref, endpoint.db_ref)) AS db_refs
         UNWIND db_refs AS db_ref
         MATCH (db {_ref: db_ref})
         MERGE (db)-[:RELATED_TO]->(r)
@@ -150,7 +152,7 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
 
     # 禁止通配符
     if _has_wildcards(ref):
-        return "错误: 实体名不允许包含通配符 (*, ?, [])"
+        return "错误: 实体名不允许包含通配符 (*, ?)"
     name, labels, project = _parse_ref(ref)
 
     if not name:

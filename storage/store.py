@@ -116,6 +116,8 @@ class Store:
             for statement in statements:
                 self.execute_cypher(statement.query, params=statement.params)
             self._stamp_project_nodes(mod)
+            self._remove_legacy_source_labels()
+            self._normalize_source_anchor()
             self._mark_module_published(mod)
             published_any = True
         if published_any:
@@ -167,6 +169,36 @@ class Store:
 
         self.execute_cypher(
             "MATCH (n) WHERE n.project IS NULL SET n.project = $project",
+            params={"project": self._project_name},
+        )
+
+    def _remove_legacy_source_labels(self) -> None:
+        """Migrate the retired public :source label to the internal anchor property."""
+        if not self._project_name:
+            return
+        self.execute_cypher(
+            "MATCH (n {project: $project}) "
+            "WHERE n:source OR 'source' IN coalesce(n.labels, []) "
+            "REMOVE n:source "
+            "SET n.labels = [label IN coalesce(n.labels, []) WHERE label <> 'source']",
+            params={"project": self._project_name},
+        )
+
+    def _normalize_source_anchor(self) -> None:
+        """Remove stale anchors left by a previous source type."""
+        if not self._project_name:
+            return
+        source_type = (getattr(self._source_config, "type", "") or "").lower()
+        if source_type == "fs":
+            keep = "n:dir AND n.path = '.'"
+        elif source_type in {"sqlite", "postgresql", "postgres", "snowflake", "spider2_snow"}:
+            keep = "n:db"
+        else:
+            return
+        self.execute_cypher(
+            f"MATCH (n {{project: $project}}) "
+            f"WHERE n._source_anchor = true AND NOT ({keep}) "
+            "REMOVE n._source_anchor",
             params={"project": self._project_name},
         )
 

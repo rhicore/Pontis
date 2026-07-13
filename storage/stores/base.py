@@ -95,6 +95,10 @@ class StoreModule:
     name = "module"
     refresh_interval_seconds = 300.0
 
+    def provides_source_anchor(self) -> bool:
+        """Whether this module owns the project's single navigation root."""
+        return False
+
     def __init__(self, ctx: ModuleContext | None = None):
         self.ctx = ctx
 

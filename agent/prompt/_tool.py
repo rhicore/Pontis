@@ -24,33 +24,25 @@ def get_tool_prompt(spec=None) -> str:
     tool_list = "\n".join(lines)
     if query_mode == "single_table_fact_check":
         workflow_lines = [
-            "- `find` 定位实体，`meta` 读取实体语义和邻接，`query` 用结构化参数验证单表局部数据事实。",
-            "- ref 中 `/` 表示图边路径，`:` 表示当前路径段标签，`*` 表示名称通配，`project::ref` 限定项目。",
-            "- 路径段采用 `实体名:标签` 顺序，例如 `yearmonth:table`、`Consumption:col`、`status:col`。",
-            "- `find` 接受通配 ref，用来列实体和搜索；`meta` 接受单个实体 ref，用来读取该实体。",
-            "- `table` 只表示数据库表；CSV/TSV 表状摘要使用 `csv_table`。",
-            "- `find` 返回的第一列可直接给 `meta`；`meta` 的 Related 按标签分组，访问时用 `主节点ref/邻接名称:分组标签`。",
-            "- 列实体从表实体访问，形如 `db.sqlite:db/yearmonth:table/Consumption:col`；关系列实体和知识实体也遵循同一套图路径。",
-            "- 复用已有工具事实；新查询用于确认单表内的局部事实。",
+            "- 从任务中的业务概念开始，用 `find` 定位 schema_landscape/topic/table_group/table，再用 `meta` 理解实体和邻接。",
+            "- 已知目标字段时用 `property` 定向读取；已知目标关系类型时用 `neighbor_label` 定向读取。",
+            "- `query` 用结构化参数验证单表局部事实，每次查询解决一个尚未确定的问题。",
+            "- 当完成任务所需的信息已经确定，直接生成结果。",
         ]
         exploration_lines = [
-            "- 结构入口：`find` 找 db/table/col/fk/rel/knowledge/disambig，`meta` 读目标实体。",
+            "- 结构入口：`find` 找 schema_landscape/topic/table_group/table/logical_col/col/value_domain/fk/rel/disambig，`meta` 读目标实体。",
             "- 值验证：先用 `meta` 查看列语义、统计、样例和提示，再用 `query` 补充单表内的值事实；不同值数量用 `cardinality`，范围边界用 `extreme_values`。",
             "- 常规实体定位和字段边界核对使用 `find`/`meta`。",
         ]
     else:
         workflow_lines = [
-            "- `find` 定位实体，`meta` 读取实体语义和邻接，`query` 验证原始数据事实、局部条件行数、跨表匹配基数和值分布。",
-            "- ref 中 `/` 表示图边路径，`:` 表示当前路径段标签，`*` 表示名称通配，`project::ref` 限定项目。",
-            "- 路径段采用 `实体名:标签` 顺序，例如 `yearmonth:table`、`Consumption:col`、`status:col`。",
-            "- `find` 接受通配 ref，用来列实体和搜索；`meta` 接受单个实体 ref，用来读取该实体。",
-            "- `table` 只表示数据库表；CSV/TSV 表状摘要使用 `csv_table`。",
-            "- `find` 返回的第一列可直接给 `meta`；`meta` 的 Related 按标签分组，访问时用 `主节点ref/邻接名称:分组标签`。",
-            "- 列实体从表实体访问，形如 `db.sqlite:db/yearmonth:table/Consumption:col`；关系列实体和知识实体也遵循同一套图路径。",
-            "- 复用已有工具事实；新查询应验证新信息或排除具体疑点。",
+            "- 从任务中的业务概念开始，用 `find` 定位 schema_landscape/topic/table_group/table，再用 `meta` 理解实体和邻接。",
+            "- 已知目标字段时用 `property` 定向读取；已知目标关系类型时用 `neighbor_label` 定向读取。",
+            "- `query` 验证原始数据事实、局部条件行数、跨表匹配基数和值分布，每次查询解决一个尚未确定的问题。",
+            "- 当表列、关系、筛选条件、计算口径和输出粒度已经确定，直接生成结果。",
         ]
         exploration_lines = [
-            "- 结构入口：`find` 找 db/table/col/fk/rel/knowledge/disambig，`meta` 读目标实体。",
+            "- 结构入口：`find` 找 schema_landscape/topic/table_group/table/logical_col/col/value_domain/fk/rel/disambig，`meta` 读目标实体。",
             "- 值验证：先用 `meta` 查看列语义、统计、样例和提示，再用 `query` 验证值是否存在、局部条件行数、连接前后行数和字段统计值。",
             "- 文本证据：`grep` 定位，`read` 回读上下文；JSON 层级用 `jd` 展开。",
             "- 图关系：常规实体定位和字段边界核对使用 `find`/`meta`。",
@@ -70,23 +62,22 @@ def get_tool_prompt(spec=None) -> str:
 
 ### 调用格式
 
-- 工具参数必须是合法 JSON；字符串值必须加双引号，例如 `{{"property": "brief"}}`，不要写 `{{"property": brief}}`。
-- 使用 ref 时优先复制 `find` 返回的第一列或 `meta` 输出中的完整 ref。
-- 不要自己拼 `source::`、重复项目名前缀、`:db:db`，也不要给 `overlap`、`rel`、`disambig` ref 追加 `/*` 来猜邻接。
+- 工具参数使用合法 JSON，字符串值使用双引号，例如 `{{"property": "brief"}}`。
+- ref 使用 `find` 或 Related 返回的完整 source 导航路径。
 
 ### 探索主线
 
 {exploration}
 
-### 常用入口
+### 问题驱动的常用调用
 
 | 调用 | 用途 |
 |---|---|
-| `find({{"ref":"*:db"}})` | 列出数据库入口 |
-| `find({{"ref":"db.sqlite:db/*:table"}})` | 列出数据库表 |
-| `find({{"ref":"db.sqlite:db/yearmonth:table/*:col"}})` | 列出表列 |
-| `find({{"ref":"db.sqlite:db/*:fk"}})` | 列出结构关系 |
-| `find({{"ref":"db.sqlite:db/*:rel"}})` | 列出语义关系 |
-| `find({{"ref":"*:knowledge", "query":"term or rule"}})` | 搜索项目知识 |
-| `find({{"ref":"*:disambig", "query":"ambiguous term"}})` | 搜索消歧信息 |
+| `find({{"ref":"*:table|col", "query":"business concept"}})` | 按问题概念检索相关表列 |
+| `find({{"ref":"*:schema_landscape|topic|table_group", "query":"business concept"}})` | 在大型数据库中先定位压缩导航范围 |
+| `find({{"ref":"*:logical_col|col", "query":"business concept"}})` | 在已命中的范围内定位物理列或逻辑列 |
+| `find({{"ref":"*:value_domain|fk|rel|disambig", "query":"join concept"}})` | 检索已审核值域、连接关系和消歧义 |
+| `find({{"ref":"*:knowledge|disambig", "query":"term or rule"}})` | 检索业务知识和消歧信息 |
+| `meta({{"ref":"完整实体路径", "property":["brief","detail"]}})` | 定向读取所需属性 |
+| `meta({{"ref":"完整实体路径", "neighbor_label":"col"}})` | 定向读取某类邻接实体 |
 """

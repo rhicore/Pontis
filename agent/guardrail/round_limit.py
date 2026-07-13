@@ -25,5 +25,5 @@ class RoundLimit(Guardrail):
         if ctx.rounds < self.max_rounds:
             return {}
         msg = self.stop_template.format(max_rounds=self.max_rounds)
-        return {i: CallVerdict("block", msg)
+        return {i: CallVerdict("block", msg, finalize=True)
                 for i in range(len(ctx.pending_calls))}

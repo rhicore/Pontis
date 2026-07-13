@@ -10,6 +10,7 @@ DETAIL = """\
 
 硬约束：
 - 只读取 storage 标记为 `:text` 的文件
+- `find` 标记为 `metadata only` 的生成 file 没有正文句柄，应改用 `meta`，不要交给 `read`
 - 通过文件节点的 open_file 句柄读取，不直接绕过 storage
 - 输出会带行号，格式为 `行号 | 内容`
 - 输出大小受单次行数和字符数限制\

@@ -36,4 +36,13 @@ class TriggerRouter:
                 wants = False
             if wants:
                 selected.append(module)
+        # The project anchor must exist before any public result is formatted
+        # as a source-rooted ref. Store freshness keeps this inexpensive.
+        for module in modules:
+            try:
+                owns_anchor = bool(module.provides_source_anchor())
+            except Exception:
+                owns_anchor = False
+            if owns_anchor and module not in selected:
+                selected.insert(0, module)
         return selected

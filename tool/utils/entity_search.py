@@ -38,7 +38,13 @@ _VECTOR_INDEX_CACHE: dict[tuple, list[str]] = {}
 def _tokenize(text: str) -> List[str]:
     """简单的中文/英文分词器。"""
     tokens = []
-    for part in re.split(r'[\s,，。.!！?？;；:：、/\\|()\[\]{}]+', text.lower()):
+    # Treat qualified identifiers and relation arrows as boundaries.  Without
+    # this, `Match.country_id->Country.id` becomes punctuation-level character
+    # noise and a query such as `country` cannot retrieve the FK.
+    for raw_part in re.split(r'[\s,，。.!！?？;；:：、/\\|()\[\]{}<>\-=]+', text):
+        # Preserve case until CamelCase boundaries have been identified.
+        # CDSCode -> CDS + Code; awayTeamId -> away + Team + Id.
+        part = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", raw_part).lower()
         if not part:
             continue
         if re.match(r'^[a-z0-9_]+$', part):
@@ -46,6 +52,11 @@ def _tokenize(text: str) -> List[str]:
             for sub in part.split('_'):
                 if len(sub) > 1:
                     tokens.append(sub)
+                    # Lightweight English singular normalization is enough
+                    # for structural words such as school/schools and
+                    # player/players without introducing a stemmer runtime.
+                    if len(sub) > 3 and sub.endswith("s") and not sub.endswith("ss"):
+                        tokens.append(sub[:-1])
             # 保留完整复合词作为额外 token
             if '_' in part and len(part) > 1:
                 tokens.append(part)
@@ -56,6 +67,27 @@ def _tokenize(text: str) -> List[str]:
                 if i + 1 < len(chars):
                     tokens.append(chars[i] + chars[i + 1])
     return tokens
+
+
+def _structured_search_text(node: dict) -> str:
+    """Build deterministic searchable text for relation-like entities."""
+    values = []
+    for key in (
+        "from_table", "from_column", "to_table", "to_column",
+        "source_table", "source_column", "target_table", "target_column",
+        "sources", "filter_evidence", "stats",
+    ):
+        value = node.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, dict):
+            text = " ".join(f"{k} {v}" for k, v in value.items())
+        elif isinstance(value, (list, tuple, set)):
+            text = " ".join(str(item) for item in value)
+        else:
+            text = str(value)
+        values.append(f"{key} {text}")
+    return " ".join(values)
 
 
 def _get_project_name(workspace) -> str:
@@ -309,32 +341,24 @@ def _semantic_display_ref(workspace, ref: str, node_project: str | None, node_me
     if not node_segs:
         node_segs = [{"labels_and": [], "labels_or": []}]
 
-    if len(node_segs) == 1:
-        local_ref = _format_ref_segment(
-            node_meta.get("name", ""),
-            _labels_for_output(node_segs[-1], labels),
-        )
+    # Semantic search previously inherited the *shape* of the query ref.  A
+    # broad `*:col` therefore returned `id:col`, even when dozens of tables had
+    # an id column, contradicting the public find -> meta contract.  Always use
+    # the node's stable structural display path and only inherit terminal label
+    # formatting from the requested scope.
+    structural = display_ref_for_node(workspace, node_project, node_meta)
+    parts = [part.split(":", 1)[0] for part in structural.split("/") if part]
+    terminal_labels = _labels_for_output(node_segs[-1], labels)
+    if parts:
+        parts[-1] = _format_ref_segment(parts[-1], terminal_labels)
+        local_ref = "/".join(parts)
     else:
-        structural_ref = node_meta.get("_ref") or node_meta.get("ref")
-        if structural_ref and "--" in structural_ref:
-            parts = [part for part in structural_ref.split("--") if part]
-        else:
-            path = display_ref_for_node(workspace, node_project, node_meta)
-            parts = [part.split(":", 1)[0] for part in path.split("/") if part]
-        if len(parts) > len(node_segs):
-            parts = parts[-len(node_segs):]
-        rendered = []
-        for idx, part in enumerate(parts):
-            seg = node_segs[idx] if idx < len(node_segs) else {"labels_and": [], "labels_or": []}
-            seg_labels = _labels_for_output(seg, labels if idx == len(parts) - 1 else [])
-            rendered.append(_format_ref_segment(part, seg_labels))
-        local_ref = "/".join(rendered) if rendered else _format_ref_segment(
-            node_meta.get("name", ""),
-            _labels_for_output(node_segs[-1], labels),
-        )
+        local_ref = _format_ref_segment(node_meta.get("name", ""), terminal_labels)
 
-    if project:
-        return f"{project}::{local_ref}"
+    active_projects = list(getattr(workspace, "active_projects", []) or [])
+    route_project = project or (node_project if len(active_projects) > 1 else None)
+    if route_project:
+        return f"{route_project}::{local_ref}"
     return local_ref
 
 
@@ -367,7 +391,8 @@ def _bm25_search(workspace, query: str, ref: str = "",
         doc_text = (
             f"{name} {brief} {detail} "
             f"{official_table_description} {official_view_description} "
-            f"{official_column_description} {official_value_description}"
+            f"{official_column_description} {official_value_description} "
+            f"{_structured_search_text(n)}"
         )
         if not doc_text.strip():
             continue
@@ -441,7 +466,11 @@ def search_entities_command(
         limit = page_conf.default_limit
     limit = min(limit, page_conf.max_limit)
 
-    fetch_k = max(limit + offset, min(page_conf.max_limit, max(100, (limit + offset) * 5)))
+    # Fetch one stable semantic window for every page.  Previously fetch_k
+    # grew with offset, so page 1 could claim "100 results" while page 20 of
+    # the same query claimed "199 results" and the ranked population changed
+    # between calls.
+    fetch_k = page_conf.max_limit
     results = _vector_search(workspace, query, ref, fetch_k=fetch_k)
     if not results:
         results = _bm25_search(workspace, query, ref)
@@ -457,12 +486,21 @@ def search_entities_command(
 
     lines = []
     for score, ref_name, node_meta, info, labels, node_project in page:
-        entity_ref = _semantic_display_ref(workspace, ref, node_project, node_meta, labels)
+        entity_ref = display_ref_for_node(workspace, node_project, node_meta)
         lines.append(f"{entity_ref}\t{info}")
     output = '\n'.join(lines)
 
     end = offset + len(page)
+    window_label = f"至少 {total}" if total >= page_conf.max_limit else str(total)
     if end < total:
-        output += f"\n(共 {total} 条结果，当前显示第 {offset + 1}-{end} 条。使用 offset={end} 查看后续结果)"
+        output += (
+            f"\n(当前语义检索窗口共 {window_label} 条，显示第 {offset + 1}-{end} 条。"
+            f"使用 offset={end} 查看后续结果)"
+        )
+    else:
+        output += (
+            f"\n(当前语义检索窗口共 {window_label} 条，显示第 {offset + 1}-{end} 条，"
+            "已到窗口最后一页)"
+        )
 
     return output
