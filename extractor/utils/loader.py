@@ -32,6 +32,32 @@ class Config:
     embedding_api_key: Optional[str] = None
     embedding_dimensions: int = 1536
     embedding_batch_size: int = 64
+    overlap_value_overlap_enabled: bool = True
+    overlap_name_overlap_enabled: bool = True
+    overlap_same_schema_only: bool = False
+    overlap_skip_same_table_group: bool = True
+    overlap_same_table_overlap_enabled: bool = True
+    overlap_same_table_group_representative_only: bool = True
+    overlap_domain_filter_enabled: bool = True
+    overlap_shape_filter_enabled: bool = False
+    overlap_key_like_only: bool = False
+    overlap_require_name_token_overlap: bool = False
+    overlap_name_token_overlap_first: bool = False
+    overlap_require_repeated_key_name: bool = False
+    overlap_top_k_per_column: int = 0
+    overlap_generic_token_top_k: int = 5
+    overlap_max_value_candidate_pairs: int = 5000
+    overlap_value_match_method: str = "sql"
+    overlap_minhash_num_perm: int = 128
+    overlap_minhash_min_matching_hashes: int = 1
+    overlap_minhash_jaccard_threshold: float = 0.0
+    overlap_minhash_max_sql_verify_pairs: int = 5000
+    overlap_snowflake_minhash_column_batch_size: int = 128
+    overlap_snowflake_minhash_value_partitions: int = 1
+    overlap_snowflake_minhash_max_warehouse_running: int = 0
+    overlap_snowflake_minhash_warehouse_poll_seconds: int = 30
+    overlap_lazo_containment_threshold: float = 0.01
+    overlap_lazo_confidence: float = 0.99
     preprocess_token_metrics: Counter = field(default_factory=Counter)
 
     def get_llm(self) -> Optional[LLMClient]:
@@ -91,6 +117,32 @@ def load_config(path: Optional[str] = None) -> Config:
         "embedding_api_key": _defaults.EMBEDDING_API_KEY,
         "embedding_dimensions": _defaults.EMBEDDING_DIMENSIONS,
         "embedding_batch_size": _defaults.EMBEDDING_BATCH_SIZE,
+        "overlap_value_overlap_enabled": True,
+        "overlap_name_overlap_enabled": True,
+        "overlap_same_schema_only": False,
+        "overlap_skip_same_table_group": True,
+        "overlap_same_table_overlap_enabled": True,
+        "overlap_same_table_group_representative_only": True,
+        "overlap_domain_filter_enabled": True,
+        "overlap_shape_filter_enabled": False,
+        "overlap_key_like_only": False,
+        "overlap_require_name_token_overlap": False,
+        "overlap_name_token_overlap_first": False,
+        "overlap_require_repeated_key_name": False,
+        "overlap_top_k_per_column": 0,
+        "overlap_generic_token_top_k": 5,
+        "overlap_max_value_candidate_pairs": 5000,
+        "overlap_value_match_method": "sql",
+        "overlap_minhash_num_perm": 128,
+        "overlap_minhash_min_matching_hashes": 1,
+        "overlap_minhash_jaccard_threshold": 0.0,
+        "overlap_minhash_max_sql_verify_pairs": 5000,
+        "overlap_snowflake_minhash_column_batch_size": 128,
+        "overlap_snowflake_minhash_value_partitions": 1,
+        "overlap_snowflake_minhash_max_warehouse_running": 0,
+        "overlap_snowflake_minhash_warehouse_poll_seconds": 30,
+        "overlap_lazo_containment_threshold": 0.01,
+        "overlap_lazo_confidence": 0.99,
     }
 
     EXTRACTOR_YAML_MAPPING = {
@@ -108,6 +160,34 @@ def load_config(path: Optional[str] = None) -> Config:
         "embedding_api_key": "embedding_api_key",
         "embedding_dimensions": "embedding_dimensions",
         "embedding_batch_size": "embedding_batch_size",
+        "overlap_value_overlap_enabled": "overlap_value_overlap_enabled",
+        "overlap_name_overlap_enabled": "overlap_name_overlap_enabled",
+        "overlap_same_schema_only": "overlap_same_schema_only",
+        "overlap_skip_same_table_group": "overlap_skip_same_table_group",
+        "overlap_same_table_overlap_enabled": "overlap_same_table_overlap_enabled",
+        "overlap_same_table_group_representative_only": "overlap_same_table_group_representative_only",
+        "overlap_domain_filter_enabled": "overlap_domain_filter_enabled",
+        # Old project configs migrate to the wider domain filter.
+        "overlap_type_filter_enabled": "overlap_domain_filter_enabled",
+        "overlap_shape_filter_enabled": "overlap_shape_filter_enabled",
+        "overlap_key_like_only": "overlap_key_like_only",
+        "overlap_require_name_token_overlap": "overlap_require_name_token_overlap",
+        "overlap_name_token_overlap_first": "overlap_name_token_overlap_first",
+        "overlap_require_repeated_key_name": "overlap_require_repeated_key_name",
+        "overlap_top_k_per_column": "overlap_top_k_per_column",
+        "overlap_generic_token_top_k": "overlap_generic_token_top_k",
+        "overlap_max_value_candidate_pairs": "overlap_max_value_candidate_pairs",
+        "overlap_value_match_method": "overlap_value_match_method",
+        "overlap_minhash_num_perm": "overlap_minhash_num_perm",
+        "overlap_minhash_min_matching_hashes": "overlap_minhash_min_matching_hashes",
+        "overlap_minhash_jaccard_threshold": "overlap_minhash_jaccard_threshold",
+        "overlap_minhash_max_sql_verify_pairs": "overlap_minhash_max_sql_verify_pairs",
+        "overlap_snowflake_minhash_column_batch_size": "overlap_snowflake_minhash_column_batch_size",
+        "overlap_snowflake_minhash_value_partitions": "overlap_snowflake_minhash_value_partitions",
+        "overlap_snowflake_minhash_max_warehouse_running": "overlap_snowflake_minhash_max_warehouse_running",
+        "overlap_snowflake_minhash_warehouse_poll_seconds": "overlap_snowflake_minhash_warehouse_poll_seconds",
+        "overlap_lazo_containment_threshold": "overlap_lazo_containment_threshold",
+        "overlap_lazo_confidence": "overlap_lazo_confidence",
     }
 
     # 1. ~/.pontis/config.yml
@@ -171,4 +251,49 @@ def load_config(path: Optional[str] = None) -> Config:
         embedding_api_key=cfg.get("embedding_api_key") or None,
         embedding_dimensions=int(cfg.get("embedding_dimensions") or 1536),
         embedding_batch_size=int(cfg.get("embedding_batch_size") or 64),
+        overlap_value_overlap_enabled=_bool_cfg(cfg.get("overlap_value_overlap_enabled", True)),
+        overlap_name_overlap_enabled=_bool_cfg(cfg.get("overlap_name_overlap_enabled", True)),
+        overlap_same_schema_only=_bool_cfg(cfg.get("overlap_same_schema_only", False)),
+        overlap_skip_same_table_group=_bool_cfg(cfg.get("overlap_skip_same_table_group", True)),
+        overlap_same_table_overlap_enabled=_bool_cfg(cfg.get("overlap_same_table_overlap_enabled", True)),
+        overlap_same_table_group_representative_only=_bool_cfg(cfg.get("overlap_same_table_group_representative_only", True)),
+        overlap_domain_filter_enabled=_bool_cfg(cfg.get("overlap_domain_filter_enabled", True)),
+        overlap_shape_filter_enabled=_bool_cfg(cfg.get("overlap_shape_filter_enabled", False)),
+        overlap_key_like_only=_bool_cfg(cfg.get("overlap_key_like_only", False)),
+        overlap_require_name_token_overlap=_bool_cfg(cfg.get("overlap_require_name_token_overlap", False)),
+        overlap_name_token_overlap_first=_bool_cfg(cfg.get("overlap_name_token_overlap_first", False)),
+        overlap_require_repeated_key_name=_bool_cfg(cfg.get("overlap_require_repeated_key_name", False)),
+        overlap_top_k_per_column=int(cfg.get("overlap_top_k_per_column") or 0),
+        overlap_generic_token_top_k=int(cfg.get("overlap_generic_token_top_k") or 5),
+        overlap_max_value_candidate_pairs=int(cfg.get("overlap_max_value_candidate_pairs") or 5000),
+        overlap_value_match_method=str(cfg.get("overlap_value_match_method") or "sql"),
+        overlap_minhash_num_perm=int(cfg.get("overlap_minhash_num_perm") or 128),
+        overlap_minhash_min_matching_hashes=int(cfg.get("overlap_minhash_min_matching_hashes") or 1),
+        overlap_minhash_jaccard_threshold=float(cfg.get("overlap_minhash_jaccard_threshold") or 0.0),
+        overlap_minhash_max_sql_verify_pairs=int(cfg.get("overlap_minhash_max_sql_verify_pairs") or 5000),
+        overlap_snowflake_minhash_column_batch_size=int(
+            cfg.get("overlap_snowflake_minhash_column_batch_size") or 128
+        ),
+        overlap_snowflake_minhash_value_partitions=int(
+            cfg.get("overlap_snowflake_minhash_value_partitions") or 1
+        ),
+        overlap_snowflake_minhash_max_warehouse_running=int(
+            cfg.get("overlap_snowflake_minhash_max_warehouse_running") or 0
+        ),
+        overlap_snowflake_minhash_warehouse_poll_seconds=int(
+            cfg.get("overlap_snowflake_minhash_warehouse_poll_seconds") or 30
+        ),
+        overlap_lazo_containment_threshold=float(cfg.get("overlap_lazo_containment_threshold") or 0.01),
+        overlap_lazo_confidence=float(cfg.get("overlap_lazo_confidence") or 0.99),
     )
+
+
+def _bool_cfg(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(value)

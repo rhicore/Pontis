@@ -42,11 +42,13 @@ from scripts.spider.common import (
     get_run_name,
     get_runtime_dir,
     group_cases_by_db,
+    ensure_spider2_snow_neo4j,
     load_spider2_snow_cases,
     parse_csv_arg,
     set_run_id,
     sync_spider2_snow_pontis_config,
 )
+from scripts.spider.result_match import evaluate_spider_result_directory
 from utils.context_dump import reset_context_dump_meta, set_context_dump_meta
 
 
@@ -416,6 +418,38 @@ def _run_official_evaluation(*, max_workers: int, timeout: int) -> dict:
     return result
 
 
+def _run_business_result_evaluation(instance_ids: set[str]) -> dict:
+    predicted_result_dir = Path(str(get_results_dir() / "official_submission_sql") + "_csv")
+    gold_root = SPIDER2_SNOW_EVAL_SUITE / "gold"
+    rows = evaluate_spider_result_directory(
+        predicted_result_dir=predicted_result_dir,
+        gold_result_dir=gold_root / "exec_result",
+        eval_config_path=gold_root / "spider2snow_eval.jsonl",
+        instance_ids=instance_ids,
+    )
+    output_dir = get_results_dir() / "business_evaluation"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    results_path = output_dir / "results.jsonl"
+    results_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    correct = sum(1 for row in rows if row.get("business_correct"))
+    summary = {
+        "metric": "business_correct",
+        "total": len(rows),
+        "correct": correct,
+        "accuracy": correct / len(rows) if rows else 0.0,
+        "results": str(results_path),
+    }
+    summary_path = output_dir / "results.json"
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return {**summary, "summary": str(summary_path)}
+
+
 def _run_database(db_id: str, cases: list[SpiderSnowCase], *, workers: int) -> list[dict]:
     print(f"[{db_id}] {len(cases)} cases - start")
     rows: list[dict] = []
@@ -462,6 +496,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", help="Comma-separated db_id filter.")
     parser.add_argument("--instances", help="Comma-separated Spider2-Snow instance_id filter.")
+    parser.add_argument(
+        "--dev-only",
+        "--gold-sql-only",
+        action="store_true",
+        dest="dev_only",
+        help="Only run Spider2-Snow cases that have local gold SQL files for correctness debugging.",
+    )
     parser.add_argument("--limit", type=int, help="Limit selected cases before running.")
     parser.add_argument("--workers", type=int, default=1, help="parallel cases per database")
     parser.add_argument("--db-workers", type=int, default=1, help="parallel databases")
@@ -484,11 +525,13 @@ def main() -> int:
     if args.run_id:
         set_run_id(args.run_id)
     config_path = sync_spider2_snow_pontis_config()
+    graph_config_path = ensure_spider2_snow_neo4j()
 
     cases = load_spider2_snow_cases(
         db=args.db,
         instances=parse_csv_arg(args.instances),
         limit=args.limit,
+        dev_only=args.dev_only,
     )
     if not cases:
         raise SystemExit("No Spider2-Snow cases selected.")
@@ -496,9 +539,12 @@ def main() -> int:
     grouped = group_cases_by_db(cases)
 
     print(f"Spider2-Snow benchmark run: {get_run_name()} ({get_run_id()})")
+    if args.dev_only:
+        print("Split: dev-only / gold-SQL subset")
     print(f"Cases: {len(cases)}, databases: {len(grouped)}")
     print(f"DB workers: {args.db_workers}, Case workers/db: {args.workers}")
     print(f"Pontis config: {config_path}")
+    print(f"Spider2-Snow Neo4j: {graph_config_path}")
 
     rows: list[dict] = []
     if args.db_workers <= 1:
@@ -525,6 +571,15 @@ def main() -> int:
             timeout=args.official_eval_timeout,
         )
         print(f"Official evaluation log: {eval_result['stdout_log']}")
+        business_result = _run_business_result_evaluation(
+            {row["instance_id"] for row in rows},
+        )
+        print(
+            "Business result evaluation: "
+            f"{business_result['correct']}/{business_result['total']} "
+            f"({business_result['accuracy'] * 100:.2f}%)"
+        )
+        print(f"Business evaluation summary: {business_result['summary']}")
     return 0
 
 

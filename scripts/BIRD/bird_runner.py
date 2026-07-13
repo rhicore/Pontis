@@ -19,7 +19,7 @@ from scripts.BIRD.benchmark_runtime import (
 )
 from scripts.BIRD.common import get_data_dir, get_db_base
 from scripts.BIRD.models import BirdCase, BirdRunResult, CandidateReport
-from scripts.BIRD.result_match import compare_execution_results
+from scripts.BIRD.result_match import compare_execution_results, result_order_is_significant
 from scripts.BIRD.hard_guard import (
     bird_sql_output_guard,
     format_bird_sql_output_guard_force_feedback,
@@ -170,9 +170,9 @@ class PontisBirdRunner:
         comparison = compare_execution_results(
             predicted_execution,
             golden_execution,
-            question=case.question,
+            ordered=result_order_is_significant(case.golden_sql),
         )
-        correct = comparison.strict_correct
+        correct = comparison.business_correct
         result = (
             "CORRECT" if correct
             else "PARSE_ERROR" if candidate.predicted_sql is None

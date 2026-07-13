@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Dict
 
 from storage.config import SourceConfig
+from storage.graph_policy import DEFAULT_GRAPH_POLICY_ENGINE
 from storage.neo4j import Neo4jGraph
 
 _STORE_LOCKS_GUARD = threading.Lock()
@@ -103,6 +104,7 @@ class Store:
 
     def publish_modules(self, modules: list, *, force: bool = False) -> None:
         """Execute selected source-module Cypher submissions."""
+        published_any = False
         for mod in modules:
             if not force and self._module_is_fresh(mod):
                 continue
@@ -115,6 +117,9 @@ class Store:
                 self.execute_cypher(statement.query, params=statement.params)
             self._stamp_project_nodes(mod)
             self._mark_module_published(mod)
+            published_any = True
+        if published_any:
+            DEFAULT_GRAPH_POLICY_ENGINE.reconcile(self, mode="light")
 
     def invalidate_modules(self, module_names: list[str] | None = None) -> None:
         """Invalidate query-time publish cache for this project."""

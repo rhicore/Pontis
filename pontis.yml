@@ -1,8 +1,13 @@
 # Neo4j graph routing.
 #
-# Community / local mode:
+# Community / local per-project mode:
 #   Use one Neo4j process per project. Each project gets a different bolt port
 #   and keeps database: neo4j.
+#
+# Community / local shared mode:
+#   Multiple logical projects can point to the same bolt port and keep
+#   database: neo4j. Pontis isolates them by the reserved project property.
+#   Spider2-Snow uses this mode.
 #
 # Enterprise / single-process mode:
 #   Point projects at the same uri and set graph.database to different database
@@ -1578,6 +1583,7 @@ projects:
   # END Spider2 projects
 # BEGIN Spider2-Snow projects
   # Generated Spider2-Snow filesystem projects.
+  # All Spider2-Snow projects share bolt://127.0.0.1:7900 and are isolated by the reserved project property.
   # Run scripts/spider/extract.py first to prepare each source path.
   ADVENTUREWORKS:
     source:
@@ -1596,7 +1602,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7901
+      uri: bolt://127.0.0.1:7900
   AMAZON_VENDOR_ANALYTICS__SAMPLE_DATASET:
     source:
       type: spider2_snow
@@ -1605,7 +1611,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7902
+      uri: bolt://127.0.0.1:7900
   AUSTIN:
     source:
       type: spider2_snow
@@ -1614,7 +1620,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7903
+      uri: bolt://127.0.0.1:7900
   BANK_SALES_TRADING:
     source:
       type: spider2_snow
@@ -1623,7 +1629,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7904
+      uri: bolt://127.0.0.1:7900
   BASEBALL:
     source:
       type: spider2_snow
@@ -1632,7 +1638,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7905
+      uri: bolt://127.0.0.1:7900
   BBC:
     source:
       type: spider2_snow
@@ -1641,7 +1647,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7906
+      uri: bolt://127.0.0.1:7900
   BLS:
     source:
       type: spider2_snow
@@ -1650,7 +1656,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7907
+      uri: bolt://127.0.0.1:7900
   BOWLINGLEAGUE:
     source:
       type: spider2_snow
@@ -1659,7 +1665,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7908
+      uri: bolt://127.0.0.1:7900
   BRAZE_USER_EVENT_DEMO_DATASET:
     source:
       type: spider2_snow
@@ -1668,7 +1674,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7909
+      uri: bolt://127.0.0.1:7900
   BRAZILIAN_E_COMMERCE:
     source:
       type: spider2_snow
@@ -1677,7 +1683,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7910
+      uri: bolt://127.0.0.1:7900
   CALIFORNIA_TRAFFIC_COLLISION:
     source:
       type: spider2_snow
@@ -1686,7 +1692,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7911
+      uri: bolt://127.0.0.1:7900
   CENSUS_BUREAU_ACS_1:
     source:
       type: spider2_snow
@@ -1695,7 +1701,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7912
+      uri: bolt://127.0.0.1:7900
   CENSUS_BUREAU_ACS_2:
     source:
       type: spider2_snow
@@ -1704,7 +1710,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7913
+      uri: bolt://127.0.0.1:7900
   CENSUS_BUREAU_INTERNATIONAL:
     source:
       type: spider2_snow
@@ -1713,7 +1719,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7914
+      uri: bolt://127.0.0.1:7900
   CENSUS_BUREAU_USA:
     source:
       type: spider2_snow
@@ -1722,7 +1728,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7915
+      uri: bolt://127.0.0.1:7900
   CENSUS_GALAXY__AIML_MODEL_DATA_ENRICHMENT_SAMPLE:
     source:
       type: spider2_snow
@@ -1731,7 +1737,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7916
+      uri: bolt://127.0.0.1:7900
   CENSUS_GALAXY__ZIP_CODE_TO_BLOCK_GROUP_SAMPLE:
     source:
       type: spider2_snow
@@ -1740,7 +1746,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7917
+      uri: bolt://127.0.0.1:7900
   CHICAGO:
     source:
       type: spider2_snow
@@ -1749,7 +1755,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7918
+      uri: bolt://127.0.0.1:7900
   CHINOOK:
     source:
       type: spider2_snow
@@ -1758,7 +1764,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7919
+      uri: bolt://127.0.0.1:7900
   CITY_LEGISLATION:
     source:
       type: spider2_snow
@@ -1767,7 +1773,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7920
+      uri: bolt://127.0.0.1:7900
   CMS_DATA:
     source:
       type: spider2_snow
@@ -1776,7 +1782,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7921
+      uri: bolt://127.0.0.1:7900
   COMPLEX_ORACLE:
     source:
       type: spider2_snow
@@ -1785,7 +1791,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7922
+      uri: bolt://127.0.0.1:7900
   COVID19_JHU_WORLD_BANK:
     source:
       type: spider2_snow
@@ -1794,7 +1800,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7923
+      uri: bolt://127.0.0.1:7900
   COVID19_NYT:
     source:
       type: spider2_snow
@@ -1803,7 +1809,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7924
+      uri: bolt://127.0.0.1:7900
   COVID19_OPEN_DATA:
     source:
       type: spider2_snow
@@ -1812,7 +1818,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7925
+      uri: bolt://127.0.0.1:7900
   COVID19_OPEN_WORLD_BANK:
     source:
       type: spider2_snow
@@ -1821,7 +1827,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7926
+      uri: bolt://127.0.0.1:7900
   COVID19_SYMPTOM_SEARCH:
     source:
       type: spider2_snow
@@ -1830,7 +1836,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7927
+      uri: bolt://127.0.0.1:7900
   COVID19_USA:
     source:
       type: spider2_snow
@@ -1839,7 +1845,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7928
+      uri: bolt://127.0.0.1:7900
   CPTAC_PDC:
     source:
       type: spider2_snow
@@ -1848,7 +1854,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7929
+      uri: bolt://127.0.0.1:7900
   CRYPTO:
     source:
       type: spider2_snow
@@ -1857,7 +1863,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7930
+      uri: bolt://127.0.0.1:7900
   CYMBAL_INVESTMENTS:
     source:
       type: spider2_snow
@@ -1866,7 +1872,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7931
+      uri: bolt://127.0.0.1:7900
   DB_IMDB:
     source:
       type: spider2_snow
@@ -1875,7 +1881,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7932
+      uri: bolt://127.0.0.1:7900
   DEATH:
     source:
       type: spider2_snow
@@ -1884,7 +1890,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7933
+      uri: bolt://127.0.0.1:7900
   DELIVERY_CENTER:
     source:
       type: spider2_snow
@@ -1893,7 +1899,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7934
+      uri: bolt://127.0.0.1:7900
   DEPS_DEV_V1:
     source:
       type: spider2_snow
@@ -1902,7 +1908,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7935
+      uri: bolt://127.0.0.1:7900
   DIMENSIONS_AI_COVID19:
     source:
       type: spider2_snow
@@ -1911,7 +1917,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7936
+      uri: bolt://127.0.0.1:7900
   EBI_CHEMBL:
     source:
       type: spider2_snow
@@ -1920,7 +1926,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7937
+      uri: bolt://127.0.0.1:7900
   ECLIPSE_MEGAMOVIE:
     source:
       type: spider2_snow
@@ -1929,7 +1935,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7938
+      uri: bolt://127.0.0.1:7900
   ECOMMERCE:
     source:
       type: spider2_snow
@@ -1938,7 +1944,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7939
+      uri: bolt://127.0.0.1:7900
   EDUCATION_BUSINESS:
     source:
       type: spider2_snow
@@ -1947,7 +1953,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7940
+      uri: bolt://127.0.0.1:7900
   ELECTRONIC_SALES:
     source:
       type: spider2_snow
@@ -1956,7 +1962,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7941
+      uri: bolt://127.0.0.1:7900
   ENTERTAINMENTAGENCY:
     source:
       type: spider2_snow
@@ -1965,7 +1971,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7942
+      uri: bolt://127.0.0.1:7900
   EPA_HISTORICAL_AIR_QUALITY:
     source:
       type: spider2_snow
@@ -1974,7 +1980,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7943
+      uri: bolt://127.0.0.1:7900
   ETHEREUM_BLOCKCHAIN:
     source:
       type: spider2_snow
@@ -1983,7 +1989,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7944
+      uri: bolt://127.0.0.1:7900
   EU_SOCCER:
     source:
       type: spider2_snow
@@ -1992,7 +1998,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7945
+      uri: bolt://127.0.0.1:7900
   E_COMMERCE:
     source:
       type: spider2_snow
@@ -2001,7 +2007,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7946
+      uri: bolt://127.0.0.1:7900
   F1:
     source:
       type: spider2_snow
@@ -2010,7 +2016,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7947
+      uri: bolt://127.0.0.1:7900
   FDA:
     source:
       type: spider2_snow
@@ -2019,7 +2025,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7948
+      uri: bolt://127.0.0.1:7900
   FEC:
     source:
       type: spider2_snow
@@ -2028,7 +2034,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7949
+      uri: bolt://127.0.0.1:7900
   FHIR_SYNTHEA:
     source:
       type: spider2_snow
@@ -2037,7 +2043,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7950
+      uri: bolt://127.0.0.1:7900
   FINANCE__ECONOMICS:
     source:
       type: spider2_snow
@@ -2046,7 +2052,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7951
+      uri: bolt://127.0.0.1:7900
   FIREBASE:
     source:
       type: spider2_snow
@@ -2055,7 +2061,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7952
+      uri: bolt://127.0.0.1:7900
   GA360:
     source:
       type: spider2_snow
@@ -2064,7 +2070,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7953
+      uri: bolt://127.0.0.1:7900
   GA4:
     source:
       type: spider2_snow
@@ -2073,7 +2079,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7954
+      uri: bolt://127.0.0.1:7900
   GBIF:
     source:
       type: spider2_snow
@@ -2082,7 +2088,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7955
+      uri: bolt://127.0.0.1:7900
   GENOMICS_CANNABIS:
     source:
       type: spider2_snow
@@ -2091,7 +2097,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7956
+      uri: bolt://127.0.0.1:7900
   GEO_OPENSTREETMAP:
     source:
       type: spider2_snow
@@ -2100,7 +2106,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7957
+      uri: bolt://127.0.0.1:7900
   GEO_OPENSTREETMAP_BOUNDARIES:
     source:
       type: spider2_snow
@@ -2109,7 +2115,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7958
+      uri: bolt://127.0.0.1:7900
   GEO_OPENSTREETMAP_CENSUS_PLACES:
     source:
       type: spider2_snow
@@ -2118,7 +2124,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7959
+      uri: bolt://127.0.0.1:7900
   GEO_OPENSTREETMAP_WORLDPOP:
     source:
       type: spider2_snow
@@ -2127,7 +2133,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7960
+      uri: bolt://127.0.0.1:7900
   GHCN_D:
     source:
       type: spider2_snow
@@ -2136,7 +2142,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7961
+      uri: bolt://127.0.0.1:7900
   GITHUB_REPOS:
     source:
       type: spider2_snow
@@ -2145,7 +2151,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7962
+      uri: bolt://127.0.0.1:7900
   GITHUB_REPOS_DATE:
     source:
       type: spider2_snow
@@ -2154,7 +2160,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7963
+      uri: bolt://127.0.0.1:7900
   GLOBAL_GOVERNMENT:
     source:
       type: spider2_snow
@@ -2163,7 +2169,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7964
+      uri: bolt://127.0.0.1:7900
   GLOBAL_WEATHER__CLIMATE_DATA_FOR_BI:
     source:
       type: spider2_snow
@@ -2172,7 +2178,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7965
+      uri: bolt://127.0.0.1:7900
   GNOMAD:
     source:
       type: spider2_snow
@@ -2181,7 +2187,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7966
+      uri: bolt://127.0.0.1:7900
   GOOGLE_ADS:
     source:
       type: spider2_snow
@@ -2190,7 +2196,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7967
+      uri: bolt://127.0.0.1:7900
   GOOGLE_DEI:
     source:
       type: spider2_snow
@@ -2199,7 +2205,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7968
+      uri: bolt://127.0.0.1:7900
   GOOGLE_TRENDS:
     source:
       type: spider2_snow
@@ -2208,7 +2214,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7969
+      uri: bolt://127.0.0.1:7900
   GOOG_BLOCKCHAIN:
     source:
       type: spider2_snow
@@ -2217,7 +2223,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7970
+      uri: bolt://127.0.0.1:7900
   HACKER_NEWS:
     source:
       type: spider2_snow
@@ -2226,7 +2232,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7971
+      uri: bolt://127.0.0.1:7900
   HTAN_1:
     source:
       type: spider2_snow
@@ -2235,7 +2241,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7972
+      uri: bolt://127.0.0.1:7900
   HTAN_2:
     source:
       type: spider2_snow
@@ -2244,7 +2250,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7973
+      uri: bolt://127.0.0.1:7900
   HUMAN_GENOME_VARIANTS:
     source:
       type: spider2_snow
@@ -2253,7 +2259,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7974
+      uri: bolt://127.0.0.1:7900
   IDC:
     source:
       type: spider2_snow
@@ -2262,7 +2268,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7975
+      uri: bolt://127.0.0.1:7900
   IMDB_MOVIES:
     source:
       type: spider2_snow
@@ -2271,7 +2277,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7976
+      uri: bolt://127.0.0.1:7900
   IOWA_LIQUOR_SALES:
     source:
       type: spider2_snow
@@ -2280,7 +2286,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7977
+      uri: bolt://127.0.0.1:7900
   IOWA_LIQUOR_SALES_PLUS:
     source:
       type: spider2_snow
@@ -2289,7 +2295,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7978
+      uri: bolt://127.0.0.1:7900
   IPL:
     source:
       type: spider2_snow
@@ -2298,7 +2304,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7979
+      uri: bolt://127.0.0.1:7900
   IRS_990:
     source:
       type: spider2_snow
@@ -2307,7 +2313,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7980
+      uri: bolt://127.0.0.1:7900
   LIBRARIES_IO:
     source:
       type: spider2_snow
@@ -2316,7 +2322,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7981
+      uri: bolt://127.0.0.1:7900
   LOG:
     source:
       type: spider2_snow
@@ -2325,7 +2331,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7982
+      uri: bolt://127.0.0.1:7900
   LONDON:
     source:
       type: spider2_snow
@@ -2334,7 +2340,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7983
+      uri: bolt://127.0.0.1:7900
   META_KAGGLE:
     source:
       type: spider2_snow
@@ -2343,7 +2349,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7984
+      uri: bolt://127.0.0.1:7900
   MITELMAN:
     source:
       type: spider2_snow
@@ -2352,7 +2358,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7985
+      uri: bolt://127.0.0.1:7900
   MLB:
     source:
       type: spider2_snow
@@ -2361,7 +2367,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7986
+      uri: bolt://127.0.0.1:7900
   MODERN_DATA:
     source:
       type: spider2_snow
@@ -2370,7 +2376,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7987
+      uri: bolt://127.0.0.1:7900
   MUSIC:
     source:
       type: spider2_snow
@@ -2379,7 +2385,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7988
+      uri: bolt://127.0.0.1:7900
   NCAA_BASKETBALL:
     source:
       type: spider2_snow
@@ -2388,7 +2394,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7989
+      uri: bolt://127.0.0.1:7900
   NCAA_INSIGHTS:
     source:
       type: spider2_snow
@@ -2397,7 +2403,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7990
+      uri: bolt://127.0.0.1:7900
   NETHERLANDS_OPEN_MAP_DATA:
     source:
       type: spider2_snow
@@ -2406,7 +2412,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7991
+      uri: bolt://127.0.0.1:7900
   NEW_YORK:
     source:
       type: spider2_snow
@@ -2415,7 +2421,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7992
+      uri: bolt://127.0.0.1:7900
   NEW_YORK_CITIBIKE_1:
     source:
       type: spider2_snow
@@ -2424,7 +2430,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7993
+      uri: bolt://127.0.0.1:7900
   NEW_YORK_GEO:
     source:
       type: spider2_snow
@@ -2433,7 +2439,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7994
+      uri: bolt://127.0.0.1:7900
   NEW_YORK_GHCN:
     source:
       type: spider2_snow
@@ -2442,7 +2448,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7995
+      uri: bolt://127.0.0.1:7900
   NEW_YORK_NOAA:
     source:
       type: spider2_snow
@@ -2451,7 +2457,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7996
+      uri: bolt://127.0.0.1:7900
   NEW_YORK_PLUS:
     source:
       type: spider2_snow
@@ -2460,7 +2466,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7997
+      uri: bolt://127.0.0.1:7900
   NHTSA_TRAFFIC_FATALITIES:
     source:
       type: spider2_snow
@@ -2469,7 +2475,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7998
+      uri: bolt://127.0.0.1:7900
   NHTSA_TRAFFIC_FATALITIES_PLUS:
     source:
       type: spider2_snow
@@ -2478,7 +2484,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:7999
+      uri: bolt://127.0.0.1:7900
   NOAA_DATA:
     source:
       type: spider2_snow
@@ -2487,7 +2493,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8000
+      uri: bolt://127.0.0.1:7900
   NOAA_DATA_PLUS:
     source:
       type: spider2_snow
@@ -2496,7 +2502,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8001
+      uri: bolt://127.0.0.1:7900
   NOAA_GLOBAL_FORECAST_SYSTEM:
     source:
       type: spider2_snow
@@ -2505,7 +2511,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8002
+      uri: bolt://127.0.0.1:7900
   NOAA_GSOD:
     source:
       type: spider2_snow
@@ -2514,7 +2520,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8003
+      uri: bolt://127.0.0.1:7900
   NOAA_PORTS:
     source:
       type: spider2_snow
@@ -2523,7 +2529,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8004
+      uri: bolt://127.0.0.1:7900
   NORTHWIND:
     source:
       type: spider2_snow
@@ -2532,7 +2538,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8005
+      uri: bolt://127.0.0.1:7900
   NPPES:
     source:
       type: spider2_snow
@@ -2541,7 +2547,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8006
+      uri: bolt://127.0.0.1:7900
   OPENAQ:
     source:
       type: spider2_snow
@@ -2550,7 +2556,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8007
+      uri: bolt://127.0.0.1:7900
   OPEN_IMAGES:
     source:
       type: spider2_snow
@@ -2559,7 +2565,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8008
+      uri: bolt://127.0.0.1:7900
   OPEN_TARGETS_GENETICS_1:
     source:
       type: spider2_snow
@@ -2568,7 +2574,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8009
+      uri: bolt://127.0.0.1:7900
   OPEN_TARGETS_GENETICS_2:
     source:
       type: spider2_snow
@@ -2577,7 +2583,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8010
+      uri: bolt://127.0.0.1:7900
   OPEN_TARGETS_PLATFORM_1:
     source:
       type: spider2_snow
@@ -2586,7 +2592,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8011
+      uri: bolt://127.0.0.1:7900
   OPEN_TARGETS_PLATFORM_2:
     source:
       type: spider2_snow
@@ -2595,7 +2601,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8012
+      uri: bolt://127.0.0.1:7900
   ORACLE_SQL:
     source:
       type: spider2_snow
@@ -2604,7 +2610,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8013
+      uri: bolt://127.0.0.1:7900
   PAGILA:
     source:
       type: spider2_snow
@@ -2613,7 +2619,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8014
+      uri: bolt://127.0.0.1:7900
   PANCANCER_ATLAS_1:
     source:
       type: spider2_snow
@@ -2622,7 +2628,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8015
+      uri: bolt://127.0.0.1:7900
   PANCANCER_ATLAS_2:
     source:
       type: spider2_snow
@@ -2631,7 +2637,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8016
+      uri: bolt://127.0.0.1:7900
   PATENTS:
     source:
       type: spider2_snow
@@ -2640,7 +2646,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8017
+      uri: bolt://127.0.0.1:7900
   PATENTSVIEW:
     source:
       type: spider2_snow
@@ -2649,7 +2655,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8018
+      uri: bolt://127.0.0.1:7900
   PATENTS_GOOGLE:
     source:
       type: spider2_snow
@@ -2658,7 +2664,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8019
+      uri: bolt://127.0.0.1:7900
   PATENTS_USPTO:
     source:
       type: spider2_snow
@@ -2667,7 +2673,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8020
+      uri: bolt://127.0.0.1:7900
   PYPI:
     source:
       type: spider2_snow
@@ -2676,7 +2682,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8021
+      uri: bolt://127.0.0.1:7900
   SAN_FRANCISCO:
     source:
       type: spider2_snow
@@ -2685,7 +2691,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8022
+      uri: bolt://127.0.0.1:7900
   SAN_FRANCISCO_PLUS:
     source:
       type: spider2_snow
@@ -2694,7 +2700,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8023
+      uri: bolt://127.0.0.1:7900
   SCHOOL_SCHEDULING:
     source:
       type: spider2_snow
@@ -2703,7 +2709,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8024
+      uri: bolt://127.0.0.1:7900
   SDOH:
     source:
       type: spider2_snow
@@ -2712,7 +2718,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8025
+      uri: bolt://127.0.0.1:7900
   SEC_QUARTERLY_FINANCIALS:
     source:
       type: spider2_snow
@@ -2721,7 +2727,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8026
+      uri: bolt://127.0.0.1:7900
   SQLITE_SAKILA:
     source:
       type: spider2_snow
@@ -2730,7 +2736,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8027
+      uri: bolt://127.0.0.1:7900
   STACKING:
     source:
       type: spider2_snow
@@ -2739,7 +2745,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8028
+      uri: bolt://127.0.0.1:7900
   STACKOVERFLOW:
     source:
       type: spider2_snow
@@ -2748,7 +2754,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8029
+      uri: bolt://127.0.0.1:7900
   STACKOVERFLOW_PLUS:
     source:
       type: spider2_snow
@@ -2757,7 +2763,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8030
+      uri: bolt://127.0.0.1:7900
   SUNROOF_SOLAR:
     source:
       type: spider2_snow
@@ -2766,7 +2772,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8031
+      uri: bolt://127.0.0.1:7900
   TARGETOME_REACTOME:
     source:
       type: spider2_snow
@@ -2775,7 +2781,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8032
+      uri: bolt://127.0.0.1:7900
   TCGA:
     source:
       type: spider2_snow
@@ -2784,7 +2790,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8033
+      uri: bolt://127.0.0.1:7900
   TCGA_BIOCLIN_V0:
     source:
       type: spider2_snow
@@ -2793,7 +2799,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8034
+      uri: bolt://127.0.0.1:7900
   TCGA_HG19_DATA_V0:
     source:
       type: spider2_snow
@@ -2802,7 +2808,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8035
+      uri: bolt://127.0.0.1:7900
   TCGA_HG38_DATA_V0:
     source:
       type: spider2_snow
@@ -2811,7 +2817,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8036
+      uri: bolt://127.0.0.1:7900
   TCGA_MITELMAN:
     source:
       type: spider2_snow
@@ -2820,7 +2826,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8037
+      uri: bolt://127.0.0.1:7900
   THELOOK_ECOMMERCE:
     source:
       type: spider2_snow
@@ -2829,7 +2835,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8038
+      uri: bolt://127.0.0.1:7900
   THE_MET:
     source:
       type: spider2_snow
@@ -2838,7 +2844,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8039
+      uri: bolt://127.0.0.1:7900
   USA_NAMES:
     source:
       type: spider2_snow
@@ -2847,7 +2853,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8040
+      uri: bolt://127.0.0.1:7900
   USDA_NASS_AGRICULTURE:
     source:
       type: spider2_snow
@@ -2856,7 +2862,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8041
+      uri: bolt://127.0.0.1:7900
   USFS_FIA:
     source:
       type: spider2_snow
@@ -2865,7 +2871,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8042
+      uri: bolt://127.0.0.1:7900
   US_ADDRESSES__POI:
     source:
       type: spider2_snow
@@ -2874,7 +2880,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8043
+      uri: bolt://127.0.0.1:7900
   US_REAL_ESTATE:
     source:
       type: spider2_snow
@@ -2883,7 +2889,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8044
+      uri: bolt://127.0.0.1:7900
   WEATHER__ENVIRONMENT:
     source:
       type: spider2_snow
@@ -2892,7 +2898,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8045
+      uri: bolt://127.0.0.1:7900
   WIDE_WORLD_IMPORTERS:
     source:
       type: spider2_snow
@@ -2901,7 +2907,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8046
+      uri: bolt://127.0.0.1:7900
   WORD_VECTORS_US:
     source:
       type: spider2_snow
@@ -2910,7 +2916,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8047
+      uri: bolt://127.0.0.1:7900
   WORLD_BANK:
     source:
       type: spider2_snow
@@ -2919,7 +2925,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8048
+      uri: bolt://127.0.0.1:7900
   WWE:
     source:
       type: spider2_snow
@@ -2928,7 +2934,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8049
+      uri: bolt://127.0.0.1:7900
   YES_ENERGY__SAMPLE_DATA:
     source:
       type: spider2_snow
@@ -2937,7 +2943,7 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8050
+      uri: bolt://127.0.0.1:7900
   _1000_GENOMES:
     source:
       type: spider2_snow
@@ -2946,5 +2952,5 @@ projects:
       credential_path: ../data/Spider2/spider2-snow/evaluation_suite/snowflake_credential.json
     graph:
       <<: *neo4j_graph
-      uri: bolt://127.0.0.1:8051
+      uri: bolt://127.0.0.1:7900
 # END Spider2-Snow projects

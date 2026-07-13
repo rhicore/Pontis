@@ -636,7 +636,7 @@ topic_family FEC.candidate_committee_linkages:   11 physical tables, 1 logical u
    TCGA_MITELMAN: 176 tables, logical units 122 -> 76
    ```
 
-   全 152 个库的逐库审计见 `docs/spider2_table_group_all_db_audit.md`。当前剩余最大 outlier 是 `EBI_CHEMBL`、`HTAN_1`、`HTAN_2`、`CPTAC_PDC`、`TCGA_MITELMAN`；其中大部分剩余负担不是物理分片，而是 source/topic/data-product 层级，应该由 `db_topic_group` 或 explorer 继续压缩。
+   全 152 个库的逐库审计见 `docs/spider_problem/spider2_table_group_all_db_audit.md`。当前剩余最大 outlier 是 `EBI_CHEMBL`、`HTAN_1`、`HTAN_2`、`CPTAC_PDC`、`TCGA_MITELMAN`；其中大部分剩余负担不是物理分片，而是 source/topic/data-product 层级，应该由 `db_topic_group` 或 explorer 继续压缩。
 
 ## 当前限制和下一步
 

@@ -26,10 +26,38 @@ from scripts.preprocess_engine import (
 logger = logging.getLogger(__name__)
 
 STATIC_PIPELINE = [
-    "db_column_stats_approx",
+    "db_column_stats",
     "db_fk_validate",
     "db_column_overlap",
 ]
+
+# Preserve the pre-storage-refactor BIRD behavior: compare every physical
+# column pair with exact SQLite value overlap, and build name-token overlap
+# evidence separately. Spider2 supplies its own, more selective module kwargs.
+BIRD_OVERLAP_KWARGS = {
+    "value_match_method": "sql",
+    "filter_pipeline": [
+        {
+            "name": "value_overlap",
+            "metric": "overlap_coefficient",
+            "threshold": 0,
+        },
+    ],
+    "value_overlap_enabled": True,
+    "name_overlap_enabled": True,
+    "same_schema_only": False,
+    "skip_same_table_group": False,
+    "same_table_overlap_enabled": True,
+    "same_table_group_representative_only": False,
+    "domain_filter_enabled": False,
+    "shape_filter_enabled": False,
+    "key_like_only": False,
+    "require_name_token_overlap": False,
+    "require_repeated_key_name": False,
+    "column_domain_enabled": False,
+    "pattern_table_domain_enabled": False,
+    "max_value_candidate_pairs": 1_000_000,
+}
 
 OFFICIAL_DESCRIPTION_PIPELINE = [
     "bird_official_description_extract",
@@ -120,6 +148,7 @@ def extract_one(
                 options=RunOptions(
                     continue_on_error=False,
                     collect_timing=True,
+                    module_kwargs={"db_column_overlap": BIRD_OVERLAP_KWARGS},
                 ),
             )
             result["static"] = _sum_timings(static_timings, STATIC_PIPELINE)
@@ -344,7 +373,11 @@ def main() -> None:
                     selected_modules,
                     workspace,
                     config=config,
-                    options=RunOptions(continue_on_error=False, collect_timing=True),
+                    options=RunOptions(
+                        continue_on_error=False,
+                        collect_timing=True,
+                        module_kwargs={"db_column_overlap": BIRD_OVERLAP_KWARGS},
+                    ),
                 )
                 result["schema_prepare"] = timings.get("agent_schema_prepare", 0.0)
                 result["agent"] = result["schema_prepare"]

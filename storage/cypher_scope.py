@@ -44,6 +44,10 @@ _WHERE_PROJECT_IN_PARAM_RE = re.compile(
     re.IGNORECASE,
 )
 _STRING_LITERAL_RE = re.compile(r"""(['"])(.*?)\1""")
+_SCHEMA_COMMAND_RE = re.compile(
+    r"^\s*(?:CREATE|DROP)\s+(?:(?:VECTOR|FULLTEXT|TEXT|LOOKUP|RANGE|POINT)\s+)?(?:INDEX|CONSTRAINT)\b",
+    re.IGNORECASE,
+)
 
 
 def scope_user_cypher(query: str, params: dict[str, Any] | None, project: str) -> tuple[str, dict[str, Any]]:
@@ -53,18 +57,33 @@ def scope_user_cypher(query: str, params: dict[str, Any] | None, project: str) -
     Source modules still publish with their own internal Cypher.
     """
     validate_user_cypher(query, params)
-    if not project:
+    # Neo4j indexes and constraints are schema-wide objects. Their FOR node
+    # pattern accepts labels, not per-node property maps, so project scoping is
+    # neither valid syntax nor meaningful here.
+    if not project or _SCHEMA_COMMAND_RE.match(query):
         return query, dict(params or {})
 
     scoped_params = dict(params or {})
     project_param = _fresh_param(scoped_params)
     scoped_params[project_param] = project
+    bound_variables: set[str] = set()
+    previous_match_end = 0
 
     def replace(match: re.Match) -> str:
+        nonlocal previous_match_end
         original = match.group(0)
         props = match.group(3) or ""
 
         var = match.group(1) or ""
+        between = query[previous_match_end:match.start()]
+        previous_match_end = match.end()
+        if re.search(r"\bUNION\b", between, flags=re.IGNORECASE):
+            bound_variables.clear()
+        if var and var in bound_variables:
+            return original
+        if var:
+            bound_variables.add(var)
+
         labels = match.group(2) or ""
         head = f"{var}{labels}"
         project_prop = f"project: ${project_param}"

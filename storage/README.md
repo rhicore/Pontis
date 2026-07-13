@@ -33,6 +33,10 @@ logical project selected by `Workspace`:
   scopes external Cypher to the active project and storage tags published nodes
   with the reserved `project` property.
 
+Spider2-Snow uses shared Neo4j Community mode: all database projects point at
+one local Bolt endpoint and are isolated by the reserved `project` property.
+BIRD development projects still use one local Neo4j process per project.
+
 When a `Workspace` is created with multiple `active_projects`, those projects
 form the maximum visible domain. External Cypher may still filter on
 `project`, but the selected projects are intersected with that active domain;

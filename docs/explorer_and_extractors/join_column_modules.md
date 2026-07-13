@@ -162,11 +162,11 @@ llm_api_key: "your-api-key"
 ## 依赖关系
 
 ```
-db_column_stats_approx ──► db_column_overlap ──► db_column_rel
+db_column_stats ──► db_column_overlap ──► db_column_rel
           │                                          │
           └──────── 提供近似 cardinality ──────────────┘
                      提供 overlap stats
 ```
 
-- `db_column_overlap` 依赖 `db_column_stats_approx`（需要近似 cardinality 数据）
+- `db_column_overlap` 依赖 `db_column_stats`（需要 cardinality/profile 数据）
 - `db_column_rel` 依赖 `db_column_overlap`（读取.overlap文件）

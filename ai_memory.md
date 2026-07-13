@@ -71,6 +71,7 @@ Entity-local metadata only:
 | `col` | `name`, `ordinal_position`, `data_type`, `official_column_description`, `sample`, `not_null`, `default_value` |
 | `fk` | `name`, `source_columns`, `target_table`, `target_columns`, `constraint_name`, `brief` |
 | `table_group` | `family`, `member_count`, `representative_members`, `common_columns`, `variable_columns`, `consistency`, `cognitive_shape`, `agent_usage_hint`, `schema_reading_strategy` |
+| `column_group` | `family`, `member_count`, `representative_members`, `data_types`, `consistency`, `pattern_types`, `agent_usage_hint` |
 
 Official file field mapping:
 
@@ -114,17 +115,22 @@ explorer modules in order, instead of maintaining a separate explorer script.
    This creates an independent `table_group` layer for date/version/region/
    chromosome/shard families. It must not replace or delete official
    `schema -> table` edges.
-3. Explore semantic topics with `agent_topic_group`.
+3. Extract deterministic column groups with `db_column_group`.
+   This creates an independent `column_group` layer inside each table for
+   high-confidence name-pattern families such as time-expanded or numbered
+   repeated columns. It must not replace or delete official `table -> col`
+   edges.
+4. Explore semantic topics with `agent_topic_group`.
    This is an agent/explorer step, not a deterministic extractor. It creates
    `topic` nodes as a semantic navigation layer over schemas, table groups, and
    standalone tables.
-4. Prepare compressed navigation details with `agent_spider_navigation_prepare`.
+5. Prepare compressed navigation details with `agent_spider_navigation_prepare`.
    Required `brief/detail` targets are only `schema`, `topic`, `table_group`,
    and standalone `table`. Tables already covered by a `table_group` and all
    columns are evidence, not completion targets.
-5. Write `schema_landscape` after topic/table-group exploration.
+6. Write `schema_landscape` after topic/table-group exploration.
    This deterministic node summarizes the database-level navigation entrypoint.
-6. Run `semantic_embedding` after detail-bearing navigation nodes exist.
+7. Run `semantic_embedding` after detail-bearing navigation nodes exist.
 
 Question-level external Markdown should be supplied at solving time for the
 specific instance that references it. It should not be pre-extracted into the
@@ -168,9 +174,44 @@ an explicitly dataset-specific importer with a dataset prefix.
 
 Current handle-backed examples:
 
-- `db_column_stats_approx`: discovers `db/table/view/col` from KG and profiles
+- `db_column_stats`: discovers `db/table/view/col` from KG and profiles
   columns through `_db_connect`.
 - `db_fk_validate`: discovers `fk` from KG and validates joins through
   `_db_connect`.
 - `csv_column_stats` / `json_pattern`: resolve `file` entities and read content
   through `_file_open`.
+
+## Storage graph policy layer
+
+Graph consistency rules that can be derived from the KG itself belong in
+`storage/graph_policy.py`, not in individual extractor or explorer modules.
+This layer is responsible for automatic derived labels and hard invariants
+after graph writes.
+
+Current derived labels:
+
+- A `table` connected to a `table_group` receives `:grouped`; otherwise it
+  receives `:standalone`.
+- A `col` connected to a `column_group` receives `:grouped`; otherwise it
+  receives `:standalone`.
+- The labels are entity-local. Query them with the primary entity label, such
+  as `table:grouped`, `table:standalone`, `col:grouped`, or `col:standalone`.
+
+Current hard invariants:
+
+- A `table` must not have both `:grouped` and `:standalone`.
+- A `col` must not have both `:grouped` and `:standalone`.
+- A `col` must connect to exactly one structural parent among `table`, `view`,
+  `csv_table`, and `csv`.
+- A `column_group` must connect to exactly one structural parent, and its
+  member columns must share one structural parent.
+
+Rationale:
+
+- The agent-facing tool layer should be able to navigate by node-edge topology,
+  labels, and names without depending on relationship type syntax.
+- Labels such as `:grouped` and `:standalone` are derived views of graph
+  topology. They should be maintained automatically by storage policy instead
+  of manually written by each extractor.
+- New automatic labels or graph constraints should be added as new policy rule
+  classes and registered in the default policy lists.

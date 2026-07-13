@@ -84,7 +84,7 @@ def _selected_correct(result: BirdRunResult, eval_mode: str) -> bool:
     return result.strict_correct
 
 
-def result_to_row(result: BirdRunResult, elapsed: float, *, eval_mode: str = "strict") -> dict:
+def result_to_row(result: BirdRunResult, elapsed: float, *, eval_mode: str = "business") -> dict:
     case = result.case
     efficiency = dict(result.candidate.efficiency or {})
     selected_correct = _selected_correct(result, eval_mode)
@@ -104,6 +104,7 @@ def result_to_row(result: BirdRunResult, elapsed: float, *, eval_mode: str = "st
         "correct": selected_correct,
         "strict_correct": result.strict_correct,
         "business_correct": result.business_correct,
+        "business_match_type": result.match_type,
         "relaxed_match_type": result.match_type,
         "result": selected_result,
         "elapsed": round(elapsed, 1),
@@ -120,7 +121,7 @@ def apply_reflection_to_row(row: dict, reflection: dict | None) -> dict:
     return row
 
 
-def error_row(case: BirdCase, elapsed: float, error: BaseException, *, eval_mode: str = "strict") -> dict:
+def error_row(case: BirdCase, elapsed: float, error: BaseException, *, eval_mode: str = "business") -> dict:
     return {
         "run_id": get_run_id(),
         "eval_mode": eval_mode,
@@ -134,6 +135,7 @@ def error_row(case: BirdCase, elapsed: float, error: BaseException, *, eval_mode
         "correct": False,
         "strict_correct": False,
         "business_correct": False,
+        "business_match_type": "error",
         "relaxed_match_type": "error",
         "result": "ERROR",
         "elapsed": round(elapsed, 1),
@@ -232,7 +234,10 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]) -> None:
     pct = correct / total * 100 if total else 0.0
     strict = sum(1 for row in results if row.get("strict_correct"))
     business = sum(1 for row in results if row.get("business_correct"))
-    match_types = Counter(str(row.get("relaxed_match_type") or "unknown") for row in results)
+    match_types = Counter(
+        str(row.get("business_match_type") or row.get("relaxed_match_type") or "unknown")
+        for row in results
+    )
 
     by_diff: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     for row in results:
@@ -245,10 +250,10 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]) -> None:
         f"=== {db_id} Summary ===",
         f"Total: {correct}/{total} ({pct:.1f}%)",
         f"Strict: {strict}/{total} ({strict / total * 100 if total else 0.0:.1f}%)",
-        f"Business relaxed: {business}/{total} ({business / total * 100 if total else 0.0:.1f}%)",
+        f"Business correct: {business}/{total} ({business / total * 100 if total else 0.0:.1f}%)",
         format_efficiency_line(results),
         "",
-        "Relaxed match types:",
+        "Business match types:",
     ]
     for name, count in sorted(match_types.items()):
         lines.append(f"  {name}: {count}")
@@ -268,7 +273,7 @@ def write_db_summary(bench_dir: Path, db_id: str, results: list[dict]) -> None:
         lines.append(
             f"  Q{row['question_id']} [{row.get('difficulty', '?')}] {status} "
             f"{row.get('elapsed', 0):.1f}s attempts={row.get('attempts', 0)} "
-            f"match={row.get('relaxed_match_type', 'unknown')} "
+            f"match={row.get('business_match_type') or row.get('relaxed_match_type', 'unknown')} "
             f"rounds={row.get('llm_rounds', 0)} "
             f"cached_in={row.get('cached_input_tokens', 0)} "
             f"uncached_in={row.get('uncached_input_tokens', 0)} "
@@ -302,13 +307,16 @@ def write_total_summary(output_dir: Path, all_results: list[dict]) -> None:
         total_strict += strict
         total_business += business
         total_count += total
-        total_match_types.update(str(row.get("relaxed_match_type") or "unknown") for row in rows)
+        total_match_types.update(
+            str(row.get("business_match_type") or row.get("relaxed_match_type") or "unknown")
+            for row in rows
+        )
         lines.append(f"Database: {db_id} - {correct}/{total} ({correct / total * 100:.1f}%)")
     pct = total_correct / total_count * 100 if total_count else 0.0
     lines.append(f"\nTotal: {total_correct}/{total_count} ({pct:.1f}%)")
     lines.append(f"Strict: {total_strict}/{total_count} ({total_strict / total_count * 100 if total_count else 0.0:.1f}%)")
     lines.append(
-        f"Business relaxed: {total_business}/{total_count} "
+        f"Business correct: {total_business}/{total_count} "
         f"({total_business / total_count * 100 if total_count else 0.0:.1f}%)"
     )
     lines.append(format_efficiency_line(all_results))
@@ -349,7 +357,14 @@ def _metric_counts(rows: list[dict]) -> dict:
         "strict_accuracy": strict / total if total else 0.0,
         "business_correct": business,
         "business_accuracy": business / total if total else 0.0,
-        "match_types": dict(sorted(Counter(str(row.get("relaxed_match_type") or "unknown") for row in rows).items())),
+        "match_types": dict(
+            sorted(
+                Counter(
+                    str(row.get("business_match_type") or row.get("relaxed_match_type") or "unknown")
+                    for row in rows
+                ).items()
+            )
+        ),
     }
 
 
@@ -405,7 +420,7 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict], *, eval_
         f"Eval Mode: {eval_mode}",
         f"Total: {summary['correct']}/{summary['total']} ({summary['accuracy'] * 100:.2f}%)",
         f"Strict: {summary['strict_correct']}/{summary['total']} ({summary['strict_accuracy'] * 100:.2f}%)",
-        f"Business Relaxed: {summary['business_correct']}/{summary['total']} ({summary['business_accuracy'] * 100:.2f}%)",
+        f"Business Correct: {summary['business_correct']}/{summary['total']} ({summary['business_accuracy'] * 100:.2f}%)",
         "",
         "## Efficiency",
         "",
@@ -435,7 +450,7 @@ def write_structured_outputs(output_dir: Path, all_results: list[dict], *, eval_
             f"- {diff}: {item['correct']}/{item['total']} ({item['accuracy'] * 100:.2f}%), "
             f"strict={item['strict_correct']}, business={item['business_correct']}"
         )
-    lines.extend(["", "## Relaxed Match Types"])
+    lines.extend(["", "## Business Match Types"])
     for name, count in summary["match_types"].items():
         lines.append(f"- {name}: {count}")
     (pontis_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -531,8 +546,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--eval-mode",
         choices=["strict", "business"],
-        default="strict",
-        help="which correctness field drives summary correct; strict is official-style EX, business is relaxed matching",
+        default="business",
+        help="which correctness field drives summary correct (default: business)",
     )
     parser.add_argument("--run-id", help="output run id")
     parser.add_argument("--output-dir", type=Path, help="directory for structured results")

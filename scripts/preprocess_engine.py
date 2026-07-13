@@ -61,7 +61,7 @@ def get_registry() -> Dict[str, object]:
     if _REGISTRY is not None:
         return _REGISTRY
 
-    from extractor.db_column_stats_approx import generate as db_column_stats_approx
+    from extractor.db_column_stats import generate as db_column_stats
     from extractor.csv_column_stats import generate as csv_column_stats
     from extractor.csv_column_sample import generate as csv_column_sample
     from extractor.csv_column_topk import generate as csv_column_topk
@@ -74,7 +74,7 @@ def get_registry() -> Dict[str, object]:
     from extractor.bird_official_description_extract import generate as bird_official_description_extract
 
     _REGISTRY = {
-        "db_column_stats_approx": db_column_stats_approx,
+        "db_column_stats": db_column_stats,
         "csv_column_stats": csv_column_stats,
         "csv_column_sample": csv_column_sample,
         "csv_column_topk": csv_column_topk,
@@ -152,6 +152,23 @@ def run_modules(
             logger.warning(f"Module {name} failed: {e}")
             if not options.continue_on_error:
                 raise
+
+    try:
+        violations = workspace.reconcile_graph(
+            mode="full",
+            raise_on_hard=not options.continue_on_error,
+        )
+        for violation in violations:
+            logger.warning(
+                "Graph policy violation [%s/%s]: %s",
+                violation.severity,
+                violation.rule,
+                violation.message,
+            )
+    except Exception as e:
+        logger.warning("Graph policy reconciliation failed: %s", e)
+        if not options.continue_on_error:
+            raise
 
     return timings
 

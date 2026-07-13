@@ -1,6 +1,7 @@
 """Workspace — 顶层容器，统一创建入口和路由。"""
 import os
 from storage.config import StoreConfig, load_config
+from storage.graph_policy import DEFAULT_GRAPH_POLICY_ENGINE
 from storage import stores
 
 import logging
@@ -132,6 +133,7 @@ class Workspace:
                 if modules:
                     store.publish_modules(modules, force=True)
                 rows = store.execute_cypher(scoped_query, params=scoped_params)
+                DEFAULT_GRAPH_POLICY_ENGINE.reconcile(store, mode="light")
                 store.invalidate_modules()
             return self._resolve_result_pointers(rows, store.project_name)
 
@@ -152,6 +154,26 @@ class Workspace:
             with store.execution_lock:
                 store.invalidate_modules(modules)
                 store.publish_modules(selected, force=True)
+
+    def reconcile_graph(
+        self,
+        project: str = None,
+        *,
+        mode: str = "full",
+        raise_on_hard: bool = False,
+    ) -> list:
+        """Reapply graph policy rules and optionally validate invariants."""
+        violations = []
+        for store in self._selected_stores(project):
+            with store.execution_lock:
+                violations.extend(
+                    DEFAULT_GRAPH_POLICY_ENGINE.reconcile(
+                        store,
+                        mode=mode,
+                        raise_on_hard=raise_on_hard,
+                    )
+                )
+        return violations
 
     def clear_graph(self, project: str = None) -> None:
         """Remove all nodes and relationships from the selected project graph."""

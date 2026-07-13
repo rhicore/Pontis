@@ -256,13 +256,17 @@ def _cleanup_orphan_processes(project: str, base_dir: Path, timeout_seconds: flo
 def _path_has_open_handles(path: Path) -> bool:
     if not path.exists():
         return False
-    result = subprocess.run(
-        ["lsof", str(path)],
-        check=False,
-        text=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        result = subprocess.run(
+            ["lsof", str(path)],
+            check=False,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except subprocess.TimeoutExpired:
+        return False
     return result.returncode == 0
 
 
@@ -359,7 +363,7 @@ def _projects_from_args(all_projects: dict[str, ProjectConfig], names: list[str]
 def _load(args) -> tuple[dict[str, ProjectConfig], dict[str, str], Path]:
     config = load_config(args.config)
     env = _load_local_env(Path(args.env_file))
-    base_dir = Path(args.base_dir).expanduser()
+    base_dir = Path(args.base_dir).expanduser().resolve()
     return config.projects, env, base_dir
 
 

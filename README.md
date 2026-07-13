@@ -130,7 +130,7 @@ python -m extractor list
 Run selected extraction passes on a project:
 
 ```bash
-python -m extractor run db_column_stats_approx,db_fk_validate ./my_project
+python -m extractor run db_column_stats,db_fk_validate ./my_project
 ```
 
 Start an interactive agent session:

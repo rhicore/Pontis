@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3426" height="557" viewBox="0 0 3426 557">
+<defs>
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+<path d="M0,0 L0,6 L9,3 z" fill="#64748b" />
+</marker>
+</defs>
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="32" y="34" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="700" fill="#0f172a">SQL Semantic / Operator Graph</text>
+<path d="M234.0,94.5 C234.0,98.8 304.0,98.8 304.0,103.0" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<text x="269.0" y="94.8" font-family="Inter,Arial,sans-serif" font-size="11" text-anchor="middle" fill="#475569">left</text>
+<path d="M149.0,245.0 C149.0,154.5 389.0,154.5 389.0,64.0" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<text x="269.0" y="150.5" font-family="Inter,Arial,sans-serif" font-size="11" text-anchor="middle" fill="#475569">right</text>
+<path d="M474.0,103.0 C474.0,98.8 544.0,98.8 544.0,94.5" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<text x="509.0" y="94.8" font-family="Inter,Arial,sans-serif" font-size="11" text-anchor="middle" fill="#475569">left</text>
+<path d="M149.0,365.0 C149.0,214.5 629.0,214.5 629.0,64.0" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<text x="389.0" y="210.5" font-family="Inter,Arial,sans-serif" font-size="11" text-anchor="middle" fill="#475569">right</text>
+<path d="M714.0,94.5 C714.0,98.8 784.0,98.8 784.0,103.0" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<text x="749.0" y="94.8" font-family="Inter,Arial,sans-serif" font-size="11" text-anchor="middle" fill="#475569">left</text>
+<path d="M149.0,485.0 C149.0,274.5 869.0,274.5 869.0,64.0" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<text x="509.0" y="270.5" font-family="Inter,Arial,sans-serif" font-size="11" text-anchor="middle" fill="#475569">right</text>
+<path d="M954.0,103.0 C954.0,107.2 1024.0,107.2 1024.0,111.5" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<path d="M1194.0,111.5 C1194.0,115.8 1264.0,115.8 1264.0,120.0" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<path d="M1434.0,120.0 C1434.0,111.5 1504.0,111.5 1504.0,103.0" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<path d="M1674.0,103.0 C1674.0,98.8 1744.0,98.8 1744.0,94.5" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<path d="M1914.0,94.5 C1914.0,94.5 2224.0,94.5 2224.0,94.5" fill="none" stroke="#64748b" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+<text x="2069.0" y="90.5" font-family="Inter,Arial,sans-serif" font-size="11" text-anchor="middle" fill="#475569">materialized</text>
+<path d="M2394.0,94.5 C2394.0,94.5 2464.0,94.5 2464.0,94.5" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<path d="M2634.0,94.5 C2634.0,103.0 2704.0,103.0 2704.0,111.5" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<path d="M2874.0,111.5 C2874.0,107.2 2944.0,107.2 2944.0,103.0" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<path d="M3114.0,103.0 C3114.0,98.8 3184.0,98.8 3184.0,94.5" fill="none" stroke="#64748b" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="64.0" y="64.0" width="170.0" height="61.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="149.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Scan</text>
+<text x="149.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">customers AS c</text>
+<rect x="64.0" y="184.0" width="170.0" height="61.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="149.0" y="206.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Scan</text>
+<text x="149.0" y="222.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">orders AS o</text>
+<rect x="304.0" y="64.0" width="170.0" height="78.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="389.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Join</text>
+<text x="389.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">c.customer_id =</text>
+<text x="389.0" y="118.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">o.customer_id</text>
+<rect x="64.0" y="304.0" width="170.0" height="61.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="149.0" y="326.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Scan</text>
+<text x="149.0" y="342.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">order_items AS oi</text>
+<rect x="544.0" y="64.0" width="170.0" height="61.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="629.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Join</text>
+<text x="629.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">o.order_id = oi.order_id</text>
+<rect x="64.0" y="424.0" width="170.0" height="61.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="149.0" y="446.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Scan</text>
+<text x="149.0" y="462.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">products AS p</text>
+<rect x="784.0" y="64.0" width="170.0" height="78.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="869.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Join</text>
+<text x="869.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">oi.product_id =</text>
+<text x="869.0" y="118.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">p.product_id</text>
+<rect x="1024.0" y="64.0" width="170.0" height="95.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="1109.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Filter</text>
+<text x="1109.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">o.order_date &gt;= &#x27;2024-01-01&#x27;</text>
+<text x="1109.0" y="118.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">AND o.order_date &lt;</text>
+<text x="1109.0" y="134.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">&#x27;2025-01-01&#x27; AND p.ca...</text>
+<rect x="1264.0" y="64.0" width="170.0" height="112.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="1349.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Group/Aggregate</text>
+<text x="1349.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">keys: GROUP BY c.customer_id,</text>
+<text x="1349.0" y="118.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">c.region</text>
+<text x="1349.0" y="134.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">aggs: SUM(oi.quantity *</text>
+<text x="1349.0" y="150.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">oi.unit_pri...</text>
+<rect x="1504.0" y="64.0" width="170.0" height="78.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="1589.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Project</text>
+<text x="1589.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">c.customer_id, c.region,</text>
+<text x="1589.0" y="118.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">SUM(oi.quantity * oi....</text>
+<rect x="1744.0" y="64.0" width="170.0" height="61.0" rx="10" fill="#fae8ff" stroke="#c026d3" stroke-width="1.8"/>
+<text x="1829.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">CTE result</text>
+<text x="1829.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">customer_spend</text>
+<rect x="2224.0" y="64.0" width="170.0" height="61.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="2309.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Read CTE</text>
+<text x="2309.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">customer_spend</text>
+<rect x="2464.0" y="64.0" width="170.0" height="61.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="2549.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Filter</text>
+<text x="2549.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">spend &gt; 10000</text>
+<rect x="2704.0" y="64.0" width="170.0" height="95.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="2789.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Group/Aggregate</text>
+<text x="2789.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">keys: GROUP BY region</text>
+<text x="2789.0" y="118.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">aggs: COUNT(*) AS</text>
+<text x="2789.0" y="134.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">customer_count</text>
+<rect x="2944.0" y="64.0" width="170.0" height="78.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="3029.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Project</text>
+<text x="3029.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">region, COUNT(*) AS</text>
+<text x="3029.0" y="118.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">customer_...</text>
+<rect x="3184.0" y="64.0" width="170.0" height="61.0" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="1.8"/>
+<text x="3269.0" y="86.0" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="700" text-anchor="middle" fill="#0f172a">Final result</text>
+<text x="3269.0" y="102.0" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="500" text-anchor="middle" fill="#475569">ORDER BY customer_count DESC</text>
+</svg>

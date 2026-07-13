@@ -2,8 +2,8 @@
 """Pontis extractor CLI
 
 Usage:
-    python -m extractor run db_column_stats_approx ./my_data
-    python -m extractor run db_column_stats_approx,db_fk_validate ./my_data -v
+    python -m extractor run db_column_stats ./my_data
+    python -m extractor run db_column_stats,db_fk_validate ./my_data -v
 
     # 列出可用模块
     python -m extractor list

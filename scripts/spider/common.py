@@ -6,6 +6,9 @@ import json
 import os
 import re
 import shutil
+import socket
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,11 +24,17 @@ SPIDER2_SNOW_RESOURCE = SPIDER2_SNOW_ROOT / "resource"
 SPIDER2_SNOW_DATABASES = SPIDER2_SNOW_RESOURCE / "databases"
 SPIDER2_SNOW_DOCUMENTS = SPIDER2_SNOW_RESOURCE / "documents"
 SPIDER2_SNOW_EVAL_SUITE = SPIDER2_SNOW_ROOT / "evaluation_suite"
+SPIDER2_SNOW_GOLD_SQL_DIR = SPIDER2_SNOW_EVAL_SUITE / "gold" / "sql"
 SPIDER2_SNOW_CREDENTIAL = SPIDER2_SNOW_EVAL_SUITE / "snowflake_credential.json"
 
 PONTIS_WORKSPACE_ROOT = TEXT2SQL_ROOT / "workspace" / "baselines" / "pontis"
 SPIDER_WORKSPACE_ROOT = PONTIS_WORKSPACE_ROOT / "spider2_snow"
 SPIDER_NEO4J_BOLT_BASE = int(os.environ.get("PONTIS_SPIDER_NEO4J_BOLT_BASE", "7900"))
+SPIDER_NEO4J_URI = os.environ.get("PONTIS_SPIDER_NEO4J_URI", f"bolt://127.0.0.1:{SPIDER_NEO4J_BOLT_BASE}")
+SPIDER_NEO4J_RUNTIME_PROJECT = os.environ.get("PONTIS_SPIDER_NEO4J_RUNTIME_PROJECT", "spider2_snow")
+SPIDER_NEO4J_HEAP_INITIAL = os.environ.get("PONTIS_SPIDER_NEO4J_HEAP_INITIAL", "512m")
+SPIDER_NEO4J_HEAP_MAX = os.environ.get("PONTIS_SPIDER_NEO4J_HEAP_MAX", "4g")
+SPIDER_NEO4J_PAGECACHE = os.environ.get("PONTIS_SPIDER_NEO4J_PAGECACHE", "1g")
 SPIDER_PONTIS_CONFIG_MARKER_BEGIN = "# BEGIN Spider2-Snow projects"
 SPIDER_PONTIS_CONFIG_MARKER_END = "# END Spider2-Snow projects"
 
@@ -119,17 +128,21 @@ def load_spider2_snow_cases(
     db: str | None = None,
     instances: Iterable[str] | None = None,
     limit: int | None = None,
+    dev_only: bool = False,
 ) -> list[SpiderSnowCase]:
     if not SPIDER2_SNOW_CASES.exists():
         raise FileNotFoundError(f"Spider2-Snow case file not found: {SPIDER2_SNOW_CASES}")
 
     db_filter = set(parse_csv_arg(db) or [])
     instance_filter = {str(item) for item in instances or []}
+    dev_instance_filter = set(iter_spider2_snow_gold_sql_ids()) if dev_only else None
     cases: list[SpiderSnowCase] = []
     for line in SPIDER2_SNOW_CASES.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         case = SpiderSnowCase.from_row(json.loads(line))
+        if dev_instance_filter is not None and case.instance_id not in dev_instance_filter:
+            continue
         if db_filter and case.db_id not in db_filter:
             continue
         if instance_filter and case.instance_id not in instance_filter:
@@ -138,6 +151,14 @@ def load_spider2_snow_cases(
         if limit is not None and len(cases) >= limit:
             break
     return cases
+
+
+def iter_spider2_snow_gold_sql_ids() -> list[str]:
+    """Return Spider2-Snow cases that have local gold SQL for correctness debugging."""
+
+    if not SPIDER2_SNOW_GOLD_SQL_DIR.exists():
+        raise FileNotFoundError(f"Spider2-Snow gold SQL directory not found: {SPIDER2_SNOW_GOLD_SQL_DIR}")
+    return sorted(path.stem for path in SPIDER2_SNOW_GOLD_SQL_DIR.glob("*.sql"))
 
 
 def group_cases_by_db(cases: Iterable[SpiderSnowCase]) -> dict[str, list[SpiderSnowCase]]:
@@ -211,12 +232,78 @@ def prepare_spider2_snow_project(
 
 
 def _graph_uri_for_db(db_id: str) -> str:
-    db_ids = sorted(path.name for path in SPIDER2_SNOW_DATABASES.iterdir() if path.is_dir())
+    return SPIDER_NEO4J_URI
+
+
+def _spider2_snow_graph_config_path() -> Path:
+    return PONTIS_WORKSPACE_ROOT / "neo4j" / "spider2_snow_shared.yml"
+
+
+def _write_spider2_snow_graph_config() -> Path:
+    path = _spider2_snow_graph_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "projects:",
+                f"  {SPIDER_NEO4J_RUNTIME_PROJECT}:",
+                "    source:",
+                "      type: fs",
+                f"      path: {SPIDER_WORKSPACE_ROOT}",
+                "    graph:",
+                f"      uri: {SPIDER_NEO4J_URI}",
+                "      database: neo4j",
+                "      user: neo4j",
+                "      password_env: NEO4J_PASSWORD",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _spider2_snow_graph_port_open(timeout: float = 0.5) -> bool:
+    match = re.match(r"^(?:bolt|neo4j)://([^:/]+):(\d+)$", SPIDER_NEO4J_URI)
+    if not match:
+        return False
+    host, raw_port = match.groups()
+    if host == "localhost":
+        host = "127.0.0.1"
     try:
-        offset = db_ids.index(db_id)
-    except ValueError:
-        offset = sum(ord(ch) for ch in db_id) % 500
-    return f"bolt://127.0.0.1:{SPIDER_NEO4J_BOLT_BASE + offset}"
+        with socket.create_connection((host, int(raw_port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def ensure_spider2_snow_neo4j() -> Path:
+    """Start the shared Spider2-Snow Neo4j process if its Bolt port is closed."""
+    config_path = _write_spider2_snow_graph_config()
+    if _spider2_snow_graph_port_open():
+        return config_path
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "scripts.neo4j_instances",
+        "start",
+        SPIDER_NEO4J_RUNTIME_PROJECT,
+        "--config",
+        str(config_path),
+        "--base-dir",
+        str(PONTIS_WORKSPACE_ROOT / "neo4j" / "projects"),
+        "--heap-initial",
+        SPIDER_NEO4J_HEAP_INITIAL,
+        "--heap-max",
+        SPIDER_NEO4J_HEAP_MAX,
+        "--pagecache",
+        SPIDER_NEO4J_PAGECACHE,
+        "--start-grace",
+        "4",
+    ]
+    subprocess.run(cmd, cwd=str(PONTIS_ROOT), check=True)
+    return config_path
 
 
 def spider2_snow_project_config_block(db_ids: Iterable[str] | None = None) -> str:
@@ -224,6 +311,7 @@ def spider2_snow_project_config_block(db_ids: Iterable[str] | None = None) -> st
     lines = [
         SPIDER_PONTIS_CONFIG_MARKER_BEGIN,
         "  # Generated Spider2-Snow filesystem projects.",
+        f"  # All Spider2-Snow projects share {SPIDER_NEO4J_URI} and are isolated by the reserved project property.",
         "  # Run scripts/spider/extract.py first to prepare each source path.",
     ]
     for db_id in ids:
@@ -270,7 +358,17 @@ def sync_spider2_snow_pontis_config(config_path: Path | None = None) -> Path:
     else:
         updated = text.rstrip() + "\n" + block
     path.write_text(updated, encoding="utf-8")
+    _remove_legacy_project_configs()
     return path
+
+
+def _remove_legacy_project_configs() -> None:
+    root = get_projects_root()
+    if not root.exists():
+        return
+    for pattern in ("*/pontis.yml", "*/pontis.yaml"):
+        for path in root.glob(pattern):
+            path.unlink(missing_ok=True)
 
 
 def _build_project_readme(

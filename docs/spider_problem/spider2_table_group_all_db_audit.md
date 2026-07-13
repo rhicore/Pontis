@@ -33,7 +33,7 @@ logical units <= 100: 150/152
 
 ## Live Snowflake object audit
 
-Spider2-Snow schema 视野口径已单独固化在 `docs/spider2_snow_schema_visibility_policy.md`。本节只保留 live Snowflake 审计事实。
+Spider2-Snow schema 视野口径已单独固化在 `docs/spider_problem/spider2_snow_schema_visibility_policy.md`。本节只保留 live Snowflake 审计事实。
 
 2026-07-07 用 Spider2-Snow Snowflake 账号执行过账户级对象审计：
 

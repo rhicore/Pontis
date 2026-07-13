@@ -22,6 +22,7 @@ from scripts.spider.common import (
     get_run_id,
     get_run_name,
     group_cases_by_db,
+    ensure_spider2_snow_neo4j,
     load_spider2_snow_cases,
     parse_csv_arg,
     prepare_spider2_snow_project,
@@ -35,11 +36,58 @@ logger = logging.getLogger(__name__)
 EXTRACT_PIPELINE = [
     "spider2_snow_schema",
     "db_table_group",
+    "db_column_stats",
+    "db_column_overlap",
 ]
 TOPIC_PIPELINE = ["agent_topic_group"]
 NAVIGATION_PIPELINE = ["agent_spider_navigation_prepare"]
 LANDSCAPE_PIPELINE = ["schema_landscape"]
 EMBEDDING_PIPELINE = ["semantic_embedding"]
+
+SPIDER_OVERLAP_KWARGS = {
+    # Use the widest useful non-zero Jaccard gate. With 256 permutations,
+    # 0.0001 is effectively the requirement of at least one MinHash collision.
+    "value_match_method": "snowflake_minhash",
+    "filter_pipeline": [
+        {"name": "same_schema", "threshold": 1},
+        {"name": "different_table_group", "threshold": 1},
+        {"name": "name_token_overlap", "threshold": 1},
+        {"name": "domain_compatible", "threshold": 1},
+        {"name": "shape_compatible", "threshold": 1},
+        {"name": "value_overlap", "metric": "overlap_coefficient", "threshold": 0},
+    ],
+    "same_schema_only": True,
+    "skip_same_table_group": True,
+    "domain_filter_enabled": True,
+    "shape_filter_enabled": True,
+    "key_like_only": False,
+    "require_name_token_overlap": True,
+    "name_token_overlap_first": False,
+    "minhash_num_perm": 256,
+    "minhash_min_matching_hashes": 1,
+    "minhash_jaccard_threshold": 0.0001,
+    "max_value_candidate_pairs": 1_000_000,
+    "snowflake_minhash_column_batch_size": 1,
+    "snowflake_minhash_value_partitions": 2,
+    "snowflake_minhash_max_warehouse_running": 2,
+    "snowflake_minhash_warehouse_poll_seconds": 30,
+    "column_domain_enabled": True,
+    "pattern_table_domain_enabled": True,
+    "pattern_table_domain_threshold": 0.8,
+}
+
+SPIDER_OVERLAP_DB_OVERRIDES = {
+    "BRAZE_USER_EVENT_DEMO_DATASET": {
+        "snowflake_minhash_value_partitions": 8,
+    },
+}
+
+SPIDER_COLUMN_STATS_KWARGS = {
+    "sample_size": 10,
+    "topk_size": 5,
+    "max_workers": 2,
+    "cardinality_mode": "exact",
+}
 
 
 def extract_one(
@@ -65,6 +113,10 @@ def extract_one(
         workspace.clear_graph()
 
     registry = get_registry()
+    overlap_kwargs = {
+        **SPIDER_OVERLAP_KWARGS,
+        **SPIDER_OVERLAP_DB_OVERRIDES.get(db_id, {}),
+    }
     pipeline: list[str] = []
     if not agent_only:
         pipeline.extend(name for name in EXTRACT_PIPELINE if name in registry)
@@ -103,7 +155,14 @@ def extract_one(
             pipeline,
             workspace,
             config=config,
-            options=RunOptions(continue_on_error=False, collect_timing=True),
+            options=RunOptions(
+                continue_on_error=False,
+                collect_timing=True,
+                module_kwargs={
+                    "db_column_stats": SPIDER_COLUMN_STATS_KWARGS,
+                    "db_column_overlap": overlap_kwargs,
+                },
+            ),
         )
         result["timings"] = {name: round(value, 3) for name, value in timings.items()}
         result["extract"] = round(sum(timings.get(name, 0.0) for name in EXTRACT_PIPELINE), 3)
@@ -126,6 +185,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", help="Comma-separated db_id filter.")
     parser.add_argument("--instances", help="Comma-separated Spider2-Snow instance_id filter.")
+    parser.add_argument(
+        "--dev-only",
+        "--gold-sql-only",
+        action="store_true",
+        dest="dev_only",
+        help="Only select Spider2-Snow cases that have local gold SQL files for correctness debugging.",
+    )
     parser.add_argument("--limit", type=int, help="Limit selected cases before grouping by db.")
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--run-id")
@@ -148,19 +214,24 @@ def main() -> int:
         set_run_id(args.run_id)
 
     config_path = sync_spider2_snow_pontis_config()
+    graph_config_path = ensure_spider2_snow_neo4j()
 
     cases = load_spider2_snow_cases(
         db=args.db,
         instances=parse_csv_arg(args.instances),
         limit=args.limit,
+        dev_only=args.dev_only,
     )
     if not cases:
         raise SystemExit("No Spider2-Snow cases selected.")
     grouped = group_cases_by_db(cases)
 
     print(f"Spider2-Snow preprocess run: {get_run_name()} ({get_run_id()})")
+    if args.dev_only:
+        print("Split: dev-only / gold-SQL subset")
     print(f"Databases: {len(grouped)}, cases: {len(cases)}")
     print(f"Pontis config: {config_path}")
+    print(f"Spider2-Snow Neo4j: {graph_config_path}")
 
     results = []
     if args.workers <= 1:
