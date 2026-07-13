@@ -25,22 +25,22 @@ def get_bird_sql_prompt() -> str:
 
 - 遇到歧义字段时先读相关 `disambig`，再选列。
 - 优先选择 question/evidence 字面最贴近、且位于当前事实表的原始字段。
-- 不要因为另一张表有语义相近、更规范或可派生的字段，就替换 question/evidence 指向的字段。
+- question/evidence 明确指向的字段优先于其他表中语义相近、更规范或可派生的字段。
 - evidence 明确给出字段名、代码含义或公式时，按 evidence 的字段口径写 SQL。
 - 已有指标字段和 evidence 公式冲突时，以 evidence 明确要求为准。
 - 只有题目要求跨表属性，或 evidence 明确指向代码映射时，才切到其他表或代码列。
-- 不要从标识符、年级跨度、名称字符串等字段自行解析答案；若存在直接字段，优先使用直接字段。
+- 存在直接答案字段时使用直接字段；题面或 evidence 明确要求派生时，再从标识符、年级跨度、名称字符串等字段计算。
 
 ### 连接和值匹配
 
 - 优先使用 `fk`、`rel`、`overlap` 中已有或经 `query` 验证的原始列简单等值连接。
 - 当题面值的实际存储写法不确定时，先检查 sample/top-k，再匹配数据库中存储的文本值或代码值。
 
-### 事实优先级
+### 完成条件
 
-- schema、official description、统计、样例和 query 观察结果都是数据库事实。
-- `official_column_description` 和 `official_value_description` 与 AI 写入的 `brief/detail` 冲突时，以 official 字段为准。
-- README、`brief/detail`、`rel`、`overlap` 和 `disambig` 说明数据库对象本身。最终 SQL 按 question、evidence 和本节规则决定。
+- 形成候选 SQL 前，确定输出列、所需表、连接条件、筛选条件、聚合口径和结果粒度。
+- 候选 SQL 成功执行且结果符合 question/evidence 后，直接把它作为最终 SQL 输出。
+- 后续工具调用只用于解决仍未确定、并且可能改变最终 SQL 的具体问题。
 
 ### 最终输出
 

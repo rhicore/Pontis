@@ -205,7 +205,7 @@ class TraceCollector:
                 "args": event.get("arguments", {}),
             })
             self._next_round += 1
-        elif etype in {"warning", "sidechain", "append", "trace", "context_rewrite"}:
+        elif etype in {"warning", "sidechain", "append", "trace", "context_rewrite", "finalize"}:
             self._entries.append({
                 "type": etype,
                 "round": self._next_round,

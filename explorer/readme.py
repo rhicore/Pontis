@@ -38,7 +38,7 @@ README 的目标是：
 - **README 内容范围**：说明数据库里有什么，不围绕某一道题写解法
 - **数据质量表达**：格式不一致、外键违规、空值等写成已观察事实
 - **路径式引用**：读表/列时使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`
-- **写入 README 文件节点**：如果项目里已经有 `README` / `README.md` 这类文件节点，就把内容写回这个文件节点的 `brief/detail`
+- **写入 README 节点**：如果项目里已经有物理 `README` / `README.md` 文件节点，就更新它；没有物理文件时创建 `README:knowledge`
 - **写完自检**：写入后用 `meta({"ref": "README", "property": ["detail"]})` 确认正文完整可读
 
 ## 读取顺序
@@ -80,7 +80,7 @@ README 的目标是：
 
 1. 先检查是否已存在 `README` 或 `README.md` 文件节点
 2. 若存在，直接 `update_meta` 该文件节点
-3. 项目里尚未有 README 文件节点时，创建 README 文件节点，并通过 edges 连接到当前数据库或核心表节点
+3. 项目里尚未有 README 节点时，创建 `README:knowledge`，并通过 edges 连接到当前数据库节点
 
 写法示例：
 
@@ -93,7 +93,7 @@ update_meta({"ref": "README", "fields": {"brief": "...", "detail": "..."}})
 需要创建 README 文件节点时，必须同时连接到当前数据库或核心表节点，例如：
 
 ```text
-create_entity({"ref": "README:file", "meta": {"brief": "...", "detail": "..."}, "edges": [{"ref": "<db>:db"}]})
+create_entity({"ref": "README:knowledge", "meta": {"brief": "...", "detail": "..."}, "edges": [{"ref": "<db>:db"}]})
 ```
 
 写完后再用：
@@ -117,6 +117,7 @@ def generate(workspace: Workspace) -> None:
     """调用 agent 生成项目 README 节点。"""
     from agent.config import create_agent
     from agent.utils import load_agent_config
+    from explorer.utils.bird_metadata import explorer_tools, official_metadata_note
     from explorer.utils.agent_spec import explorer_writer_spec
 
     config = load_agent_config(workspace.project_path)
@@ -128,15 +129,15 @@ def generate(workspace: Workspace) -> None:
 
     spec = explorer_writer_spec(
         workspace,
-        tools=[
+        tools=explorer_tools(workspace.project_path, [
             "find", "meta", "read",
             "create_entity", "update_meta",
-        ],
+        ]),
         include_readme=True,
     )
     agent = create_agent(workspace.project_path, spec)
 
-    agent.chat(PROMPT)
+    agent.chat(PROMPT + official_metadata_note(workspace.project_path))
     logger.info("=== Agent README Writer done ===")
     return _preprocess_metrics(agent)
 

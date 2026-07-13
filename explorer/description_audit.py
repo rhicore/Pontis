@@ -66,6 +66,7 @@ def generate(workspace: Workspace) -> dict:
     """Audit generated descriptions after relation/disambiguation review."""
     from agent.config import create_agent
     from agent.utils import load_agent_config
+    from explorer.utils.bird_metadata import explorer_tools, official_metadata_note
     from explorer.utils.agent_spec import explorer_writer_spec
 
     config = load_agent_config(workspace.project_path)
@@ -77,15 +78,15 @@ def generate(workspace: Workspace) -> dict:
 
     spec = explorer_writer_spec(
         workspace,
-        tools=[
+        tools=explorer_tools(workspace.project_path, [
             "find", "meta", "read",
             "update_meta",
-        ],
+        ]),
         include_readme=True,
     )
     agent = create_agent(workspace.project_path, spec)
 
-    agent.chat(PROMPT)
+    agent.chat(PROMPT + official_metadata_note(workspace.project_path))
     logger.info("=== Agent Description Audit done ===")
     return _preprocess_metrics(agent)
 

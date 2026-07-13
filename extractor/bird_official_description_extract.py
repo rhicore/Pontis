@@ -24,7 +24,8 @@ _VALUE_DESCRIPTION = "official_value_description"
 def generate(workspace: Workspace) -> None:
     """Import official column/value descriptions from database_description CSVs."""
     project_path = Path(workspace.project_path)
-    description_dir = project_path / _DESCRIPTION_DIR
+    project_root = project_path.parent if project_path.is_file() else project_path
+    description_dir = project_root / _DESCRIPTION_DIR
     if not description_dir.is_dir():
         logger.info("=== BIRD official description extract: no database_description directory ===")
         return None
@@ -72,7 +73,28 @@ def generate(workspace: Workspace) -> None:
         total_rows,
         missing,
     )
+    removed = _remove_description_source_nodes(workspace)
+    if removed:
+        logger.info("Removed %s legacy database_description graph nodes", removed)
     return None
+
+
+def _remove_description_source_nodes(workspace: Workspace) -> int:
+    """Remove the one-shot import source from the graph after migration."""
+    rows = workspace.cypher(
+        "MATCH (n) "
+        "WHERE n.path = $dir OR n.path STARTS WITH $path_prefix "
+        "   OR n._ref STARTS WITH $ref_prefix "
+        "WITH collect(n) AS nodes, count(n) AS removed "
+        "FOREACH (n IN nodes | DETACH DELETE n) "
+        "RETURN removed",
+        params={
+            "dir": _DESCRIPTION_DIR,
+            "path_prefix": f"{_DESCRIPTION_DIR}/",
+            "ref_prefix": f"{_DESCRIPTION_DIR}/",
+        },
+    )
+    return int(rows[0].get("removed", 0)) if rows else 0
 
 
 def _read_description_rows(path: Path) -> list[dict[str, str]]:

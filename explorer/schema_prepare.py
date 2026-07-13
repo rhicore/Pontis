@@ -48,6 +48,7 @@ def generate(workspace: Workspace) -> None:
     """Prepare schema summaries."""
     from agent.config import create_agent
     from agent.utils import load_agent_config
+    from explorer.utils.bird_metadata import explorer_tools, official_metadata_note
     from explorer.utils.agent_spec import explorer_writer_spec
 
     config = load_agent_config(workspace.project_path)
@@ -59,16 +60,16 @@ def generate(workspace: Workspace) -> None:
 
     spec = explorer_writer_spec(
         workspace,
-        tools=[
+        tools=explorer_tools(workspace.project_path, [
             "find", "meta", "read", "query",
             "update_meta",
-        ],
+        ]),
         include_readme=True,
         query_mode="single_table_fact_check",
     )
     agent = create_agent(workspace.project_path, spec)
 
-    agent.chat(PROMPT)
+    agent.chat(PROMPT + official_metadata_note(workspace.project_path))
     for round_no in range(1, MAX_COMPLETION_ROUNDS + 1):
         missing = _missing_db_descriptions(workspace)
         if not missing:

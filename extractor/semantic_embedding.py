@@ -8,6 +8,7 @@ for vector search.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 
@@ -23,6 +24,12 @@ MODEL_PROPERTY = "detail_embedding_model"
 HASH_PROPERTY = "detail_embedding_hash"
 DIM_PROPERTY = "detail_embedding_dimensions"
 _LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_EMBEDDABLE_WHERE = (
+    "(n.detail IS NOT NULL AND trim(toString(n.detail)) <> '') OR "
+    "(n.official_column_description IS NOT NULL AND trim(toString(n.official_column_description)) <> '') OR "
+    "(n.official_value_description IS NOT NULL AND trim(toString(n.official_value_description)) <> '') OR "
+    "n:fk OR n:overlap"
+)
 
 
 def generate(workspace: Workspace, config=None) -> None:
@@ -39,6 +46,7 @@ def generate(workspace: Workspace, config=None) -> None:
     if not pending:
         logger.info("  Semantic embedding: already up to date")
         _ensure_vector_indexes(workspace, embed_config.dimensions)
+        _drop_stale_vector_indexes(workspace)
         return
 
     total = 0
@@ -71,6 +79,7 @@ def generate(workspace: Workspace, config=None) -> None:
 
     if total:
         _ensure_vector_indexes(workspace, actual_dimensions)
+        _drop_stale_vector_indexes(workspace)
         logger.info("Semantic embedding done: %s nodes", total)
 
     if config and hasattr(config, "add_preprocess_token_metrics") and hasattr(client, "metrics"):
@@ -80,10 +89,7 @@ def generate(workspace: Workspace, config=None) -> None:
 def _ensure_node_ids(workspace: Workspace) -> None:
     workspace.cypher(
         "MATCH (n) "
-        "WHERE "
-        "(n.detail IS NOT NULL AND trim(toString(n.detail)) <> '') OR "
-        "(n.official_column_description IS NOT NULL AND trim(toString(n.official_column_description)) <> '') OR "
-        "(n.official_value_description IS NOT NULL AND trim(toString(n.official_value_description)) <> '') "
+        f"WHERE {_EMBEDDABLE_WHERE} "
         "SET n.id = coalesce(n.id, 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8))"
     )
 
@@ -91,10 +97,7 @@ def _ensure_node_ids(workspace: Workspace) -> None:
 def _pending_nodes(workspace: Workspace, model: str, dimensions: int) -> list[dict]:
     rows = workspace.cypher(
         "MATCH (n) "
-        "WHERE "
-        "(n.detail IS NOT NULL AND trim(toString(n.detail)) <> '') OR "
-        "(n.official_column_description IS NOT NULL AND trim(toString(n.official_column_description)) <> '') OR "
-        "(n.official_value_description IS NOT NULL AND trim(toString(n.official_value_description)) <> '') "
+        f"WHERE {_EMBEDDABLE_WHERE} "
         "RETURN n"
     )
     pending = []
@@ -132,8 +135,19 @@ def _embedding_text(node: dict) -> str:
         "detail",
         "official_column_description",
         "official_value_description",
+        "from_table",
+        "from_column",
+        "to_table",
+        "to_column",
+        "sources",
+        "filter_evidence",
+        "stats",
     ):
-        value = str(node.get(key) or "").strip()
+        raw_value = node.get(key)
+        if isinstance(raw_value, (dict, list, tuple)):
+            value = json.dumps(raw_value, ensure_ascii=False, sort_keys=True)
+        else:
+            value = str(raw_value or "").strip()
         if value:
             parts.append(f"{key}: {value}")
     return "\n".join(parts)
@@ -188,6 +202,33 @@ def _embedding_labels(workspace: Workspace) -> list[str]:
     for row in rows:
         labels.update(_clean_vector_labels(row.get("labels") or []))
     return sorted(labels)
+
+
+def _drop_stale_vector_indexes(workspace: Workspace) -> None:
+    """Drop Pontis-managed vector indexes with no remaining embedded label."""
+    active = set(_embedding_labels(workspace))
+    try:
+        rows = workspace.cypher(
+            "SHOW INDEXES YIELD name, type "
+            "WHERE type = 'VECTOR' AND name STARTS WITH $prefix "
+            "RETURN name"
+            , params={"prefix": VECTOR_INDEX_PREFIX + "_"}
+        )
+    except Exception as exc:
+        logger.warning("Failed to inspect stale vector indexes: %s", exc)
+        return
+
+    prefix = VECTOR_INDEX_PREFIX + "_"
+    for row in rows:
+        index_name = str(row.get("name") or "")
+        label = index_name[len(prefix):] if index_name.startswith(prefix) else ""
+        if not label or label in active:
+            continue
+        try:
+            workspace.cypher(f"DROP INDEX `{index_name}` IF EXISTS")
+            logger.info("  Dropped stale vector index: %s", index_name)
+        except Exception as exc:
+            logger.warning("Failed to drop stale vector index %s: %s", index_name, exc)
 
 
 def _clean_vector_labels(labels: list[str]) -> list[str]:

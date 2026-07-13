@@ -107,6 +107,7 @@ def generate(workspace: Workspace) -> dict:
     """Explore current DB and write BIRD-style decision hints."""
     from agent.config import create_agent
     from agent.utils import load_agent_config
+    from explorer.utils.bird_metadata import official_metadata_note
     from explorer.utils.agent_spec import explorer_writer_spec
 
     config = load_agent_config(workspace.project_path)
@@ -119,7 +120,7 @@ def generate(workspace: Workspace) -> dict:
     spec = explorer_writer_spec(
         workspace,
         tools=[
-            "find", "meta", "read", "query",
+            "find", "meta", "query",
             "update_meta",
         ],
         include_readme=True,
@@ -128,7 +129,7 @@ def generate(workspace: Workspace) -> dict:
     spec.meta_write_fields = ["hints"]
     agent = create_agent(workspace.project_path, spec)
 
-    agent.chat(PROMPT)
+    agent.chat(PROMPT + official_metadata_note(workspace.project_path))
     logger.info("=== Agent BIRD Profile done ===")
     return _preprocess_metrics(agent)
 

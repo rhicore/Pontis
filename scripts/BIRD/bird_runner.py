@@ -197,11 +197,12 @@ def _build_bird_agent_spec(db_id: str) -> AgentSpec:
     spec = AgentSpec(
         projects=[db_id],
         effort="mid",
-        tools=["find", "grep", "read", "jd", "meta", "query"],
+        max_tool_calls={"*": 40, "query": 24},
+        tools=["find", "meta", "query"],
         prompts=[
             "base",
             "tool",
-            "ontology",
+            "database_ontology",
             "sql",
             "bird",
             "effort",
@@ -214,6 +215,7 @@ def _build_bird_agent_spec(db_id: str) -> AgentSpec:
         spec,
         [
             "round_limit",
+            "tool_use_check",
             "exploration_check",
             "sql_check",
             "final_sql_validity_check",
