@@ -1,67 +1,85 @@
-# Agent Context And Multi-Agent Reference
+# Agent Context and Forked Workers
 
-This document keeps only the implementation lessons that are useful for Pontis.
-The original Claude Code and Codex research notes were removed from this docs
-tree because they were one-off external source audits.
+This document describes the current Pontis context and child-agent contract.
 
 ## Context Layout
 
-Keep long-lived instructions in stable leading sections:
+Stable leading context contains the rendered system prompt and tool definitions.
+Per-task content belongs in messages:
 
-- system prompt
-- tool definitions
-- static benchmark or dataset rules, when enabled
+- the user instruction and benchmark evidence;
+- retrieved graph metadata;
+- query results;
+- prior worker reports and unresolved decisions.
 
-Put per-query content in user messages:
+Keeping static instructions stable improves provider prefix caching and prevents
+dynamic evidence from silently changing the tool or ontology contract.
 
-- question and evidence
-- retrieved metadata
-- tool results
-- generated SQL reports
-- reviewer feedback
+## Fork Semantics
 
-This layout is friendlier to provider prefix caching and prevents dynamic query
-content from moving ahead of reusable instructions.
+`agent/fork.py` creates a new `PontusAgent` that inherits:
 
-## Context Compression
+- the parent's rendered system prompt;
+- a legalized snapshot of the parent's messages;
+- the exact tool pool and model configuration;
+- the same active storage projects.
 
-A useful compression step preserves system messages and rewrites only the
-dynamic conversation history into a compact user-level summary. The summary
-should keep:
+The fork has isolated message history, tool history, round accounting, and
+guardrail instances. It does not mutate the parent's conversation or graph
+unless its inherited tools explicitly permit graph writes.
 
-- current task
-- important evidence and tool observations
-- SQL reports already produced
-- unresolved decisions
-- previous reviewer or judge decisions
+If a fork is started while the parent has an incomplete tool-call batch, Pontis
+adds inert placeholder results only for missing calls so the copied history is a
+valid chat sequence. Orphan tool messages are dropped.
 
-It should not rewrite the core system prompt or silently change tool
-permissions.
+## Worker Contract
 
-## Multi-Agent Control
+Every worker receives a scoped directive and must return:
 
-For Pontis SQL generation, main agent, challenger agents, and judge agents
-should have the same database-reading and SQL-execution capability unless an
-experiment explicitly tests a restricted role. Otherwise judge decisions may be
-biased by weaker evidence access.
+```text
+Scope: <one sentence>
+Result: <key findings>
+Relevant context: <refs, hints, and decisions, or none>
+Recommended checks: <what the main agent should verify>
+```
 
-The practical division of labor is:
+Workers must not return final SQL for the main task. They gather bounded evidence
+for the main agent, which remains responsible for validation and final output.
 
-- Main agent writes the first SQL report from its explored path.
-- Challenger agents start from compressed context plus prior reports and search
-  for materially different schema-linking or SQL-organization paths.
-- Judge compares all reports and may use tools to verify database facts before
-  selecting the final SQL.
+Fork recursion is blocked: an Agent already inside a fork cannot call the
+`agent` tool to create another worker.
 
-The controller should stay dataset-neutral. Dataset-specific rules belong in
-dataset README or equivalent rule sources, not in the generic controller.
+## Scoping Guidance
 
-## Guardrail Interaction
+Use a fork only when the task can be bounded by explicit graph refs or a concrete
+verification question. Good scopes include:
 
-Guardrails can trigger context rewrite or side conversations, but their outputs
-should be explicit messages in the agent loop. A guardrail that changes context
-should state what it preserved and what it replaced, so later logs remain
-auditable.
+- inspect the columns of one large standalone table;
+- compare two candidate join paths and report row-grain consequences;
+- identify the relevant member of one table group;
+- inspect one topic's table groups and standalone tables.
 
-Avoid hidden hard-coded corrections. If a rule is dataset-specific, store it in
-that dataset's rule document and retrieve it normally.
+Do not send an unconstrained full-database exploration task to a worker. Pass the
+original instruction, relevant external-knowledge excerpt, selected refs, and an
+explicit report schema.
+
+## Guardrails
+
+Fork guardrails are rebuilt from the parent's registered guardrail builder names
+with a fork-specific round limit. Runtime-only guardrails without a registered
+builder name are not copied automatically. A recursion-block guardrail is always
+added.
+
+Guardrail output must remain visible in the event stream. Context replacement,
+tool-phase finalization, appended messages, and trace-only events must not be
+hidden from logs.
+
+## Boundaries
+
+- A worker report is evidence, not an accepted database fact.
+- The main agent must verify claims that can change physical table, column, join,
+  filter, or aggregation choices.
+- Dataset-specific rules stay in dataset prompts and workflows; the generic fork
+  runner is dataset-neutral.
+- Multi-candidate challenger/judge orchestration is not part of the current fork
+  runtime. Add a separate contract if such a controller is implemented.

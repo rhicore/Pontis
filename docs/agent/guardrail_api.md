@@ -17,6 +17,9 @@ guardrail 层包裹除 LLM 调用外的所有逻辑。每个 guardrail 独立对
 | `action` | `str` | `"allow"` / `"block"` / `"warn"` |
 | `message` | `str` | block 或 warn 时的说明文本 |
 | `modified_args` | `dict \| None` | 替换该调用的参数 |
+| `replace_messages` | `list[dict] \| None` | block 文本响应时替换主对话历史 |
+| `replace_tool_history` | `list \| None` | block 文本响应时替换工具历史 |
+| `finalize` | `bool` | block 当前工具后结束工具阶段，下一轮不再暴露工具 |
 
 | action | 效果 |
 |---|---|
@@ -37,7 +40,8 @@ guardrail 可访问的只读上下文。
 | `ctx.messages` | `[dict]` | 完整对话历史 |
 | `ctx.tool_history` | `[(name, args, result)]` | 历史工具调用 |
 | `ctx.rounds` | `int` | 累计工具调用轮次 |
-| `ctx.store` | `object` | 领域数据 |
+| `ctx.workspace` | `Workspace` | 当前 storage-backed workspace |
+| `ctx.agent` | `PontusAgent \| None` | 当前 Agent；仅在确需框架能力时使用 |
 
 ## Guardrail 基类
 
@@ -50,9 +54,13 @@ class Guardrail(ABC):
         # {} → 全部放行
         return {}
 
-    def post_check(self, ctx, call_index, name, args, result) -> str | None:
-        # 工具执行后，返回修改后的 result 或 None
+    def post_tool(self, ctx, call_index, name, args, result) -> PostToolAction | None:
+        # 工具执行后可替换结果、追加主对话消息或写 trace
         return None
+
+    def drain_ready(self, ctx) -> list[str]:
+        # 非阻塞后台任务只返回已经完成的补充消息
+        return []
 ```
 
 ## 聚合规则
@@ -63,7 +71,8 @@ class Guardrail(ABC):
 - **block**：拦截，聚合所有 block 消息（`[GuardrailName] reason` 格式合并）
 - **warn**：执行，聚合所有 warn 消息注入对话
 - **modified_args**：按注册顺序 merge，后注册的覆盖同名 key；block 时忽略
-- **post_check**：pipeline，每个 guardrail 依次处理前一个的输出
+- **post_tool**：各 guardrail 返回 `PostToolAction`；框架显式处理结果替换、追加消息和 trace
+- **finalize**：任一 block verdict 设置后，本轮工具调用被拦截，下一轮进入无工具收尾
 
 ## 事件流
 
@@ -73,6 +82,9 @@ class Guardrail(ABC):
 | `tool_call` | 即将执行工具 | `name`, `arguments`, `id` |
 | `tool_result` | 工具执行完成 | `name`, `result`, `id` |
 | `warning` | 执行后追加警告 | `guardrail`, `content` |
+| `append` | post-tool 消息追加到主对话 | `guardrail`, `content` |
+| `trace` | 仅记录框架事件，不追加到主对话 | `guardrail`, `content` |
+| `finalize` | 工具阶段结束，下一轮不提供工具 | `guardrail`, `content` |
 | `done` | 文本响应返回 | `content` |
 
 ## 编写新 Guardrail
@@ -92,5 +104,4 @@ class MyGuardrail(Guardrail):
                 result[i] = CallVerdict("block", "原因")
         return result
 ```
-
 

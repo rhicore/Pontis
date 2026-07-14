@@ -71,10 +71,13 @@ create_entity({
     "detail": "..."
   },
   "edges": [
-    {"a": "context/knowledge.md", "b": "0001:chunk"}
+    {"ref": "context/knowledge.md"}
   ]
 })
 ```
+
+`create_entity.ref` 只包含新实体的名称和标签；已有端点必须写入
+`edges[].ref`。工具会创建端点到新实体的图边，并拒绝没有边的孤立实体。
 
 读取或清理派生实体时，也应沿边查询：
 
