@@ -86,6 +86,17 @@ def generate(workspace: Workspace, config=None) -> None:
         config.add_preprocess_token_metrics(client.metrics())
 
 
+def pending_embedding_nodes(workspace: Workspace, config=None) -> list[dict]:
+    """Return nodes whose searchable metadata embedding is missing or stale."""
+
+    embed_config = (
+        config.get_embedding_config()
+        if config and hasattr(config, "get_embedding_config")
+        else load_embedding_config()
+    )
+    return _pending_nodes(workspace, embed_config.model, embed_config.dimensions)
+
+
 def _ensure_node_ids(workspace: Workspace) -> None:
     workspace.cypher(
         "MATCH (n) "

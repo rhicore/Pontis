@@ -343,9 +343,11 @@ def _normalize_value(value: Any, policy: ComparisonPolicy) -> tuple[str, Any]:
 
 
 def _parse_date(text: str) -> date | None:
-    if not _DATE_RE.match(text):
+    # Do not discard a meaningful time component.  Only normalize strings
+    # whose complete value is a calendar date.
+    if not _DATE_RE.match(text) or " " in text or "T" in text:
         return None
-    head = text.split(" ", 1)[0].split("T", 1)[0].replace("/", "-")
+    head = text.replace("/", "-")
     parts = head.split("-")
     try:
         return date(int(parts[0]), int(parts[1]), int(parts[2]))

@@ -7,11 +7,11 @@ the requested extract/benchmark job pinned to the same node.
 
 Examples:
     python -m scripts.BIRD.bird_slurm extract submit -- --workers 6
-    python -m scripts.BIRD.bird_slurm benchmark submit -- --workers 20 --db-workers 6
+    python -m scripts.BIRD.bird_slurm benchmark submit -- --workers 24 --db-workers 6
     python -m scripts.BIRD.bird_slurm benchmark submit \
         --local-model-endpoint-file workspace/baselines/pontis/model_slurm/qwen3coder30b-server.endpoint \
         --local-model-name Qwen/Qwen3-Coder-30B-A3B-Instruct \
-        -- --db-workers 4 --workers 1
+        -- --db-workers 4 --workers 24
 """
 
 from __future__ import annotations

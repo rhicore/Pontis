@@ -135,17 +135,11 @@ def _source_alias(source: str) -> str:
     return parts[-1].strip('"') if parts else ""
 
 
-def is_correct(predicted: ExecutionResult | str, golden: ExecutionResult | str) -> bool:
-    if isinstance(predicted, str) or isinstance(golden, str):
-        return False
-    return predicted.row_set == golden.row_set
-
-
 def format_execution_result(result: ExecutionResult | str, limit: int = 20) -> str:
     """Compact execution result for reflection prompts."""
     if isinstance(result, str):
         return result
-    rows = sorted(result.row_set, key=lambda row: tuple(str(item) for item in row))
+    rows = sorted(result.rows, key=lambda row: tuple(str(item) for item in row))
     shown = rows[:limit]
     text = json.dumps(shown, ensure_ascii=False, default=str)
     if len(rows) > limit:

@@ -1,5 +1,7 @@
 # Spider 2.0 与 BIRD 三种结果评测的语义差异
 
+> 历史说明：本文中的 BIRD strict 双指标和“预测列数必须与 golden 完全相同”描述对应旧版运行器。当前 BIRD benchmark 只输出 `business_correct`，使用 result-first、SQL-guided 的评测方式；现行设计见 [BIRD Business Correct 评测器设计](../bird/business-correct-evaluator.md)。本文其余部分保留用于解释旧实验结果，不能作为当前运行行为说明。
+
 ## 结论
 
 Spider 2.0-Snow/Lite、Pontis BIRD `strict_correct`、Pontis BIRD `business_correct` 都在执行 SQL 后比对结果，但它们定义的“结果正确”不是同一个谓词。不能把三者都概括为 execution match，更不能将它们的分数混排。
@@ -26,7 +28,7 @@ Spider 2.0 的原始论文在 Appendix A 正式定义了 execution-based focused
 
 主要来源：
 
-- [Spider 2.0 原始论文](<../../../Paper/src_files/Lei et al. - 2025 - Spider 2.0 Evaluating Language Models on Real-World Enterprise Text-to-SQL Workflows.pdf>)，正文的 annotation/evaluation 说明与 Appendix A。
+- [Spider 2.0 原始论文](<../../../../Paper/src_files/Lei et al. - 2025 - Spider 2.0 Evaluating Language Models on Real-World Enterprise Text-to-SQL Workflows.pdf>)，正文的 annotation/evaluation 说明与 Appendix A。
 - [Spider2-Snow 官方评测器](../../../data/Spider2/spider2-snow/evaluation_suite/evaluate.py)。
 - [Spider2-Snow 逐题评测配置](../../../data/Spider2/spider2-snow/evaluation_suite/gold/spider2snow_eval.jsonl)。
 - [Pontis BIRD 结果匹配器](../../scripts/BIRD/result_match.py)。

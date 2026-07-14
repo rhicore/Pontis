@@ -19,13 +19,7 @@ from scripts.BIRD.benchmark_runtime import (
 )
 from scripts.BIRD.common import get_data_dir, get_db_base
 from scripts.BIRD.models import BirdCase, BirdRunResult, CandidateReport
-from scripts.BIRD.result_match import compare_execution_results, result_order_is_significant
-from scripts.BIRD.hard_guard import (
-    bird_sql_output_guard,
-    format_bird_sql_output_guard_force_feedback,
-    format_bird_sql_output_guard_strict_feedback,
-    format_bird_sql_output_guard_warning,
-)
+from scripts.BIRD.result_match import compare_execution_results
 from utils.context_dump import reset_context_dump_meta, set_context_dump_meta
 
 
@@ -102,9 +96,6 @@ class PontisBirdRunner:
         sql: str | None = None
         feedback: str | None = None
         execution_preview: str | None = None
-        seen_deterministic_warnings: set[str] = set()
-        force_feedback_seen = False
-
         for attempt_no in range(1, BIRD_SQL_RETRY_LIMIT + 1):
             request = (
                 _build_initial_request(case)
@@ -131,20 +122,7 @@ class PontisBirdRunner:
             attempts.append(candidate)
 
             if not sql:
-                feedback = "SQL 输出严格拦截：候选结果没有可解析 SQL；请提交唯一的 ```sql``` fenced code block。"
-                execution_preview = None
-                predicted_execution = "PARSE_ERROR"
-                continue
-
-            guard_feedback = _guard_feedback(
-                sql,
-                case=case,
-                seen_deterministic_warnings=seen_deterministic_warnings,
-                force_feedback_seen=force_feedback_seen,
-            )
-            if guard_feedback:
-                force_feedback_seen = True
-                feedback = guard_feedback
+                feedback = "当前回复中没有可解析的 SQL，请提交唯一的 ```sql``` 代码块。"
                 execution_preview = None
                 predicted_execution = "PARSE_ERROR"
                 continue
@@ -170,7 +148,8 @@ class PontisBirdRunner:
         comparison = compare_execution_results(
             predicted_execution,
             golden_execution,
-            ordered=result_order_is_significant(case.golden_sql),
+            golden_sql=case.golden_sql,
+            predicted_sql=sql,
         )
         correct = comparison.business_correct
         result = (
@@ -187,7 +166,6 @@ class PontisBirdRunner:
             predicted_execution=predicted_execution,
             golden_execution=golden_execution,
             attempts=attempts,
-            strict_correct=comparison.strict_correct,
             business_correct=comparison.business_correct,
             match_type=comparison.match_type,
         )
@@ -217,10 +195,6 @@ def _build_bird_agent_spec(db_id: str) -> AgentSpec:
             "round_limit",
             "tool_use_check",
             "exploration_check",
-            "sql_check",
-            "final_sql_validity_check",
-            "bridge_check",
-            "disambig_check",
         ],
     )
     return spec
@@ -273,42 +247,3 @@ def _chat(agent, request: str) -> str:
             response = event.get("content") or ""
             break
     return response.strip()
-
-
-def _guard_feedback(
-    sql: str,
-    *,
-    case: BirdCase,
-    seen_deterministic_warnings: set[str],
-    force_feedback_seen: bool,
-) -> str | None:
-    """Return blocking guard feedback.
-
-    Deterministic strict findings request revision until cleared.
-    Deterministic warnings are returned once per distinct message, then repeated
-    occurrences do not request another revision.
-    Force feedback is unconditional; it is not a SQL-content finding. The
-    runner sends it at least once, then keeps attaching it only while strict or
-    new warning feedback is already requesting another revision.
-    """
-
-    feedback_parts: list[str] = []
-
-    deterministic_result = bird_sql_output_guard(sql, question=case.question, evidence=case.evidence)
-    if deterministic_result.strict:
-        feedback_parts.append(format_bird_sql_output_guard_strict_feedback(deterministic_result.strict))
-    if deterministic_result.warnings:
-        new_warnings = [
-            warning
-            for warning in deterministic_result.warnings
-            if warning not in seen_deterministic_warnings
-        ]
-        seen_deterministic_warnings.update(new_warnings)
-        if new_warnings:
-            feedback_parts.append(format_bird_sql_output_guard_warning(new_warnings))
-    if deterministic_result.force and (not force_feedback_seen or feedback_parts):
-        feedback_parts.append(format_bird_sql_output_guard_force_feedback(deterministic_result.force))
-
-    if not feedback_parts:
-        return None
-    return "\n\n".join(feedback_parts)

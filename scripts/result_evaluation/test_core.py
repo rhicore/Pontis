@@ -115,3 +115,10 @@ def test_json_array_values_are_hashable_for_bag_comparison():
     predicted = table(["items"], [[["a", "b"]]])
 
     assert compare_result_sets(predicted, [golden]).business_correct
+
+
+def test_datetime_strings_keep_their_time_component():
+    golden = GoldenResult(table(["created_at"], [["2024-01-01 09:00:00"]]))
+    predicted = table(["created_at"], [["2024-01-01 17:00:00"]])
+
+    assert not compare_result_sets(predicted, [golden]).business_correct

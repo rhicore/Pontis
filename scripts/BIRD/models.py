@@ -53,6 +53,5 @@ class BirdRunResult:
     predicted_execution: Any
     golden_execution: Any = None
     attempts: list[CandidateReport] = field(default_factory=list)
-    strict_correct: bool = False
     business_correct: bool = False
     match_type: str = "not_compared"

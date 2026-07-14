@@ -25,18 +25,43 @@ def test_business_match_preserves_duplicate_counts():
     predicted = result(["department"], [["Sales"]])
 
     comparison = compare_execution_results(predicted, golden)
-    assert comparison.strict_correct
     assert not comparison.business_correct
     assert comparison.match_type == "row_count_mismatch"
 
 
-def test_business_match_rejects_extra_columns():
+def test_business_match_accepts_extra_columns_when_gold_is_one_global_projection():
     golden = result(["ticker"], [["AAPL"]])
     predicted = result(["ticker", "company"], [["AAPL", "Apple"]])
 
     comparison = compare_execution_results(predicted, golden)
+    assert comparison.business_correct
+    assert comparison.match_type == "projected_columns"
+
+
+def test_business_match_rejects_extra_rows_even_with_richer_columns():
+    golden = result(["ticker"], [["AAPL"]])
+    predicted = result(
+        ["ticker", "company"],
+        [["AAPL", "Apple"], ["MSFT", "Microsoft"]],
+    )
+
+    comparison = compare_execution_results(predicted, golden)
     assert not comparison.business_correct
-    assert comparison.match_type == "column_count_mismatch"
+    assert comparison.match_type == "row_count_mismatch"
+
+
+def test_business_match_accepts_numeric_display_strings():
+    golden = result(["ratio"], [[0.12]])
+    predicted = result(["ratio"], [["0.120000000"]])
+
+    assert compare_execution_results(predicted, golden).business_correct
+
+
+def test_business_match_does_not_discard_time_components():
+    golden = result(["created_at"], [["2024-01-01 09:00:00"]])
+    predicted = result(["created_at"], [["2024-01-01 17:00:00"]])
+
+    assert not compare_execution_results(predicted, golden).business_correct
 
 
 def test_business_match_allows_one_global_column_reorder():
@@ -63,3 +88,53 @@ def test_outer_order_by_controls_ordered_comparison():
     assert not result_order_is_significant(
         "SELECT a FROM (SELECT a FROM t ORDER BY a LIMIT 1) AS ranked"
     )
+
+
+def test_golden_sql_controls_order_inside_result_comparison():
+    golden = result(["rank"], [[1], [2]])
+    predicted = result(["rank"], [[2], [1]])
+
+    comparison = compare_execution_results(
+        predicted,
+        golden,
+        golden_sql="SELECT rank FROM scores ORDER BY rank",
+        predicted_sql="SELECT rank FROM scores ORDER BY rank DESC",
+    )
+
+    assert not comparison.business_correct
+    assert comparison.match_type == "ordered_row_mismatch"
+
+
+def test_sql_guides_large_projection_without_becoming_a_correctness_check():
+    golden_columns = [f"c{index}" for index in range(5)]
+    predicted_columns = [*reversed(golden_columns), *[f"extra{index}" for index in range(15)]]
+    golden = result(golden_columns, [[0, 1, 2, 3, 4]])
+    predicted = result(predicted_columns, [[4, 3, 2, 1, 0, *range(15)]])
+
+    comparison = compare_execution_results(
+        predicted,
+        golden,
+        golden_sql="SELECT c0, c1, c2, c3, c4 FROM t WHERE status = 1",
+        predicted_sql=(
+            "SELECT c4, c3, c2, c1, c0, "
+            + ", ".join(f"extra{index}" for index in range(15))
+            + " FROM another_table WHERE status > 0"
+        ),
+    )
+
+    assert comparison.business_correct
+    assert comparison.match_type == "sql_guided_projection"
+
+
+def test_sql_never_overrides_a_result_mismatch():
+    golden = result(["amount"], [[10]])
+    predicted = result(["amount"], [[20]])
+
+    comparison = compare_execution_results(
+        predicted,
+        golden,
+        golden_sql="SELECT amount FROM orders",
+        predicted_sql="SELECT amount FROM orders",
+    )
+
+    assert not comparison.business_correct

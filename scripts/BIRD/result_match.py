@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Any
 
+from scripts.BIRD.result_guidance import (
+    result_order_is_significant,
+    sql_guided_column_mapping,
+)
 from scripts.result_evaluation import (
     ComparisonPolicy,
     GoldenResult,
+    ResultComparison,
     ResultTable,
     compare_result_sets,
 )
-
-
-_ORDER_BY_RE = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -23,10 +24,6 @@ class ExecutionResult:
 
     columns: tuple[str, ...]
     rows: tuple[tuple[Any, ...], ...]
-
-    @property
-    def row_set(self) -> frozenset[tuple[Any, ...]]:
-        return frozenset(self.rows)
 
     @property
     def width(self) -> int:
@@ -38,9 +35,8 @@ class ExecutionResult:
 
 @dataclass(frozen=True)
 class ComparisonResult:
-    """Business match outcome plus a legacy strict diagnostic."""
+    """Executable proxy for whether the result satisfies the business answer."""
 
-    strict_correct: bool
     business_correct: bool
     match_type: str
 
@@ -49,49 +45,84 @@ def compare_execution_results(
     predicted: ExecutionResult | str,
     golden: ExecutionResult | str | None,
     *,
-    ordered: bool = False,
+    golden_sql: str | None = None,
+    predicted_sql: str | None = None,
+    ordered: bool | None = None,
 ) -> ComparisonResult:
-    """Evaluate one BIRD result through the shared business comparator."""
+    """Compare results, using SQL only to guide result-comparison policy."""
 
-    strict_correct = (
-        isinstance(predicted, ExecutionResult)
-        and isinstance(golden, ExecutionResult)
-        and predicted.row_set == golden.row_set
-    )
     if golden is None:
-        return ComparisonResult(strict_correct, False, "missing_gold")
+        return ComparisonResult(False, "missing_gold")
     if isinstance(predicted, str) or isinstance(golden, str):
-        return ComparisonResult(strict_correct, False, "execution_error")
+        return ComparisonResult(False, "execution_error")
 
-    comparison = compare_result_sets(
+    if ordered is None:
+        ordered = result_order_is_significant(golden_sql)
+
+    guided_mapping = sql_guided_column_mapping(
+        golden_sql,
+        predicted_sql,
+        golden_width=golden.width,
+        predicted_width=predicted.width,
+    )
+    if guided_mapping is not None and (
+        predicted.width != golden.width
+        or guided_mapping != tuple(range(golden.width))
+    ):
+        guided = _project_execution_result(predicted, guided_mapping)
+        comparison = _compare_result_tables(
+            guided,
+            golden,
+            ordered=ordered,
+            allow_extra_predicted_columns=False,
+            allow_column_reorder=False,
+        )
+        if comparison.business_correct:
+            match_type = (
+                "sql_guided_projection"
+                if predicted.width > golden.width
+                else "sql_guided_column_reorder"
+            )
+            return ComparisonResult(True, match_type)
+
+    comparison = _compare_result_tables(
+        predicted,
+        golden,
+        ordered=ordered,
+        allow_extra_predicted_columns=True,
+        allow_column_reorder=True,
+    )
+    return ComparisonResult(comparison.business_correct, comparison.match_type)
+
+
+def _compare_result_tables(
+    predicted: ExecutionResult,
+    golden: ExecutionResult,
+    *,
+    ordered: bool,
+    allow_extra_predicted_columns: bool,
+    allow_column_reorder: bool,
+) -> ResultComparison:
+    return compare_result_sets(
         predicted.as_result_table(),
         [GoldenResult(golden.as_result_table(), ordered=ordered, name="golden_sql")],
         policy=ComparisonPolicy(
             ordered=ordered,
-            allow_extra_predicted_columns=False,
-            allow_column_reorder=True,
+            allow_extra_predicted_columns=allow_extra_predicted_columns,
+            allow_column_reorder=allow_column_reorder,
             max_reordered_columns=8,
             trim_strings=True,
-            parse_numeric_strings=False,
+            parse_numeric_strings=True,
             float_round_digits=9,
         ),
     )
-    return ComparisonResult(
-        strict_correct,
-        comparison.business_correct,
-        comparison.match_type,
+
+
+def _project_execution_result(
+    result: ExecutionResult,
+    mapping: tuple[int, ...],
+) -> ExecutionResult:
+    return ExecutionResult(
+        columns=tuple(result.columns[index] for index in mapping),
+        rows=tuple(tuple(row[index] for index in mapping) for row in result.rows),
     )
-
-
-def result_order_is_significant(sql: str | None) -> bool:
-    """Return whether the golden query orders its outermost result."""
-
-    if not sql:
-        return False
-    try:
-        import sqlglot
-
-        expression = sqlglot.parse_one(sql, read="sqlite")
-        return expression.args.get("order") is not None
-    except Exception:
-        return bool(_ORDER_BY_RE.search(sql))
