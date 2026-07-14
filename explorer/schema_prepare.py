@@ -1,7 +1,7 @@
 """Agent Schema Prepare — summarize schema entities.
 
 This module prepares table/column descriptions. Relation and disambiguation
-entities are written by dedicated explorer modules after overlap candidates are
+entities are written by dedicated explorer modules after column-domain candidates are
 available.
 """
 
@@ -15,26 +15,26 @@ MAX_COMPLETION_ROUNDS = 6
 
 PROMPT = """\
 你是 Pontis 的 schema prepare agent。
-当前图谱里已经有数据库文件、表、列、外键、overlap/rel 等实体。你的任务是给数据库表和列维护 `brief` 和 `detail`。
+当前图谱里已经有数据库文件、表、列、外键、column_domain/rel 等实体。你的任务是给数据库表和列维护 `brief` 和 `detail`。
 
 ## 工作目标
 
 后来主 agent 会通过 `meta` 读取这些说明来理解数据库。你写的内容应当让它知道：
 - 表每行代表什么。
 - 列表示什么、值长什么样、是否有枚举/范围/空值。
-- 表和列之间已有的外键、overlap 或 rel 关系是什么。
+- 表和列之间已有的外键、column_domain 或 rel 关系是什么。
 - 相近字段分别来自哪里，粒度、覆盖范围和值格式有什么差异。
 
 ## 证据
 
-写入前先读取目标实体的 `meta`。需要补充事实时，再读取所属表、相邻 fk/overlap/rel、说明文件，或用 `query` 核验局部字段事实。
+写入前先读取目标实体的 `meta`。需要补充事实时，再读取所属表、相邻 fk/column_domain/rel、说明文件，或用 `query` 核验局部字段事实。
 
 `official_column_description` 和 `official_value_description` 是人工/官方标注，优先级最高。列被 official 标为 `unuseful`、`not useful`、`not quite useful`、`unused`、`ignore` 或同类含义时，只记录这个官方标记本身。
 
 ## 写入
 
 - `brief` 不超过 50 字，概括实体角色。
-- `detail` 写对象事实：行粒度、字段含义、值格式、枚举、范围、空值、单位、主键/外键、overlap/rel。
+- `detail` 写对象事实：行粒度、字段含义、值格式、枚举、范围、空值、单位、主键/外键、column_domain/rel。
 - 中文写作；数据库原始表名、字段名、枚举值和代码值保持原样。
 - 表和列写入使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`。
 
@@ -142,7 +142,7 @@ def _completion_prompt(missing: list[str], round_no: int) -> str:
         "",
         "要求：",
         "- 只处理下面列出的待办实体。",
-        "- 写入前读取目标实体 meta；必要时读取所属表、同组代表列、相关 fk/overlap/rel/disambig 或说明文件。",
+        "- 写入前读取目标实体 meta；必要时读取所属表、同组代表列、相关 fk/column_domain/rel/disambig 或说明文件。",
         "- brief/detail 写对象事实：含义、行粒度、值格式、枚举、空值、结构关系。",
         "- official 标注为 not useful/not quite useful/unuseful/unused/ignore 的列，只记录这个官方标记本身。",
         "- 每个实体都必须同时有非空 `brief` 和非空 `detail`。",

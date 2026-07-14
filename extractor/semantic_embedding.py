@@ -28,7 +28,21 @@ _EMBEDDABLE_WHERE = (
     "(n.detail IS NOT NULL AND trim(toString(n.detail)) <> '') OR "
     "(n.official_column_description IS NOT NULL AND trim(toString(n.official_column_description)) <> '') OR "
     "(n.official_value_description IS NOT NULL AND trim(toString(n.official_value_description)) <> '') OR "
-    "n:fk OR n:overlap"
+    "n:fk OR n:column_domain"
+)
+EMBEDDING_TEXT_FIELDS = (
+    "name",
+    "brief",
+    "detail",
+    "official_column_description",
+    "official_value_description",
+    "from_table",
+    "from_column",
+    "to_table",
+    "to_column",
+    "sources",
+    "filter_evidence",
+    "stats",
 )
 
 
@@ -140,20 +154,7 @@ def _pending_nodes(workspace: Workspace, model: str, dimensions: int) -> list[di
 
 def _embedding_text(node: dict) -> str:
     parts = []
-    for key in (
-        "name",
-        "brief",
-        "detail",
-        "official_column_description",
-        "official_value_description",
-        "from_table",
-        "from_column",
-        "to_table",
-        "to_column",
-        "sources",
-        "filter_evidence",
-        "stats",
-    ):
+    for key in EMBEDDING_TEXT_FIELDS:
         raw_value = node.get(key)
         if isinstance(raw_value, (dict, list, tuple)):
             value = json.dumps(raw_value, ensure_ascii=False, sort_keys=True)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 _PUBLIC_LABEL_ORDER = (
-    "db", "table", "view", "col", "fk", "rel", "overlap", "disambig",
+    "db", "table", "view", "col", "logical_col", "fk", "rel", "column_domain", "disambig",
     "knowledge", "pattern", "hint", "file", "dir", "schema", "topic",
     "table_group", "column_group", "source",
 )

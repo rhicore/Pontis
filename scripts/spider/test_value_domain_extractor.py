@@ -1,9 +1,11 @@
 import extractor.db_value_domain as value_domain_module
 from extractor.db_value_domain import (
-    _delete_stale_domains,
     _domain_summary,
+    _evenly_spaced_members,
     _load_materialized_comparison_columns,
     _minimum_domain_overlap,
+    _open_value_database_with_retry,
+    _relation_is_inaccessible,
     _semantic_profile,
     _weak_key_alias,
 )
@@ -88,14 +90,51 @@ def test_value_domain_summary_links_comparison_units_not_physical_expansion():
     assert summary["member_count"] == 2
 
 
+def test_logical_member_sampling_covers_whole_partition_range():
+    members = [{"entity_name": f"partition:{year}"} for year in range(2000, 2020)]
+
+    sampled = _evenly_spaced_members(members, 4)
+
+    assert len(sampled) == 4
+    assert sampled[0]["entity_name"] == "partition:2000"
+    assert sampled[-1]["entity_name"] == "partition:2019"
+
+
+def test_only_relation_level_access_errors_suppress_later_columns():
+    assert _relation_is_inaccessible(Exception("Object 'T' does not exist or not authorized."))
+    assert not _relation_is_inaccessible(Exception("invalid identifier 'MISSING_COLUMN'"))
+
+
+def test_value_database_connection_retries_transient_failures():
+    attempts = []
+
+    def connect(*, readonly):
+        attempts.append(readonly)
+        if len(attempts) < 3:
+            raise OSError("temporary network failure")
+        return "connection"
+
+    original_sleep = value_domain_module.time.sleep
+    value_domain_module.time.sleep = lambda _seconds: None
+    try:
+        assert _open_value_database_with_retry(connect, attempts=3) == "connection"
+    finally:
+        value_domain_module.time.sleep = original_sleep
+    assert attempts == [True, True, True]
+
+
 class _Workspace:
     def cypher(self, _query, params=None):
-        assert params == {"db_ref": "DB"}
-        return [{
-            "l": {"_ref": "logical:id", "role": "id"},
-            "g": {"_ref": "group:years", "name": "year shards", "schema_name": "PUBLIC"},
-            "member_refs": ["physical:2020", "physical:2021"],
-        }]
+        if params == {"db_ref": "DB"}:
+            return [{
+                "l": {"_ref": "logical:id", "role": "id"},
+                "g": {"_ref": "group:years", "name": "year shards", "schema_name": "PUBLIC"},
+            }]
+        assert params == {"logical_ref": "logical:id"}
+        return [
+            {"member_ref": "physical:2020"},
+            {"member_ref": "physical:2021"},
+        ]
 
 
 def test_materialized_logical_columns_replace_their_physical_members():
@@ -127,40 +166,3 @@ def test_materialized_logical_columns_replace_their_physical_members():
     assert {member["entity_name"] for member in logical["domain_members"]} == {
         "physical:2020", "physical:2021",
     }
-
-
-def test_upsert_preserves_review_fields_for_stable_domain_ref():
-    calls = []
-    original = value_domain_module._write_cypher
-    value_domain_module._write_cypher = lambda workspace, query, params=None: calls.append((query, params)) or []
-    try:
-        value_domain_module._upsert_domain(object(), {
-            "_ref": "DB--value_domain--PUBLIC--abc",
-            "name": "value_domain[PUBLIC:id]",
-            "db_ref": "DB",
-            "schema_ref": "DB--PUBLIC",
-            "member_refs": ["left", "right"],
-            "review_status": "pending_review",
-            "member_count": 2,
-        })
-    finally:
-        value_domain_module._write_cypher = original
-
-    first_query, first_params = calls[0]
-    assert "ON MATCH SET d += $refresh_props" in first_query
-    assert first_params["props"]["review_status"] == "pending_review"
-    assert "review_status" not in first_params["refresh_props"]
-
-
-def test_stale_domain_cleanup_keeps_current_refs():
-    calls = []
-    original = value_domain_module._write_cypher
-    value_domain_module._write_cypher = lambda workspace, query, params=None: calls.append((query, params)) or []
-    try:
-        _delete_stale_domains(object(), "DB", ["current"])
-    finally:
-        value_domain_module._write_cypher = original
-
-    query, params = calls[0]
-    assert "NOT d._ref IN $active_refs" in query
-    assert params["active_refs"] == ["current"]

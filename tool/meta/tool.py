@@ -11,7 +11,10 @@ from tool.utils.display_ref import display_ref_for_node, node_selector
 from tool.utils.formatters import format_entity_name, format_meta_output, get_display_property_value, get_info
 from tool.utils.resolve import resolve_entity_selector, selector_match_pattern, selector_params
 
-_ADJACENCY_KEYS = {"fk", "rel", "disambig", "hint", "hints", "col", "overlap", "table", "view"}
+_ADJACENCY_KEYS = {
+    "fk", "rel", "disambig", "hint", "hints", "col", "logical_col",
+    "column_domain", "table", "view",
+}
 _DEFAULT_NEIGHBOR_LIMIT = 20
 _MAX_NEIGHBOR_LIMIT = 100
 

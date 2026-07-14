@@ -1,14 +1,14 @@
-"""Agent Value-Domain Review — validate domains and derive rel/disambig entities."""
+"""Agent Column-Domain Review — validate domains and derive rel/disambig entities."""
 from __future__ import annotations
 
 import logging
 
 from storage.workspace import Workspace
 
-from explorer.utils.value_domain_candidates import (
+from explorer.utils.column_domain_candidates import (
     MAX_DOMAINS_PER_AGENT,
-    ValueDomainCandidate,
-    build_value_domain_candidates,
+    ColumnDomainCandidate,
+    build_column_domain_candidates,
     candidate_batches,
 )
 
@@ -17,9 +17,9 @@ MAX_COMPLETION_PASSES = 2
 
 
 PROMPT = """\
-你是 Pontis 的 value-domain review agent。静态 extractor 已把存在实际共同值的 standalone `col` 和 `logical_col` 聚成候选 `value_domain`。你的任务是逐域审核其语义边界，并从中发现可靠的 `rel` 或必要的 `disambig`。
+你是 Pontis 的 column-domain review agent。静态 extractor 已根据配置的筛选或聚类策略，把存在共同值证据的 `col` 和 `logical_col` 组织成候选 `column_domain`。你的任务是逐域审核其语义边界，并从中发现可靠的 `rel` 或必要的 `disambig`。
 
-`value_domain` 只表示成员值集合存在交集，不表示任意两个成员都能直接 JOIN，也不表示所有成员属于同一种业务对象。不要把一个多成员域展开成两两完全连接的 `rel`。
+`column_domain` 只表示成员值集合存在交集，不表示任意两个成员都能直接 JOIN，也不表示所有成员属于同一种业务对象。不要把一个多成员域展开成两两完全连接的 `rel`。
 
 ## 每个域必须完成的判断
 
@@ -48,7 +48,7 @@ PROMPT = """\
 ## 写入格式
 
 审核域：
-`update_meta({"ref":"<value_domain_ref>","fields":{"review_status":"accepted|needs_split|rejected","brief":"...","detail":"..."}})`
+`update_meta({"ref":"<column_domain_ref>","fields":{"review_status":"accepted|needs_split|rejected","brief":"...","detail":"..."}})`
 
 创建关系：
 `create_entity({"ref":"stable_identifier_join:rel","meta":{"brief":"...","detail":"..."},"edges":[{"ref":"<成员1>"},{"ref":"<成员2>"}]})`
@@ -61,14 +61,14 @@ brief/detail 使用中文；实体 ref 使用简短 snake_case。完成本批全
 
 
 CANDIDATE_PROMPT_HEADER = """\
-## 待审核 value domains
+## 待审核 column domains
 
 逐域检查全部成员。每个域都必须更新 review_status；只为有明确证据的成员子集创建 rel/disambig。
 """
 
 
 def render_candidate_prompt(
-    candidates: list[ValueDomainCandidate],
+    candidates: list[ColumnDomainCandidate],
     *,
     batch_index: int,
     batch_count: int,
@@ -89,6 +89,7 @@ def render_candidate_prompt(
             f"### 域 {index}: {candidate.name}",
             f"- ref: `{candidate.ref}`",
             f"- schema: `{candidate.schema or 'unknown'}`; status: `{candidate.review_status}`",
+            f"- extraction strategy: `{candidate.extraction_strategy or 'unknown'}`",
             f"- union cardinality: {candidate.union_cardinality}; members: {len(candidate.members)}",
             f"- metric: `{candidate.overlap_metric}`; threshold: {candidate.overlap_threshold}; "
             f"anchor support: {candidate.min_anchor_support}",
@@ -129,19 +130,19 @@ def render_candidate_prompt(
 
 
 def generate(workspace: Workspace) -> dict:
-    """Review pending value domains and derive rel/disambig knowledge."""
+    """Review pending column domains and derive rel/disambig knowledge."""
     from agent.config import create_agent
     from agent.utils import load_agent_config
     from explorer.utils.agent_spec import explorer_writer_spec
 
     config = load_agent_config(workspace.project_path)
     if not config["api_key"]:
-        logger.warning("Agent not configured (no API key), skipping value-domain review")
+        logger.warning("Agent not configured (no API key), skipping column-domain review")
         return {}
 
-    candidates = build_value_domain_candidates(workspace)
+    candidates = build_column_domain_candidates(workspace)
     if not candidates:
-        logger.info("No pending multi-member value domains to review")
+        logger.info("No pending multi-member column domains to review")
         return {}
 
     spec = explorer_writer_spec(
@@ -171,13 +172,13 @@ def generate(workspace: Workspace) -> dict:
         _add_metrics(total_metrics, _preprocess_metrics(agent))
 
     for pass_index in range(1, MAX_COMPLETION_PASSES + 1):
-        pending = build_value_domain_candidates(workspace)
+        pending = build_column_domain_candidates(workspace)
         if not pending:
-            logger.info("Value-domain review completeness check passed")
+            logger.info("Column-domain review completeness check passed")
             logger.info("=== Agent Value-Domain Review done ===")
             return total_metrics
         logger.warning(
-            "Value-domain review left %d pending domains; completion pass %d/%d",
+            "Column-domain review left %d pending domains; completion pass %d/%d",
             len(pending),
             pass_index,
             MAX_COMPLETION_PASSES,
@@ -197,11 +198,11 @@ def generate(workspace: Workspace) -> dict:
             )
             _add_metrics(total_metrics, _preprocess_metrics(agent))
 
-    pending = build_value_domain_candidates(workspace)
+    pending = build_column_domain_candidates(workspace)
     if pending:
         sample = "\n".join(f"- {candidate.ref}" for candidate in pending[:40])
         raise RuntimeError(
-            f"Value-domain review 未完成；仍有 {len(pending)} 个 pending_review 域。\n{sample}"
+            f"Column-domain review 未完成；仍有 {len(pending)} 个 pending_review 域。\n{sample}"
         )
     logger.info("=== Agent Value-Domain Review done ===")
     return total_metrics

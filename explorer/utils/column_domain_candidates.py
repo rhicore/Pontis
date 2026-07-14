@@ -1,4 +1,4 @@
-"""Load and render value-domain review candidates from the graph."""
+"""Load column-domain review candidates from the graph."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ MAX_DOMAINS_PER_AGENT = 12
 
 
 @dataclass(frozen=True)
-class ValueDomainMember:
+class ColumnDomainMember:
     ref: str
     name: str
     kind: str
@@ -30,31 +30,32 @@ class ValueDomainMember:
 
 
 @dataclass(frozen=True)
-class ValueDomainCandidate:
+class ColumnDomainCandidate:
     ref: str
     name: str
     schema: str
     review_status: str
+    extraction_strategy: str
     union_cardinality: int | None
     semantic_roles: str
     overlap_metric: str
     overlap_threshold: float | None
     min_anchor_support: float | None
     extraction_evidence: str
-    members: tuple[ValueDomainMember, ...]
+    members: tuple[ColumnDomainMember, ...]
 
 
-def build_value_domain_candidates(
+def build_column_domain_candidates(
     workspace: Workspace,
     *,
     statuses: tuple[str, ...] = ("pending_review",),
-) -> list[ValueDomainCandidate]:
-    """Return value domains and their physical/logical comparison units."""
+) -> list[ColumnDomainCandidate]:
+    """Return column domains and their physical/logical comparison units."""
 
     rows = workspace.cypher(
         """
         MATCH (d)--(m)
-        WHERE 'value_domain' IN coalesce(d.labels, [])
+        WHERE 'column_domain' IN coalesce(d.labels, [])
           AND coalesce(d.review_status, 'pending_review') IN $statuses
           AND (
             'col' IN coalesce(m.labels, [])
@@ -106,11 +107,12 @@ def build_value_domain_candidates(
         ))
         if len(members) < 2:
             continue
-        candidates.append(ValueDomainCandidate(
+        candidates.append(ColumnDomainCandidate(
             ref=ref,
             name=str(domain.get("name") or "value_domain"),
             schema=str(domain.get("schema_name") or ""),
             review_status=str(domain.get("review_status") or "pending_review"),
+            extraction_strategy=str(domain.get("extraction_strategy") or ""),
             union_cardinality=_optional_int(domain.get("union_cardinality")),
             semantic_roles=_compact(domain.get("semantic_roles"), 240),
             overlap_metric=str(domain.get("overlap_metric") or ""),
@@ -123,15 +125,15 @@ def build_value_domain_candidates(
 
 
 def candidate_batches(
-    candidates: list[ValueDomainCandidate],
+    candidates: list[ColumnDomainCandidate],
     batch_size: int = MAX_DOMAINS_PER_AGENT,
-) -> list[list[ValueDomainCandidate]]:
+) -> list[list[ColumnDomainCandidate]]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
     return [candidates[index:index + batch_size] for index in range(0, len(candidates), batch_size)]
 
 
-def _member_info(node: dict, direct_tables: list, physical_members: list) -> ValueDomainMember:
+def _member_info(node: dict, direct_tables: list, physical_members: list) -> ColumnDomainMember:
     labels = set(node.get("labels") or [])
     logical = "logical_col" in labels
     table_names = sorted({str(value) for value in direct_tables if value})
@@ -144,7 +146,7 @@ def _member_info(node: dict, direct_tables: list, physical_members: list) -> Val
             physical_refs.append(ref)
         elif table or column:
             physical_refs.append(".".join(part for part in (table, column) if part))
-    return ValueDomainMember(
+    return ColumnDomainMember(
         ref=_node_ref(node),
         name=str(node.get("name") or node.get("role") or ""),
         kind="logical_col" if logical else "col",

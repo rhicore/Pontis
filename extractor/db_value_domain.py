@@ -1,13 +1,27 @@
-"""Storage-backed extractor for shared column value-domain entities."""
+"""Online strategy for the unified column-domain extractor.
+
+This module builds candidates only. Graph persistence and pipeline
+registration belong to :mod:`extractor.db_column_domain`.
+"""
 from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from array import array
 from collections import Counter
 from typing import Any
 
-from extractor.db_column_overlap import _load_db_columns
+from extractor.utils.database_catalog import (
+    column_type_from_labels,
+    decode_jsonish,
+    load_database_columns,
+)
+from extractor.utils.distinct_value_index import (
+    load_cached_distinct_hashes,
+    load_or_build_distinct_hashes,
+    open_database,
+)
 from extractor.utils.domain_profile import domain_compatibility
 from extractor.utils.online_value_domains import (
     OnlineValueDomain,
@@ -16,18 +30,14 @@ from extractor.utils.online_value_domains import (
     build_online_value_domains,
 )
 from extractor.utils.overlap_candidates import _make_column_domain
-from extractor.utils.overlap_options import KEYLIKE_TOKENS
-from extractor.utils.overlap_value_matchers import (
-    _load_or_build_column_hash_index,
-    _open_db_connection,
-)
-from extractor.utils.refs import neo4j_props
+from extractor.utils.overlap_options import KEYLIKE_TOKENS, OverlapOptions
+from extractor.utils.overlap_value_matchers import build_snowflake_bounded_value_profiles
 from extractor.utils.semantic_domain import classify_semantic_domain
 from storage.workspace import Workspace
 
 
 logger = logging.getLogger(__name__)
-GROUPING_METHOD = "online_distinct_value_domain_v1"
+GROUPING_METHOD = "online_value_evidence_domain_v2"
 
 _MEASURE_LIKE = {"measure"}
 _PAYLOAD_LIKE = {"text_payload", "file_or_resource", "binary", "semi_structured", "geo"}
@@ -35,60 +45,7 @@ _KEY_LIKE = {"identifier", "categorical_key", "geographic_key"}
 _GENERIC_DOMAIN_TOKENS = {"no", "ref", "reference", "value", "number", "num", "type", "name"}
 
 
-def generate(
-    workspace: Workspace,
-    config=None,
-    *,
-    overlap_threshold: float = 0.5,
-    anchor_overlap_threshold: float | None = None,
-    min_anchor_support: float = 0.75,
-    max_anchors: int = 8,
-    min_members: int = 2,
-) -> dict[str, int]:
-    """Create value-domain nodes without materializing pairwise overlaps."""
-
-    del config
-    logger.info("=== DB value domain extraction ===")
-    totals = Counter()
-    rows = workspace.cypher(
-        """
-        MATCH (d:db)
-        WITH d, coalesce(d._db_connect, d.db_connect) AS db_connect
-        WHERE (d._ref IS NOT NULL OR d.name IS NOT NULL) AND db_connect IS NOT NULL
-        RETURN d, db_connect
-        ORDER BY coalesce(d._ref, d.name)
-        """
-    )
-    for row in rows:
-        db_node = row.get("d") or {}
-        db_ref = str(db_node.get("_ref") or db_node.get("path") or db_node.get("name") or "")
-        db_connect = row.get("db_connect") or db_node.get("_db_connect") or db_node.get("db_connect")
-        if not db_ref or not callable(db_connect):
-            continue
-        try:
-            stats = _generate_for_database(
-                workspace,
-                db_ref=db_ref,
-                db_node=db_node,
-                db_connect=db_connect,
-                domain_config=OnlineValueDomainConfig(
-                    overlap_threshold=overlap_threshold,
-                    match_policy="union_and_anchor",
-                    anchor_overlap_threshold=anchor_overlap_threshold,
-                    min_anchor_support=min_anchor_support,
-                    max_anchors=max_anchors,
-                ),
-                min_members=max(2, min_members),
-            )
-            totals.update(stats)
-        except Exception as exc:
-            totals["database_errors"] += 1
-            logger.warning("Failed to generate value domains for %s: %s", db_ref, exc)
-    logger.info("  Value domain totals: %s", dict(totals))
-    return dict(totals)
-
-
-def _generate_for_database(
+def build_online_candidates_for_database(
     workspace: Workspace,
     *,
     db_ref: str,
@@ -96,16 +53,48 @@ def _generate_for_database(
     db_connect,
     domain_config: OnlineValueDomainConfig,
     min_members: int,
-) -> dict[str, int]:
-    columns = _load_db_columns(workspace, db_ref)
-    if len(columns) < 2:
-        return {"databases": 1, "physical_columns": len(columns)}
+    max_logical_members: int | None = None,
+    value_read_method: str = "exact_distinct",
+    value_read_options: OverlapOptions | None = None,
+) -> tuple[list[dict], dict[str, int]]:
+    """Build online-clustered candidates without deciding their graph type."""
+
+    columns = load_database_columns(
+        workspace,
+        db_ref,
+        exclude_logical_members=max_logical_members is not None,
+    )
+    physical_count_rows = workspace.cypher(
+        """
+        MATCH (c:col)
+        WHERE c._db_ref = $db_ref
+        RETURN count(c) AS physical_columns
+        """,
+        params={"db_ref": db_ref},
+    )
+    physical_column_count = int(
+        (physical_count_rows[0].get("physical_columns") if physical_count_rows else 0) or 0
+    )
+    if physical_column_count < 2:
+        return [], {"databases": 1, "physical_columns": physical_column_count}
 
     for column in columns:
         column["semantic_profile"] = _semantic_profile(column)
-    logical_columns = _load_materialized_comparison_columns(workspace, db_ref, columns)
+    logical_columns = _load_materialized_comparison_columns(
+        workspace,
+        db_ref,
+        columns,
+        max_logical_members=max_logical_members,
+    )
     dialect = str(getattr(db_connect, "dialect", "") or db_node.get("dialect") or "sqlite").lower()
-    value_columns = _load_value_columns(db_connect, dialect, logical_columns)
+    value_columns = _load_value_columns(
+        db_connect,
+        dialect,
+        logical_columns,
+        max_logical_members=max_logical_members,
+        value_read_method=value_read_method,
+        value_read_options=value_read_options,
+    )
     result = build_online_value_domains(
         _ordered_value_columns(value_columns),
         domain_config,
@@ -113,36 +102,33 @@ def _generate_for_database(
         minimum_overlap=_minimum_domain_overlap,
     )
 
-    written = 0
+    summaries: list[dict] = []
     member_edges = 0
-    active_refs: list[str] = []
     for domain in result.domains:
         if len(domain.members) < min_members:
             continue
         summary = _domain_summary(db_ref, domain, domain_config)
-        active_refs.append(summary["_ref"])
-        _upsert_domain(workspace, summary)
-        written += 1
+        summaries.append(summary)
         member_edges += summary["member_count"]
-    _delete_stale_domains(workspace, db_ref, active_refs)
 
     stats = {
         "databases": 1,
-        "physical_columns": len(columns),
+        "physical_columns": physical_column_count,
         "logical_columns": len(logical_columns),
-        "value_domains": written,
+        "value_domains": len(summaries),
         "domain_member_edges": member_edges,
         "domain_comparisons": result.domain_comparisons,
         "anchor_comparisons": result.anchor_comparisons,
     }
-    logger.info("  %s value domains: %s", db_ref, stats)
-    return stats
+    return summaries, stats
 
 
 def _load_materialized_comparison_columns(
     workspace: Workspace,
     db_ref: str,
     physical_columns: list[dict],
+    *,
+    max_logical_members: int | None = None,
 ) -> list[dict]:
     """Return materialized logical columns plus uncovered physical columns."""
 
@@ -151,31 +137,73 @@ def _load_materialized_comparison_columns(
         """
         MATCH (d:db)-[:RELATED_TO*1..3]-(g:table_group)-[:RELATED_TO]-(l:logical_col)
         WHERE d._ref = $db_ref OR d.name = $db_ref OR d.path = $db_ref
-        MATCH (l)-[:RELATED_TO]-(c:col)
-        RETURN l, g, collect(DISTINCT coalesce(c._ref, c.path, c.name)) AS member_refs
+        RETURN DISTINCT l, g
         ORDER BY l._ref
         """,
         params={"db_ref": db_ref},
     )
     covered: set[str] = set()
     result: list[dict] = []
+    sampled_members: dict[str, list[str]] = {}
+    if max_logical_members:
+        sampled_members = _load_sampled_logical_member_refs(
+            workspace,
+            [
+                str((row.get("l") or {}).get("_ref") or "")
+                for row in rows
+                if (row.get("l") or {}).get("_ref")
+            ],
+            max_logical_members,
+        )
     for row in rows:
         logical_node = row.get("l") or {}
         group_node = row.get("g") or {}
+        logical_ref = str(logical_node.get("_ref") or logical_node.get("name") or "")
+        if max_logical_members:
+            all_member_refs = sampled_members.get(logical_ref, [])
+        else:
+            member_rows = workspace.cypher(
+                """
+                MATCH (l:logical_col {_ref: $logical_ref})-[:RELATED_TO]-(c:col)
+                RETURN DISTINCT coalesce(c._ref, c.path, c.name) AS member_ref
+                ORDER BY member_ref
+                """,
+                params={"logical_ref": logical_ref},
+            )
+            all_member_refs = [
+                str(member_row["member_ref"])
+                for member_row in member_rows
+                if member_row.get("member_ref")
+            ]
+        covered.update(ref for ref in all_member_refs if ref in physical_by_ref)
+        selected_refs = all_member_refs
+        if max_logical_members:
+            selected_refs = [
+                member["entity_name"]
+                for member in _evenly_spaced_members(
+                    [{"entity_name": ref} for ref in all_member_refs],
+                    max_logical_members,
+                )
+            ]
+        selected_by_ref = dict(physical_by_ref)
+        missing_refs = [ref for ref in selected_refs if ref not in selected_by_ref]
+        if missing_refs:
+            selected_by_ref.update(
+                _load_physical_columns_by_ref(workspace, db_ref, missing_refs)
+            )
         members = [
-            physical_by_ref[ref]
-            for raw_ref in row.get("member_refs") or []
-            if (ref := str(raw_ref)) in physical_by_ref
+            selected_by_ref[ref]
+            for ref in selected_refs
+            if ref in selected_by_ref
         ]
         if len(members) < 2:
             continue
-        covered.update(str(member["entity_name"]) for member in members)
         group_ref = str(group_node.get("_ref") or group_node.get("name") or "")
         role = str(logical_node.get("role") or logical_node.get("name") or "logical_column")
         logical = _make_column_domain("table_group:" + group_ref, role, members, {group_ref})
         logical.update({
-            "entity_name": str(logical_node.get("_ref") or logical_node.get("name") or logical["entity_name"]),
-            "column_ref": str(logical_node.get("_ref") or logical_node.get("name") or logical["column_ref"]),
+            "entity_name": logical_ref or logical["entity_name"],
+            "column_ref": logical_ref or logical["column_ref"],
             "table": group_ref,
             "table_ref": group_ref,
             "table_name": str(group_node.get("name") or group_node.get("family") or group_ref),
@@ -192,37 +220,262 @@ def _load_materialized_comparison_columns(
     return result
 
 
-def _load_value_columns(db_connect, dialect: str, logical_columns: list[dict]) -> list[ValueColumn]:
-    connection = _open_db_connection(db_connect, readonly=True)
+def _load_sampled_logical_member_refs(
+    workspace: Workspace,
+    logical_refs: list[str],
+    limit: int,
+) -> dict[str, list[str]]:
+    """Sample partition members in bounded graph transactions."""
+
+    result: dict[str, list[str]] = {}
+    for offset in range(0, len(logical_refs), 16):
+        rows = workspace.cypher(
+            """
+            MATCH (l:logical_col)-[:RELATED_TO]-(c:col)
+            WHERE l._ref IN $logical_refs
+            WITH l, c ORDER BY l._ref, c._ref
+            WITH l, collect(coalesce(c._ref, c.path, c.name)) AS refs
+            WITH l, refs,
+                 range(0, CASE WHEN size(refs) < $limit
+                               THEN size(refs) - 1 ELSE $limit - 1 END) AS indexes
+            RETURN l._ref AS logical_ref,
+                   [i IN indexes | refs[
+                       CASE WHEN size(refs) <= $limit THEN i
+                            ELSE toInteger(round(i * (size(refs) - 1.0) / ($limit - 1)))
+                       END
+                   ]] AS member_refs
+            """,
+            params={"logical_refs": logical_refs[offset:offset + 16], "limit": limit},
+        )
+        for row in rows:
+            ref = str(row.get("logical_ref") or "")
+            if ref:
+                result[ref] = [str(item) for item in row.get("member_refs") or [] if item]
+    return result
+
+
+def _load_physical_columns_by_ref(
+    workspace: Workspace,
+    db_ref: str,
+    refs: list[str],
+) -> dict[str, dict]:
+    rows = workspace.cypher(
+        """
+        MATCH (t)-[:RELATED_TO]-(c:col)
+        WHERE (t:table OR t:view) AND c._ref IN $refs
+        RETURN DISTINCT t, c
+        """,
+        params={"refs": refs},
+    )
+    result: dict[str, dict] = {}
+    for row in rows:
+        table = row.get("t") or {}
+        col = row.get("c") or {}
+        col_ref = str(col.get("_ref") or col.get("path") or "")
+        table_ref = str(table.get("_ref") or table.get("path") or table.get("name") or "")
+        if not col_ref or not table_ref:
+            continue
+        result[col_ref] = {
+            "entity_name": col_ref,
+            "db_ref": db_ref,
+            "table": table_ref,
+            "table_ref": table_ref,
+            "table_name": str(table.get("table_name") or table.get("name") or ""),
+            "schema_name": str(table.get("schema_name") or col.get("schema_name") or ""),
+            "column": str(col.get("column_name") or col.get("name") or ""),
+            "column_ref": col_ref,
+            "data_type": str(col.get("data_type") or column_type_from_labels(col)),
+            "cardinality": int(col.get("cardinality") or 0),
+            "sample": decode_jsonish(col.get("sample"), default=[]),
+            "topk": decode_jsonish(col.get("topk"), default=[]),
+            "domain_profile": decode_jsonish(col.get("domain_profile"), default={}),
+        }
+    return result
+
+
+def _load_value_columns(
+    db_connect,
+    dialect: str,
+    logical_columns: list[dict],
+    *,
+    max_logical_members: int | None = None,
+    value_read_method: str = "exact_distinct",
+    value_read_options: OverlapOptions | None = None,
+) -> list[ValueColumn]:
+    selected_members: dict[str, dict] = {}
+    members_by_logical: list[tuple[dict, list[dict]]] = []
+    for logical in logical_columns:
+        members = logical.get("domain_members") or [logical]
+        if logical.get("domain_members") and max_logical_members:
+            members = _evenly_spaced_members(members, max_logical_members)
+        members_by_logical.append((logical, members))
+        for member in members:
+            selected_members[str(member["entity_name"])] = member
+
+    if value_read_method == "snowflake_adaptive_probe":
+        if dialect != "snowflake":
+            raise ValueError("snowflake_adaptive_probe value reading requires Snowflake")
+        physical_cache = _load_bounded_value_samples(
+            db_connect,
+            selected_members.values(),
+            value_read_options or OverlapOptions(),
+        )
+    elif value_read_method == "exact_distinct":
+        physical_cache = {}
+        missing_members: list[dict] = []
+        for ref, member in selected_members.items():
+            cached = load_cached_distinct_hashes(member)
+            if cached is None:
+                missing_members.append(member)
+            else:
+                physical_cache[ref] = frozenset(cached)
+
+        if missing_members:
+            _fill_missing_value_indexes(
+                db_connect,
+                dialect,
+                missing_members,
+                physical_cache,
+            )
+        else:
+            logger.info("  Loaded %d value columns entirely from cache", len(physical_cache))
+    else:
+        raise ValueError(f"Unsupported value_read_method: {value_read_method!r}")
+
+    value_columns: list[ValueColumn] = []
+    for logical, members in members_by_logical:
+        values: set[int] = set()
+        for member in members:
+            values.update(physical_cache.get(str(member["entity_name"]), ()))
+        if not values:
+            continue
+        profile = _semantic_profile(logical)
+        metadata = {
+            **logical,
+            "semantic_profile": profile,
+            "value_read_method": value_read_method,
+        }
+        value_columns.append(ValueColumn(
+            ref=str(logical["entity_name"]),
+            values=frozenset(values),
+            bucket=str(logical.get("db_ref") or "").upper(),
+            metadata=metadata,
+        ))
+    return value_columns
+
+
+def _load_bounded_value_samples(
+    db_connect,
+    members,
+    options: OverlapOptions,
+) -> dict[str, frozenset[int]]:
+    """Read bounded Snowflake row samples through the adaptive-probe cache."""
+
+    connection = _open_value_database_with_retry(db_connect)
     try:
         cursor = connection.cursor()
         try:
-            physical_cache: dict[str, frozenset[int]] = {}
-            value_columns: list[ValueColumn] = []
-            for logical in logical_columns:
-                values: set[int] = set()
-                members = logical.get("domain_members") or [logical]
-                for member in members:
-                    ref = str(member["entity_name"])
-                    if ref not in physical_cache:
-                        hashes: array = _load_or_build_column_hash_index(cursor, member, dialect)
-                        physical_cache[ref] = frozenset(hashes)
-                    values.update(physical_cache[ref])
-                if not values:
-                    continue
-                profile = _semantic_profile(logical)
-                metadata = {**logical, "semantic_profile": profile}
-                value_columns.append(ValueColumn(
-                    ref=str(logical["entity_name"]),
-                    values=frozenset(values),
-                    bucket=str(logical.get("db_ref") or "").upper(),
-                    metadata=metadata,
-                ))
-            return value_columns
+            profiles = build_snowflake_bounded_value_profiles(cursor, members, options)
         finally:
             cursor.close()
     finally:
         connection.close()
+    return {
+        ref: frozenset(profile.sample_hashes)
+        for ref, profile in profiles.items()
+    }
+
+def _fill_missing_value_indexes(
+    db_connect,
+    dialect: str,
+    missing_members: list[dict],
+    physical_cache: dict[str, frozenset[int]],
+) -> None:
+    """Fetch only cache misses and add them to ``physical_cache``."""
+
+    logger.info(
+        "  Value index cache: %d hits, %d misses",
+        len(physical_cache),
+        len(missing_members),
+    )
+    connection = _open_value_database_with_retry(db_connect)
+    try:
+        cursor = connection.cursor()
+        try:
+            inaccessible_refs: list[str] = []
+            inaccessible_relations: set[str] = set()
+            for member in missing_members:
+                ref = str(member["entity_name"])
+                relation_ref = str(member.get("table_ref") or member.get("table") or "")
+                if relation_ref and relation_ref in inaccessible_relations:
+                    inaccessible_refs.append(ref)
+                    physical_cache[ref] = frozenset()
+                    continue
+                try:
+                    hashes: array = load_or_build_distinct_hashes(cursor, member, dialect)
+                    physical_cache[ref] = frozenset(hashes)
+                except Exception as exc:
+                    inaccessible_refs.append(ref)
+                    logger.debug("Skipping inaccessible value column %s: %s", ref, exc)
+                    if relation_ref and _relation_is_inaccessible(exc):
+                        inaccessible_relations.add(relation_ref)
+                    physical_cache[ref] = frozenset()
+            if inaccessible_refs:
+                examples = ", ".join(inaccessible_refs[:3])
+                logger.warning(
+                    "Skipped %d inaccessible value columns (examples: %s)",
+                    len(inaccessible_refs),
+                    examples,
+                )
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
+
+def _open_value_database_with_retry(db_connect, *, attempts: int = 4):
+    """Open a value-source connection across transient network failures."""
+
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return open_database(db_connect, readonly=True)
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                raise
+            delay = min(10, 2 ** attempt)
+            logger.warning(
+                "Value-source connection failed (%d/%d); retrying in %ds: %s",
+                attempt,
+                attempts,
+                delay,
+                str(exc).splitlines()[0],
+            )
+            time.sleep(delay)
+    raise last_exc or RuntimeError("Could not open value-source connection")
+
+
+def _relation_is_inaccessible(exc: Exception) -> bool:
+    """Return whether one failure proves the whole table/view is unavailable."""
+
+    message = str(exc).lower()
+    return "does not exist or not authorized" in message
+
+
+def _evenly_spaced_members(members: list[dict], limit: int) -> list[dict]:
+    """Choose deterministic representatives across a partition family."""
+
+    ordered = sorted(members, key=lambda member: str(member.get("entity_name") or ""))
+    if limit <= 0 or len(ordered) <= limit:
+        return ordered
+    if limit == 1:
+        return [ordered[len(ordered) // 2]]
+    indexes = {
+        round(index * (len(ordered) - 1) / (limit - 1))
+        for index in range(limit)
+    }
+    return [ordered[index] for index in sorted(indexes)]
 
 
 def _ordered_value_columns(columns: list[ValueColumn]) -> list[ValueColumn]:
@@ -431,10 +684,13 @@ def _domain_summary(db_ref: str, domain: OnlineValueDomain, config: OnlineValueD
         str((column.metadata.get("semantic_profile") or {}).get("primary_role") or "unknown")
         for column in domain.members
     )
-    names = [str(column.metadata.get("column") or column.ref) for column in domain.members]
+    value_read_methods = sorted({
+        str(column.metadata.get("value_read_method") or "exact_distinct")
+        for column in domain.members
+    })
     return {
         "_ref": domain_ref,
-        "name": f"value_domain[{safe_schema}:{names[0]}]",
+        "name": f"value_domain_{digest}",
         "db_ref": db_ref,
         "schema_name": schema_name,
         "schema_ref": str(domain.members[0].metadata.get("_schema_ref") or f"{db_ref}--{schema_name}"),
@@ -443,6 +699,8 @@ def _domain_summary(db_ref: str, domain: OnlineValueDomain, config: OnlineValueD
         "union_cardinality": len(domain.union_values),
         "semantic_roles": dict(sorted(roles.items())),
         "grouping_method": GROUPING_METHOD,
+        "extraction_method": GROUPING_METHOD,
+        "value_read_method": value_read_methods[0] if len(value_read_methods) == 1 else value_read_methods,
         "overlap_metric": "intersection_over_min_cardinality",
         "overlap_threshold": config.overlap_threshold,
         "anchor_overlap_threshold": config.anchor_overlap_threshold or config.overlap_threshold,
@@ -450,86 +708,3 @@ def _domain_summary(db_ref: str, domain: OnlineValueDomain, config: OnlineValueD
         "review_status": "pending_review",
         "extraction_evidence": domain.assignments,
     }
-
-
-def _delete_stale_domains(workspace: Workspace, db_ref: str, active_refs: list[str]) -> None:
-    _write_cypher(
-        workspace,
-        """
-        MATCH (d:value_domain {project: $project, grouping_method: $grouping_method, db_ref: $db_ref})
-        WHERE NOT d._ref IN $active_refs
-        DETACH DELETE d
-        """,
-        params={
-            "db_ref": db_ref,
-            "grouping_method": GROUPING_METHOD,
-            "active_refs": active_refs,
-        },
-    )
-
-
-def _upsert_domain(workspace: Workspace, summary: dict) -> None:
-    member_refs = summary.pop("member_refs")
-    props = neo4j_props(summary)
-    refresh_props = {
-        key: value
-        for key, value in props.items()
-        if key not in {"review_status", "brief", "detail"}
-    }
-    _write_cypher(
-        workspace,
-        """
-        MATCH (db:db {project: $project})
-        WHERE db._ref = $db_ref OR db.name = $db_ref OR db.path = $db_ref
-        MERGE (d:value_domain:domain {_ref: $ref, project: $project})
-        ON CREATE SET d.id = 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8),
-                      d += $props
-        ON MATCH SET d += $refresh_props
-        SET d.labels = reduce(acc = [], label IN coalesce(d.labels, []) + ['value_domain', 'domain'] |
-            CASE WHEN label IN acc THEN acc ELSE acc + label END)
-        MERGE (db)-[:RELATED_TO]->(d)
-        """,
-        params={
-            "db_ref": summary["db_ref"],
-            "ref": summary["_ref"],
-            "props": props,
-            "refresh_props": refresh_props,
-        },
-    )
-    schema_ref = summary.get("schema_ref")
-    if schema_ref:
-        _write_cypher(
-            workspace,
-            """
-            MATCH (d:value_domain {_ref: $ref, project: $project})
-            MATCH (s:schema {project: $project})
-            WHERE s._ref = $schema_ref
-            MERGE (s)-[:RELATED_TO]->(d)
-            """,
-            params={"ref": summary["_ref"], "schema_ref": schema_ref},
-        )
-    _write_cypher(
-        workspace,
-        """
-        UNWIND $member_refs AS member_ref
-        MATCH (d:value_domain {_ref: $ref, project: $project})
-        MATCH (c {project: $project})
-        WHERE (c:col OR c:logical_col)
-          AND (c._ref = member_ref OR c.path = member_ref)
-        MERGE (c)-[:RELATED_TO]->(d)
-        """,
-        params={"ref": summary["_ref"], "member_refs": member_refs},
-    )
-
-
-def _write_cypher(workspace: Workspace, query: str, params: dict | None = None) -> list:
-    params = dict(params or {})
-    rows: list[Any] = []
-    for project in workspace.active_projects:
-        store = workspace._get_store(project)
-        if store is None:
-            continue
-        scoped = {**params, "project": project}
-        with store.execution_lock:
-            rows.extend(store.execute_cypher(query, params=scoped))
-    return rows

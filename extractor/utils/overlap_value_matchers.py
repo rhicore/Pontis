@@ -79,7 +79,12 @@ def _detect_column_overlaps_sql(
         conn = _open_db_connection(db_connect, readonly=True)
         cursor = conn.cursor()
         try:
-            overlaps = _detect_column_overlaps_sql_cursor(cursor, dialect, candidates, options)
+            if dialect in {"sqlite", "duckdb"}:
+                overlaps = _detect_column_overlaps_local_distinct_sets(
+                    cursor, dialect, candidates, options
+                )
+            else:
+                overlaps = _detect_column_overlaps_sql_cursor(cursor, dialect, candidates, options)
         finally:
             try:
                 cursor.close()
@@ -95,6 +100,70 @@ def _detect_column_overlaps_sql(
                 pass
 
     overlaps.sort(key=lambda item: (-item["stats"]["overlap_coefficient"], item["from_ref"], item["to_ref"]))
+    return overlaps
+
+
+def _detect_column_overlaps_local_distinct_sets(
+    cursor,
+    dialect: str,
+    candidates: list[tuple[Dict, Dict]],
+    options: OverlapOptions,
+) -> List[Dict]:
+    """Evaluate local SQL DISTINCT overlap after scanning each column once."""
+
+    columns = {
+        column["entity_name"]: column
+        for pair in candidates
+        for column in pair
+    }
+    values_by_ref: dict[str, set[Any]] = {}
+    for ref, column in sorted(columns.items()):
+        try:
+            cursor.execute(_distinct_column_values_sql(column, dialect))
+            values_by_ref[ref] = {
+                value
+                for row in cursor.fetchall()
+                if (value := _row_value(row, 0)) is not None
+            }
+        except Exception as exc:
+            logger.debug("Could not load DISTINCT values for %s: %s", ref, exc)
+
+    overlaps: list[Dict] = []
+    for col1, col2 in candidates:
+        left = values_by_ref.get(col1["entity_name"])
+        right = values_by_ref.get(col2["entity_name"])
+        if not left or not right:
+            continue
+        shared = left & right
+        if not shared:
+            continue
+        card_1 = len(left)
+        card_2 = len(right)
+        card_overlap = len(shared)
+        intersection_sample = []
+        if _needs_intersection_sample(card_1, card_2, card_overlap):
+            intersection_sample = [
+                _normalize_value(value)
+                for value in list(shared)[:INTERSECTION_SAMPLE_LIMIT]
+            ]
+        if _is_disabled_overlap_stats(
+            col1, col2, card_1, card_2, card_overlap, intersection_sample
+        ):
+            continue
+        union = card_1 + card_2 - card_overlap
+        overlaps.append(_pair_overlap_payload(col1, col2, {
+            "card_overlap": card_overlap,
+            "cardinality_A": card_1,
+            "cardinality_B": card_2,
+            "jaccard": round(card_overlap / union, 4) if union else 0.0,
+            "coverage_A_in_B": round(card_overlap / card_1, 4) if card_1 else 0.0,
+            "coverage_B_in_A": round(card_overlap / card_2, 4) if card_2 else 0.0,
+            "overlap_coefficient": round(card_overlap / min(card_1, card_2), 6),
+            "method": "sql_exact_distinct_cached",
+        }))
+    overlaps.sort(key=lambda item: (
+        -item["stats"]["overlap_coefficient"], item["from_ref"], item["to_ref"]
+    ))
     return overlaps
 
 
@@ -391,6 +460,48 @@ def _build_snowflake_adaptive_probe_profiles(
     options: OverlapOptions,
 ) -> dict[str, AdaptiveProbeProfile]:
     physical_columns, domain_columns = _sample_bloom_profile_columns(candidates, options=options)
+    profiles = build_snowflake_bounded_value_profiles(
+        cursor,
+        physical_columns.values(),
+        options,
+    )
+
+    for ref, domain in sorted(domain_columns.items()):
+        members = _sample_bloom_domain_members(domain, options)
+        member_profiles = [profiles[member["entity_name"]] for member in members if member["entity_name"] in profiles]
+        if not member_profiles:
+            continue
+        # Snowflake ORDER BY uses signed HASH values.  Preserve that same total
+        # order when unioning physical member sketches into a logical domain.
+        samples = tuple(sorted({
+            value_hash
+            for profile in member_profiles
+            for value_hash in profile.sample_hashes
+        })[: options.adaptive_sample_max_size])
+        profiles[ref] = AdaptiveProbeProfile(
+            cardinality=sum(profile.cardinality for profile in member_profiles),
+            sample_hashes=samples,
+            member_refs=tuple(member["entity_name"] for member in members if member["entity_name"] in profiles),
+        )
+    return profiles
+
+
+def build_snowflake_bounded_value_profiles(
+    cursor,
+    columns: Iterable[Dict],
+    options: OverlapOptions,
+) -> dict[str, AdaptiveProbeProfile]:
+    """Load or build bounded row samples for physical Snowflake columns.
+
+    This is the shared value-reader used by both pairwise overlap and online
+    domain clustering.  Missing profiles are grouped by table and fetched in
+    bounded, multi-column queries; complete DISTINCT sets are never built.
+    """
+
+    physical_columns = {
+        str(column["entity_name"]): column
+        for column in columns
+    }
     profiles: dict[str, AdaptiveProbeProfile] = {}
     missing_by_table: dict[str, list[Dict]] = defaultdict(list)
     for col in sorted(physical_columns.values(), key=lambda item: item["entity_name"]):
@@ -419,24 +530,6 @@ def _build_snowflake_adaptive_probe_profiles(
                 built += 1
             if built % 25 < len(batch):
                 logger.info("  Built/loaded adaptive probe samples for %s/%s columns", built, len(physical_columns))
-
-    for ref, domain in sorted(domain_columns.items()):
-        members = _sample_bloom_domain_members(domain, options)
-        member_profiles = [profiles[member["entity_name"]] for member in members if member["entity_name"] in profiles]
-        if not member_profiles:
-            continue
-        # Snowflake ORDER BY uses signed HASH values.  Preserve that same total
-        # order when unioning physical member sketches into a logical domain.
-        samples = tuple(sorted({
-            value_hash
-            for profile in member_profiles
-            for value_hash in profile.sample_hashes
-        })[: options.adaptive_sample_max_size])
-        profiles[ref] = AdaptiveProbeProfile(
-            cardinality=sum(profile.cardinality for profile in member_profiles),
-            sample_hashes=samples,
-            member_refs=tuple(member["entity_name"] for member in members if member["entity_name"] in profiles),
-        )
     return profiles
 
 
@@ -1573,11 +1666,14 @@ def _load_or_build_column_hash_index(
     unavailable_tables: set[str] | None = None,
 ) -> array:
     data_path, meta_path = _hash_index_paths(col)
-    if data_path.exists() and not _hash_index_force_rebuild():
-        try:
-            return _read_hash_array(data_path)
-        except Exception as exc:
-            logger.debug("Could not read hash index %s: %s; rebuilding", data_path, exc)
+    if not _hash_index_force_rebuild():
+        for cached_path in _hash_index_read_paths(col):
+            if not cached_path.exists():
+                continue
+            try:
+                return _read_hash_array(cached_path)
+            except Exception as exc:
+                logger.debug("Could not read hash index %s: %s; rebuilding", cached_path, exc)
 
     unavailable_tables = unavailable_tables or set()
     if _domain_members(col):
@@ -1593,28 +1689,31 @@ def _load_or_build_column_hash_index(
         else:
             values = _build_column_hash_array(cursor, col, dialect)
     data_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_hash_array(data_path, values)
-    meta_path.write_text(
-        json.dumps(
-            {
-                "entity_name": col.get("entity_name"),
-                "db_ref": col.get("db_ref"),
-                "schema_name": col.get("schema_name"),
-                "table_name": col.get("table_name"),
-                "column": col.get("column"),
-                "data_type": col.get("data_type"),
-                "hash_count": len(values),
-                "domain_member_count": len(_domain_members(col)),
-                "domain_role": col.get("domain_role"),
-                "domain_unit": col.get("domain_unit"),
-                "method": "blake2b_64_sorted_distinct",
-            },
-            ensure_ascii=False,
-            sort_keys=True,
+    try:
+        _write_hash_array(data_path, values)
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "entity_name": col.get("entity_name"),
+                    "db_ref": col.get("db_ref"),
+                    "schema_name": col.get("schema_name"),
+                    "table_name": col.get("table_name"),
+                    "column": col.get("column"),
+                    "data_type": col.get("data_type"),
+                    "hash_count": len(values),
+                    "domain_member_count": len(_domain_members(col)),
+                    "domain_role": col.get("domain_role"),
+                    "domain_unit": col.get("domain_unit"),
+                    "method": "blake2b_64_sorted_distinct",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
         )
-        + "\n",
-        encoding="utf-8",
-    )
+    except OSError as exc:
+        logger.warning("Could not persist value index for %s: %s", col.get("entity_name"), exc)
     return values
 
 
@@ -1690,7 +1789,25 @@ def _hash_index_root() -> Path:
     raw = os.environ.get("PONTIS_VALUE_INDEX_DIR")
     if raw:
         return Path(raw).expanduser().resolve()
+    # Keep the historical Pontis-local location as the canonical write path.
+    # Existing Spider value indexes are expensive to rebuild from Snowflake.
     return Path(__file__).resolve().parents[2] / "workspace" / "baselines" / "pontis" / "value_index"
+
+
+def _hash_index_read_paths(col: Dict) -> list[Path]:
+    """Return canonical and previously used relocated cache paths."""
+
+    canonical, _meta = _hash_index_paths(col)
+    paths = [canonical]
+    if not os.environ.get("PONTIS_VALUE_INDEX_DIR"):
+        relocated_root = (
+            Path(__file__).resolve().parents[3]
+            / "workspace" / "baselines" / "pontis" / "value_index"
+        )
+        relocated = relocated_root / canonical.parent.name / canonical.name
+        if relocated != canonical:
+            paths.append(relocated)
+    return paths
 
 
 def _hash_index_force_rebuild() -> bool:
@@ -1717,10 +1834,13 @@ def _read_hash_array(path: Path) -> array:
 
 
 def _write_hash_array(path: Path, values: array) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("wb") as fh:
-        values.tofile(fh)
-    tmp.replace(path)
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    try:
+        with tmp.open("wb") as fh:
+            values.tofile(fh)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _value_hash64(value: Any) -> int | None:
@@ -3048,7 +3168,7 @@ def _pair_overlap_payload(col1: Dict, col2: Dict, overlap_result: Dict) -> Dict:
         "to_column": col2["column"],
         "to_ref": col2["entity_name"],
         "to_type": col2["data_type"],
-        "sources": ["value_domain"],
+        "sources": ["value_overlap"],
         "stats": stats,
     }
     if _domain_members(col1) or _domain_members(col2):

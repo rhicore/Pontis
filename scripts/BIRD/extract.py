@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """BIRD 数据库提取脚本。"""
+import argparse
 import logging
 import json
 import shutil
@@ -28,13 +29,13 @@ logger = logging.getLogger(__name__)
 STATIC_PIPELINE = [
     "db_column_stats",
     "db_fk_validate",
-    "db_column_overlap",
+    "db_column_domain",
 ]
 
-# Preserve the pre-storage-refactor BIRD behavior: compare every physical
-# column pair with exact SQLite value overlap, and build name-token overlap
-# evidence separately. Spider2 supplies its own, more selective module kwargs.
-BIRD_OVERLAP_KWARGS = {
+# BIRD deliberately keeps the simple legacy policy: compare all physical
+# SQLite columns exactly and add independent name evidence. Spider's logical
+# columns, bounded samples, and online clustering are unreachable here.
+BIRD_COLUMN_DOMAIN_OPTIONS = {
     "value_match_method": "sql",
     "filter_pipeline": [
         {
@@ -43,19 +44,9 @@ BIRD_OVERLAP_KWARGS = {
             "threshold": 0,
         },
     ],
-    "value_overlap_enabled": True,
-    "name_overlap_enabled": True,
-    "same_schema_only": False,
-    "skip_same_table_group": False,
-    "same_table_overlap_enabled": True,
-    "same_table_group_representative_only": False,
+    # This is the only non-BIRD default that would filter the legacy candidate
+    # set before exact value comparison.
     "domain_filter_enabled": False,
-    "shape_filter_enabled": False,
-    "key_like_only": False,
-    "require_name_token_overlap": False,
-    "require_repeated_key_name": False,
-    "column_domain_enabled": False,
-    "pattern_table_domain_enabled": False,
     "max_value_candidate_pairs": 1_000_000,
 }
 
@@ -65,7 +56,7 @@ OFFICIAL_DESCRIPTION_PIPELINE = [
 
 AGENT_PIPELINE = [
     "agent_schema_prepare",
-    "agent_relation_disambiguation_review",
+    "agent_column_domain_review",
     "agent_disambiguate",
     "agent_bird_profile",
     "agent_description_audit",
@@ -121,6 +112,7 @@ def extract_one(
         "agent": 0.0,
         "schema_prepare": 0.0,
         "relation_review": 0.0,
+        "business_profile": 0.0,
         "description_review": 0.0,
         "description_audit": 0.0,
         "disambiguate": 0.0,
@@ -140,7 +132,11 @@ def extract_one(
 
     with file_log_handler(str(pontis_dir / "extract.log")):
         logger.info(f"=== {name} ===")
-        if not ai_only:
+        run_static = not ai_only and not agent_only
+        run_agents = not no_ai
+        run_embedding = not no_ai and not agent_only
+
+        if run_static:
             static_timings = run_modules(
                 STATIC_PIPELINE,
                 workspace,
@@ -148,7 +144,12 @@ def extract_one(
                 options=RunOptions(
                     continue_on_error=False,
                     collect_timing=True,
-                    module_kwargs={"db_column_overlap": BIRD_OVERLAP_KWARGS},
+                    module_kwargs={
+                        "db_column_domain": {
+                            "strategy": "pairwise_filter",
+                            "strategy_options": BIRD_COLUMN_DOMAIN_OPTIONS,
+                        },
+                    },
                 ),
             )
             result["static"] = _sum_timings(static_timings, STATIC_PIPELINE)
@@ -166,7 +167,7 @@ def extract_one(
             if result["description_review"]:
                 logger.info(f"Official description phase done: {result['description_review']:.1f}s")
 
-        if not no_ai:
+        if run_agents:
             registry = get_registry()
 
             agent_pipeline = [name for name in AGENT_PIPELINE if name in registry]
@@ -181,7 +182,8 @@ def extract_one(
             )
             result["schema_prepare"] = agent_timings.get("agent_schema_prepare", 0.0)
             result["agent"] = result["schema_prepare"]
-            result["relation_review"] = agent_timings.get("agent_relation_disambiguation_review", 0.0)
+            result["relation_review"] = agent_timings.get("agent_column_domain_review", 0.0)
+            result["business_profile"] = agent_timings.get("agent_bird_profile", 0.0)
             result["description_audit"] = agent_timings.get("agent_description_audit", 0.0)
             result["disambiguate"] = agent_timings.get("agent_disambiguate", 0.0)
             result["readme"] = agent_timings.get("agent_readme", 0.0)
@@ -190,6 +192,8 @@ def extract_one(
                 logger.info(f"Schema prepare phase done: {result['agent']:.1f}s")
             if result["relation_review"]:
                 logger.info(f"Relation/disambiguation review phase done: {result['relation_review']:.1f}s")
+            if result["business_profile"]:
+                logger.info(f"Business profile phase done: {result['business_profile']:.1f}s")
             if result["description_audit"]:
                 logger.info(f"Description audit phase done: {result['description_audit']:.1f}s")
             if result["disambiguate"]:
@@ -197,17 +201,24 @@ def extract_one(
             if result["readme"]:
                 logger.info(f"README phase done: {result['readme']:.1f}s")
 
-        registry = get_registry()
-        embedding_pipeline = [name for name in EMBEDDING_PIPELINE if name in registry]
-        embedding_timings = run_modules(
-            embedding_pipeline,
-            workspace,
-            config=config,
-            options=RunOptions(continue_on_error=False, collect_timing=True),
-        )
-        result["embedding"] = embedding_timings.get("semantic_embedding", 0.0)
-        if result["embedding"]:
-            logger.info(f"Embedding phase done: {result['embedding']:.1f}s")
+        if run_embedding:
+            registry = get_registry()
+            embedding_pipeline = [name for name in EMBEDDING_PIPELINE if name in registry]
+            embedding_timings = run_modules(
+                embedding_pipeline,
+                workspace,
+                config=config,
+                options=RunOptions(continue_on_error=False, collect_timing=True),
+            )
+            result["embedding"] = embedding_timings.get("semantic_embedding", 0.0)
+            if result["embedding"]:
+                logger.info(f"Embedding phase done: {result['embedding']:.1f}s")
+
+        if run_static and run_agents and run_embedding:
+            from scripts.BIRD.readiness import assert_bird_graph_ready
+
+            assert_bird_graph_ready(workspace, config=config)
+            logger.info("BIRD graph readiness check passed")
 
         if hasattr(config, "get_preprocess_token_metrics"):
             result.update(config.get_preprocess_token_metrics())
@@ -225,65 +236,60 @@ def extract_one(
     return result
 
 
-def _parse_run_id(argv: list[str]) -> str | None:
-    for i, arg in enumerate(argv):
-        if arg == "--run-id" and i + 1 < len(argv):
-            return argv[i + 1]
-        if arg.startswith("--run-id="):
-            return arg.split("=", 1)[1]
-    return None
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Extract BIRD databases into Pontis graphs")
+    parser.add_argument("db", nargs="?", help="one database id; default runs all databases")
+    parser.add_argument("--train", action="store_true", help="use the BIRD train split")
+    parser.add_argument("--force", action="store_true", help="clear selected graphs and preprocess logs first")
+    parser.add_argument("--debug", action="store_true", help="enable debug logging")
+    parser.add_argument("--workers", type=int, default=1, help="parallel databases")
+    parser.add_argument("--modules", help="comma-separated modules to run explicitly")
+    parser.add_argument("--run-id", help="preprocess run id")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
+        "--static-only",
+        "--no-ai",
+        dest="static_only",
+        action="store_true",
+        help="run deterministic schema/statistics/official-description modules only",
+    )
+    modes.add_argument(
+        "--ai-only",
+        action="store_true",
+        help="run explorer agents and semantic embedding, without deterministic modules",
+    )
+    modes.add_argument(
+        "--agent-only",
+        action="store_true",
+        help="run explorer agents only, without deterministic modules or embedding",
+    )
+    return parser
 
 
-def _parse_workers(argv: list[str]) -> int:
-    for i, arg in enumerate(argv):
-        if arg == "--workers" and i + 1 < len(argv):
-            return max(1, int(argv[i + 1]))
-        if arg.startswith("--workers="):
-            return max(1, int(arg.split("=", 1)[1]))
-    return 1
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
+    parsed = parser.parse_args(argv)
+    if parsed.workers < 1:
+        parser.error("--workers must be at least 1")
+    if parsed.modules and (parsed.static_only or parsed.ai_only or parsed.agent_only):
+        parser.error("--modules cannot be combined with a pipeline mode")
+    if parsed.run_id:
+        set_run_id(parsed.run_id)
 
+    workers = parsed.workers
+    selected_modules = (
+        [name.strip() for name in parsed.modules.split(",") if name.strip()]
+        if parsed.modules
+        else None
+    )
+    db_filter = parsed.db
 
-def _parse_modules(argv: list[str]) -> list[str] | None:
-    for i, arg in enumerate(argv):
-        if arg == "--modules" and i + 1 < len(argv):
-            return [name.strip() for name in argv[i + 1].split(",") if name.strip()]
-        if arg.startswith("--modules="):
-            return [name.strip() for name in arg.split("=", 1)[1].split(",") if name.strip()]
-    return None
-
-
-def _parse_db_filter(argv: list[str]) -> str | None:
-    skip_next = False
-    for arg in argv:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg in {"--run-id", "--workers", "--modules"}:
-            skip_next = True
-            continue
-        if arg.startswith("--"):
-            continue
-        return arg
-    return None
-
-
-def main() -> None:
-    argv = sys.argv[1:]
-    run_id = _parse_run_id(argv)
-    if run_id:
-        set_run_id(run_id)
-
-    args = set(argv)
-    workers = _parse_workers(argv)
-    selected_modules = _parse_modules(argv)
-    db_filter = _parse_db_filter(argv)
-
-    no_ai = "--no-ai" in args or "--static-only" in args
-    ai_only = "--ai-only" in args
-    agent_only = "--agent-only" in args
-    force = "--force" in args
-    debug = "--debug" in args
-    train = "--train" in args
+    no_ai = parsed.static_only
+    ai_only = parsed.ai_only
+    agent_only = parsed.agent_only
+    force = parsed.force
+    debug = parsed.debug
+    train = parsed.train
 
     logging.basicConfig(level=logging.INFO, format=_CONSOLE_FMT, datefmt=_LOG_DATE)
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -305,9 +311,11 @@ def main() -> None:
     elif no_ai:
         mode = "static only"
     elif agent_only:
-        mode = "static + agent only" if not ai_only else "agent only"
+        mode = "agent only"
+    elif ai_only:
+        mode = "agent + embedding"
     else:
-        mode = "agent only" if ai_only else "static + agent"
+        mode = "static + agent + embedding"
     split = "train" if train else "dev"
     print(f"=== BIRD Extract ({split}, {mode}) ===")
     print(f"Databases: {len(db_dirs)}\n")
@@ -325,7 +333,9 @@ def main() -> None:
     success, failed = [], []
     all_results = []
     total_static = 0.0
-    total_agent = total_relation_review = total_desc_review = total_desc_audit = total_disambig = total_readme = 0.0
+    total_agent = total_relation_review = total_business_profile = 0.0
+    total_desc_review = total_desc_audit = total_disambig = total_readme = 0.0
+    total_embedding = 0.0
     total_preprocess_llm_input_tokens = 0
     total_preprocess_llm_cached_input_tokens = 0
     total_preprocess_llm_uncached_input_tokens = 0
@@ -339,8 +349,11 @@ def main() -> None:
         if selected_modules:
             from scripts.preprocess_engine import RunOptions, init_workspace, run_modules
 
-            workspace, config = init_workspace(str(db_dir), verbose=debug)
             pontis_dir = get_preprocess_dir(name, train)
+            if force and pontis_dir.exists():
+                shutil.rmtree(pontis_dir)
+                logger.info(f"  已删除旧 preprocess 输出: {name}")
+            workspace, config = init_workspace(str(db_dir), verbose=debug)
             if force:
                 workspace.clear_graph()
                 logger.info(f"  已清空 Neo4j 图谱: {name}")
@@ -351,6 +364,7 @@ def main() -> None:
                 "agent": 0.0,
                 "schema_prepare": 0.0,
                 "relation_review": 0.0,
+                "business_profile": 0.0,
                 "description_review": 0.0,
                 "description_audit": 0.0,
                 "disambiguate": 0.0,
@@ -376,12 +390,18 @@ def main() -> None:
                     options=RunOptions(
                         continue_on_error=False,
                         collect_timing=True,
-                        module_kwargs={"db_column_overlap": BIRD_OVERLAP_KWARGS},
+                        module_kwargs={
+                            "db_column_domain": {
+                                "strategy": "pairwise_filter",
+                                "strategy_options": BIRD_COLUMN_DOMAIN_OPTIONS,
+                            },
+                        },
                     ),
                 )
                 result["schema_prepare"] = timings.get("agent_schema_prepare", 0.0)
                 result["agent"] = result["schema_prepare"]
-                result["relation_review"] = timings.get("agent_relation_disambiguation_review", 0.0)
+                result["relation_review"] = timings.get("agent_column_domain_review", 0.0)
+                result["business_profile"] = timings.get("agent_bird_profile", 0.0)
                 result["description_review"] = timings.get("bird_official_description_extract", 0.0)
                 result["description_audit"] = timings.get("agent_description_audit", 0.0)
                 result["disambiguate"] = timings.get("agent_disambiguate", 0.0)
@@ -404,7 +424,9 @@ def main() -> None:
 
     def record_result(result: dict) -> None:
         nonlocal total_static
-        nonlocal total_agent, total_relation_review, total_desc_review, total_desc_audit, total_disambig, total_readme
+        nonlocal total_agent, total_relation_review, total_business_profile
+        nonlocal total_desc_review, total_desc_audit, total_disambig, total_readme
+        nonlocal total_embedding
         nonlocal total_preprocess_llm_input_tokens, total_preprocess_llm_cached_input_tokens
         nonlocal total_preprocess_llm_uncached_input_tokens, total_preprocess_llm_output_tokens
         nonlocal total_preprocess_llm_tokens, total_preprocess_embedding_tokens
@@ -412,10 +434,12 @@ def main() -> None:
         total_static += result["static"]
         total_agent += result["agent"]
         total_relation_review += result.get("relation_review", 0.0)
+        total_business_profile += result.get("business_profile", 0.0)
         total_desc_review += result.get("description_review", 0.0)
         total_desc_audit += result.get("description_audit", 0.0)
         total_disambig += result["disambiguate"]
         total_readme += result["readme"]
+        total_embedding += result["embedding"]
         total_preprocess_llm_input_tokens += int(result.get("preprocess_llm_input_tokens", 0) or 0)
         total_preprocess_llm_cached_input_tokens += int(result.get("preprocess_llm_cached_input_tokens", 0) or 0)
         total_preprocess_llm_uncached_input_tokens += int(result.get("preprocess_llm_uncached_input_tokens", 0) or 0)
@@ -433,6 +457,8 @@ def main() -> None:
             parts.append(f"Schema: {result['agent']:.1f}s")
         if result.get("relation_review"):
             parts.append(f"Rel/Disambig Review: {result['relation_review']:.1f}s")
+        if result.get("business_profile"):
+            parts.append(f"Business Profile: {result['business_profile']:.1f}s")
         if result.get("description_review"):
             parts.append(f"Official Description: {result['description_review']:.1f}s")
         if result.get("description_audit"):
@@ -490,16 +516,18 @@ def main() -> None:
     print("=" * 40)
     print(f"Done: {len(success)} ok, {len(failed)} failed")
     total_all = (
-        total_static + total_agent + total_relation_review + total_desc_review
-        + total_desc_audit + total_disambig + total_readme
+        total_static + total_agent + total_relation_review + total_business_profile + total_desc_review
+        + total_desc_audit + total_disambig + total_readme + total_embedding
     )
     print(
         f"Time: static {total_static:.1f}s, "
         f"schema {total_agent:.1f}s, rel/disambig review {total_relation_review:.1f}s, "
+        f"business profile {total_business_profile:.1f}s, "
         f"official description {total_desc_review:.1f}s, "
         f"description audit {total_desc_audit:.1f}s, "
         f"disambig {total_disambig:.1f}s, "
         f"readme {total_readme:.1f}s, "
+        f"embedding {total_embedding:.1f}s, "
         f"total {total_all:.1f}s"
     )
     print(
@@ -518,10 +546,12 @@ def main() -> None:
             "static": total_static,
             "schema": total_agent,
             "relation_review": total_relation_review,
+            "business_profile": total_business_profile,
             "description_review": total_desc_review,
             "description_audit": total_desc_audit,
             "disambiguate": total_disambig,
             "readme": total_readme,
+            "embedding": total_embedding,
             "total": total_all,
         },
         "preprocess_tokens": {

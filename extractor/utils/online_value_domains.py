@@ -6,6 +6,7 @@ can use the same clustering logic.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Callable, Hashable, Iterable
 
@@ -73,6 +74,10 @@ def build_online_value_domains(
 
     config = config or OnlineValueDomainConfig()
     domains: list[OnlineValueDomain] = []
+    # A domain can only pass the overlap check when it shares at least one
+    # distinct value with the incoming column.  Index those possible domains
+    # instead of scanning every domain accumulated in a wide database.
+    domains_by_value: dict[int, set[int]] = defaultdict(set)
     assignments: dict[str, int] = {}
     domain_comparisons = 0
     anchor_comparisons = 0
@@ -81,7 +86,13 @@ def build_online_value_domains(
         if not column.values:
             continue
         matches: list[tuple[float, float, int, OnlineValueDomain, dict]] = []
-        for domain in domains:
+        candidate_domain_ids = sorted({
+            domain_id
+            for value in column.values
+            for domain_id in domains_by_value.get(value, ())
+        })
+        for domain_id in candidate_domain_ids:
+            domain = domains[domain_id]
             if domain.bucket != column.bucket:
                 continue
             if compatible is not None and not compatible(column, domain):
@@ -144,6 +155,8 @@ def build_online_value_domains(
                 anchors=[column],
             )
             domains.append(domain)
+        for value in column.values:
+            domains_by_value[value].add(domain.domain_id)
         assignments[column.ref] = domain.domain_id
 
     return OnlineValueDomainResult(

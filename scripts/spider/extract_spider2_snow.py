@@ -37,10 +37,10 @@ EXTRACT_PIPELINE = [
     "spider2_snow_schema",
     "db_table_group",
     "db_column_stats",
-    "db_value_domain",
+    "db_column_domain",
 ]
 TOPIC_PIPELINE = ["agent_topic_group"]
-VALUE_DOMAIN_REVIEW_PIPELINE = ["agent_value_domain_review"]
+COLUMN_DOMAIN_REVIEW_PIPELINE = ["agent_column_domain_review"]
 NAVIGATION_PIPELINE = ["agent_spider_navigation_prepare"]
 LANDSCAPE_PIPELINE = ["schema_landscape"]
 EMBEDDING_PIPELINE = ["semantic_embedding"]
@@ -105,6 +105,12 @@ SPIDER_VALUE_DOMAIN_KWARGS = {
     "min_anchor_support": 0.75,
     "max_anchors": 8,
     "min_members": 2,
+    "max_logical_members": 8,
+    # Reuse the bounded reader from the former overlap pipeline.  It samples
+    # several columns from the same table in one LIMIT query and never builds
+    # complete DISTINCT indexes for Spider Snowflake databases.
+    "value_read_method": "snowflake_adaptive_probe",
+    "value_read_options": SPIDER_OVERLAP_KWARGS,
 }
 
 SPIDER_COLUMN_STATS_KWARGS = {
@@ -123,11 +129,12 @@ def extract_one(
     extract_only: bool = False,
     agent_only: bool = False,
     skip_topic: bool = False,
-    skip_value_domain_review: bool = False,
+    skip_column_domain_review: bool = False,
     skip_navigation: bool = False,
     skip_landscape: bool = False,
     skip_embedding: bool = False,
     debug: bool = False,
+    modules: list[str] | None = None,
 ) -> dict:
     prepared = prepare_spider2_snow_project(db_id, cases, force=force and not agent_only)
     project_dir = Path(prepared["project_dir"])
@@ -147,12 +154,14 @@ def extract_one(
             pipeline.extend(name for name in TOPIC_PIPELINE if name in registry)
         if not skip_navigation:
             pipeline.extend(name for name in NAVIGATION_PIPELINE if name in registry)
-        if not skip_value_domain_review:
-            pipeline.extend(name for name in VALUE_DOMAIN_REVIEW_PIPELINE if name in registry)
+        if not skip_column_domain_review:
+            pipeline.extend(name for name in COLUMN_DOMAIN_REVIEW_PIPELINE if name in registry)
         if not skip_landscape:
             pipeline.extend(name for name in LANDSCAPE_PIPELINE if name in registry)
     if not extract_only and not skip_embedding:
         pipeline.extend(name for name in EMBEDDING_PIPELINE if name in registry)
+    if modules is not None:
+        pipeline = [name for name in modules if name in registry]
 
     result = {
         **prepared,
@@ -162,7 +171,7 @@ def extract_one(
         "timings": {},
         "extract": 0.0,
         "topic": 0.0,
-        "value_domain_review": 0.0,
+        "column_domain_review": 0.0,
         "navigation": 0.0,
         "landscape": 0.0,
         "embedding": 0.0,
@@ -185,15 +194,18 @@ def extract_one(
                 collect_timing=True,
                 module_kwargs={
                     "db_column_stats": SPIDER_COLUMN_STATS_KWARGS,
-                    "db_value_domain": SPIDER_VALUE_DOMAIN_KWARGS,
+                    "db_column_domain": {
+                        "strategy": "online_clustering",
+                        "strategy_options": SPIDER_VALUE_DOMAIN_KWARGS,
+                    },
                 },
             ),
         )
         result["timings"] = {name: round(value, 3) for name, value in timings.items()}
         result["extract"] = round(sum(timings.get(name, 0.0) for name in EXTRACT_PIPELINE), 3)
         result["topic"] = round(sum(timings.get(name, 0.0) for name in TOPIC_PIPELINE), 3)
-        result["value_domain_review"] = round(
-            sum(timings.get(name, 0.0) for name in VALUE_DOMAIN_REVIEW_PIPELINE),
+        result["column_domain_review"] = round(
+            sum(timings.get(name, 0.0) for name in COLUMN_DOMAIN_REVIEW_PIPELINE),
             3,
         )
         result["navigation"] = round(sum(timings.get(name, 0.0) for name in NAVIGATION_PIPELINE), 3)
@@ -228,11 +240,17 @@ def main() -> int:
     parser.add_argument("--extract-only", action="store_true", help="Run deterministic schema, grouping, stats, and value-domain extraction.")
     parser.add_argument("--agent-only", action="store_true", help="Skip extraction and rerun explorer/embedding on the existing graph.")
     parser.add_argument("--skip-topic", action="store_true")
-    parser.add_argument("--skip-value-domain-review", action="store_true")
+    parser.add_argument(
+        "--skip-column-domain-review",
+        "--skip-value-domain-review",
+        action="store_true",
+        dest="skip_column_domain_review",
+    )
     parser.add_argument("--skip-navigation", action="store_true")
     parser.add_argument("--skip-landscape", action="store_true")
     parser.add_argument("--skip-embedding", action="store_true")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--modules", help="Comma-separated preprocessing modules to run explicitly.")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -255,6 +273,12 @@ def main() -> int:
     if not cases:
         raise SystemExit("No Spider2-Snow cases selected.")
     grouped = group_cases_by_db(cases)
+    selected_modules = parse_csv_arg(args.modules)
+    if selected_modules:
+        registry = get_registry()
+        unknown = [name for name in selected_modules if name not in registry]
+        if unknown:
+            raise SystemExit(f"Unknown module(s): {', '.join(unknown)}")
 
     print(f"Spider2-Snow preprocess run: {get_run_name()} ({get_run_id()})")
     if args.dev_only:
@@ -274,11 +298,12 @@ def main() -> int:
                     extract_only=args.extract_only,
                     agent_only=args.agent_only,
                     skip_topic=args.skip_topic,
-                    skip_value_domain_review=args.skip_value_domain_review,
+                    skip_column_domain_review=args.skip_column_domain_review,
                     skip_navigation=args.skip_navigation,
                     skip_landscape=args.skip_landscape,
                     skip_embedding=args.skip_embedding,
                     debug=args.debug,
+                    modules=selected_modules,
                 )
             )
     else:
@@ -292,11 +317,12 @@ def main() -> int:
                     extract_only=args.extract_only,
                     agent_only=args.agent_only,
                     skip_topic=args.skip_topic,
-                    skip_value_domain_review=args.skip_value_domain_review,
+                    skip_column_domain_review=args.skip_column_domain_review,
                     skip_navigation=args.skip_navigation,
                     skip_landscape=args.skip_landscape,
                     skip_embedding=args.skip_embedding,
                     debug=args.debug,
+                    modules=selected_modules,
                 ): db_id
                 for db_id, db_cases in grouped.items()
             }

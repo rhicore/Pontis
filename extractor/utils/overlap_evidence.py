@@ -178,7 +178,7 @@ def _overlap_column_key(overlap: Dict) -> tuple[str, ...]:
 def _sources(overlap: Dict) -> list[str]:
     if overlap.get("sources"):
         return sorted(set(overlap["sources"]))
-    return ["value_domain"]
+    return ["value_overlap"]
 
 
 def _merge_two_overlaps(left: Dict, right: Dict) -> Dict:
@@ -410,7 +410,7 @@ def _make_group_overlap(
     ]
     payload = {
         "columns": public_columns,
-        "sources": ["value_domain"],
+        "sources": ["value_overlap"],
         "pair_stats": pair_stats,
         "stats": {
             "column_count": len(refs),
@@ -443,7 +443,7 @@ def _overlap_sort_key(overlap: Dict):
 
 def _group_overlap_name(columns: list[Dict]) -> str:
     digest = hashlib.sha1("|".join(sorted(col["ref"] for col in columns)).encode("utf-8")).hexdigest()[:10]
-    return f"value_domain_{digest}"
+    return f"overlap_{digest}"
 
 
 def _table_scope(tables: list[str]) -> str:

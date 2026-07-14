@@ -1,19 +1,20 @@
-from explorer.utils.value_domain_candidates import (
-    build_value_domain_candidates,
+from explorer.utils.column_domain_candidates import (
+    build_column_domain_candidates,
     candidate_batches,
 )
-from explorer.value_domain_review import render_candidate_prompt
+from explorer.column_domain_review import render_candidate_prompt
 
 
 class FakeWorkspace:
     def cypher(self, query, params=None):
-        assert "value_domain" in query
+        assert "column_domain" in query
         assert params == {"statuses": ["pending_review"]}
         domain = {
             "_ref": "AIRLINES--value_domain--AIRLINES--abc",
             "name": "value_domain[AIRLINES:airport_code]",
             "schema_name": "AIRLINES",
             "review_status": "pending_review",
+            "extraction_strategy": "online_clustering",
             "union_cardinality": 104,
             "semantic_roles": '{"identifier": 2}',
             "overlap_metric": "intersection_over_min_cardinality",
@@ -57,8 +58,8 @@ class FakeWorkspace:
         ]
 
 
-def test_build_value_domain_candidates_keeps_physical_and_logical_members():
-    candidates = build_value_domain_candidates(FakeWorkspace())
+def test_build_column_domain_candidates_keeps_physical_and_logical_members():
+    candidates = build_column_domain_candidates(FakeWorkspace())
     assert len(candidates) == 1
     candidate = candidates[0]
     assert candidate.review_status == "pending_review"
@@ -69,7 +70,7 @@ def test_build_value_domain_candidates_keeps_physical_and_logical_members():
 
 
 def test_render_candidate_prompt_requires_domain_review_and_shows_members():
-    candidate = build_value_domain_candidates(FakeWorkspace())[0]
+    candidate = build_column_domain_candidates(FakeWorkspace())[0]
     rendered = render_candidate_prompt(
         [candidate],
         batch_index=1,

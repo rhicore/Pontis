@@ -48,7 +48,7 @@ def classify_overlap_group(overlap: Dict, options: OverlapOptions) -> tuple[str,
     min_overlap = _group_min_overlap(overlap)
     token_sets = [_tokens(str(column.get("column") or "")) for column in columns]
 
-    if options.group_drop_name_only and "value_domain" not in sources:
+    if options.group_drop_name_only and "value_overlap" not in sources:
         return "rejected_name_only", {"sources": sorted(sources)}
 
     if options.group_drop_local_ordinal and token_sets and all(

@@ -36,7 +36,7 @@ def _pair(left: dict, right: dict, score: float) -> dict:
         "from_type": "TEXT",
         "to_type": "TEXT",
         "domain_sides": [left, right],
-        "sources": ["value_domain"],
+        "sources": ["value_overlap"],
         "stats": {"overlap_coefficient": score},
     }
 
@@ -142,7 +142,7 @@ def _policy_group(names: list[str], score: float, sources: list[str] | None = No
             {"ref": f"logical:{index}", "table": f"table:{index}", "column": name, "type": "TEXT"}
             for index, name in enumerate(names)
         ],
-        "sources": sources or ["value_domain"],
+        "sources": sources or ["value_overlap"],
         "stats": {"min_overlap_coefficient": score, "max_overlap_coefficient": score},
     }
 

@@ -148,6 +148,7 @@ INFO_TYPE_CONFIG = {
     "fk":       InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     "rel":      InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     "overlap":  InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
+    "column_domain": InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     "disambig": InfoTypeConfig(info_fn=lambda m: {"brief": _v(m, "brief")}),
     "hint":     InfoTypeConfig(info_fn=lambda m: {"brief": _knowledge_brief(m)}),
     # 知识段
@@ -268,6 +269,16 @@ META_TYPE_CONFIG = {
     "overlap": MetaTypeConfig(
         default_keys=["sources", "stats", "brief", "detail"],
         folded_keys={"stats"},
+    ),
+    "column_domain": MetaTypeConfig(
+        default_keys=[
+            "extraction_strategy", "value_match_method", "member_count",
+            "union_cardinality", "semantic_roles", "overlap_metric",
+            "overlap_threshold", "min_anchor_support", "review_status",
+            "sources", "stats", "brief", "detail",
+        ],
+        folded_keys={"stats", "semantic_roles"},
+        adjacency_keys={"col", "logical_col"},
     ),
     "disambig": MetaTypeConfig(
         default_keys=["level", "brief", "detail"],
@@ -399,7 +410,7 @@ ENTITY_DEPENDENCY_RANK = {
     # Rank 2: 列级
     "col": 2,
     # Rank 3: 派生关系
-    "fk": 3, "rel": 3, "overlap": 3,
+    "fk": 3, "rel": 3, "overlap": 3, "column_domain": 3,
     # Rank 4: 语义消歧
     "disambig": 4,
     "hint": 4,
