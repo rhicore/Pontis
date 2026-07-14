@@ -28,8 +28,8 @@ logical units <= 100: 150/152
 审计结论：
 
 - 当前 table_group 规则对物理分片、时间分区、release/version、chromosome、geo region shard 有效。
-- 剩余最大的认知负担主要不是 table_group 漏识别，而是 source/topic/data-product 层级。例如 `EBI_CHEMBL`、`HTAN_*`、`CPTAC_PDC`。
-- `table_group` 不应为了降低数量强行合并业务模块。剩余 outlier 应交给 `db_topic_group` 或 explorer 做 source/topic/assay/data-product 层级压缩。
+- 剩余最大的认知负担主要不是 table_group 漏识别，而是业务 topic、assay 和 data-product 层级。例如 `EBI_CHEMBL`、`HTAN_*`、`CPTAC_PDC`。
+- `table_group` 不应为了降低数量强行合并业务模块。当前流程把剩余 outlier 交给 `agent_topic_group`，在官方 schema 内创建语义 topic；不再使用旧的 `db_topic_group/source_collection/topic_family` 结构。
 
 ## Live Snowflake object audit
 

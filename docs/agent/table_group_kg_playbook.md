@@ -1,193 +1,157 @@
-# Table Group KG Playbook
+# Spider2 Knowledge-Graph Navigation Playbook
 
-这份手册给新 agent 使用。目标是在进入一个 Pontis database graph 后，不逐表扫描，而是先通过自动生成的 source/topic/table group 节点建立 schema 认知。
+This is the current traversal contract for large Spider2-Snow projects. The
+physical database structure remains intact; navigation entities add alternative
+graph paths and never replace official tables or columns.
 
-## 读取顺序
-
-推荐顺序固定为三层：
-
-1. `:source_collection`：数据库是否混合多个数据来源。
-2. `:topic_family`：每个 source/schema 下面有哪些业务主题或数据产品。
-3. `:table_group`：主题里哪些物理表其实是时间、版本、shard 或 release family。
-
-只有问题明确命中特定日期、年份、版本、suffix、列名或实体时，才下钻到单张 `:table` 和 `:col`。
-
-## Landscape 层
-
-新 agent 进入大型数据库时，第一步先找数据库级导航节点：
-
-```cypher
-MATCH (l:schema_landscape)
-RETURN l.name AS name,
-       l.brief AS brief,
-       l.table_count AS tables,
-       l.column_count AS columns,
-       l.source_collection_count AS sources,
-       l.topic_family_count AS topics,
-       l.table_group_count AS table_groups,
-       l.schema_reading_strategy AS strategy,
-       l.detail AS detail
-ORDER BY tables DESC
-```
-
-解释：
-
-- `schema_landscape.detail` 是第一屏 markdown，总结 source、topic 和主要 table group。
-- 它不替代具体节点；它只告诉 agent 应该先看哪里。
-- 如果存在 `schema_landscape`，不要先展开所有 `table/col`。
-
-从 landscape 找相关导航节点：
-
-```cypher
-MATCH (l:schema_landscape)<-[:RELATED_TO]-(n)
-WHERE n:source_collection OR n:topic_family OR n:table_group
-RETURN DISTINCT labels(n) AS labels, n.name AS name, n._ref AS ref
-LIMIT 100
-```
-
-## Source 层
-
-先查 source/schema 边界：
-
-```cypher
-MATCH (g:source_collection)
-RETURN g.schema_name AS schema,
-       g.physical_table_count AS physical_tables,
-       g.logical_unit_count AS logical_units,
-       g.table_group_count AS table_groups,
-       g.standalone_table_count AS standalone_tables,
-       g.dominant_topics AS dominant_topics,
-       g.schema_reading_strategy AS strategy
-ORDER BY physical_tables DESC
-```
-
-解释：
-
-- `physical_table_count` 大，说明 source 本身很大。
-- `logical_unit_count` 小于 `physical_table_count` 很多，说明下层 table_group 已经压缩了大量物理表。
-- `dominant_topics` 是 source 内最主要的 topic key。
-- 如果只有一个 source，例如 GA360，也仍然有价值：它告诉 agent 整个库基本是一个来源，不需要先做 source disambiguation。
-
-## Topic 层
-
-再查 source 内主题：
-
-```cypher
-MATCH (g:topic_family)
-RETURN g.schema_name AS schema,
-       g.topic_key AS topic,
-       g.topic_label AS label,
-       g.physical_table_count AS physical_tables,
-       g.logical_unit_count AS logical_units,
-       g.table_group_count AS table_groups,
-       g.standalone_table_count AS standalone_tables,
-       g.sample_tables AS sample_tables,
-       g.schema_reading_strategy AS strategy
-ORDER BY physical_tables DESC, schema, topic
-```
-
-解释：
-
-- `topic_key` 是稳定机器键，适合后续检索。
-- `topic_label` 是给 agent 读的短说明。
-- `logical_units` 里 table_group 算 1 个单元，因此它更接近“agent 需要理解多少个概念”。
-- `sample_tables` 只用于快速识别命名风格，不要把它当完整成员列表。
-- 在多主题 schema 里，即使一个 topic 只有 1 个 logical unit，只要它覆盖多张物理表，也会生成 `topic_family`。例如 FEC 的 `committee_master` 对应一个 `CMYY` table_group，但仍然是一个应该优先展示的业务主题。
-
-FEC 里应优先看到这类 topic：
+## Graph Layers
 
 ```text
-individual_contributions
-committee_master
-candidate_master
-pas2_contributions
-operating_expenditures
-other_committee_transactions
-candidate_committee_linkages
+db
+├── schema
+│   ├── table / view
+│   │   └── col
+│   ├── table_group ── member table
+│   │   └── logical_col ── member col
+│   └── topic ── table_group / standalone table
+├── column_domain ── logical_col / standalone col
+└── schema_landscape
 ```
 
-## Table Group 层
+The layers have different authority:
 
-最后查物理表组：
+| Layer | Created by | Meaning |
+|---|---|---|
+| `schema/table/view/col` | Official Spider resources | Physical Snowflake structure |
+| `table_group/logical_col` | Deterministic extractor | Repeated physical shards and their shared column roles |
+| `topic` | Explorer agent | Semantic routing over table groups and standalone tables |
+| `column_domain` | Extractor, then review agent | Candidate shared value domain; not automatically a join relation |
+| `schema_landscape` | Deterministic explorer | First-screen index over the current navigation graph |
 
-```cypher
-MATCH (g:table_group)
-RETURN g.schema_name AS schema,
-       g.family AS family,
-       g.member_count AS members,
-       g.primary_pattern_type AS pattern,
-       g.cognitive_shape AS shape,
-       g.consistency AS consistency,
-       g.representative_members AS representative_members,
-       g.common_columns AS common_columns,
-       g.variable_columns AS variable_columns,
-       g.schema_reading_strategy AS strategy,
-       g.agent_usage_hint AS hint
-ORDER BY members DESC, schema, family
+Legacy `source_collection` and `topic_family` nodes may exist in old graphs,
+but the current Spider pipeline does not create them. New logic must use
+official `schema` plus agent-authored `topic`.
+
+## Preprocessing Order
+
+The authoritative order is defined in
+`scripts/spider/extract_spider2_snow.py`:
+
+1. `spider2_snow_schema`
+2. `db_table_group`
+3. `db_column_stats`
+4. `db_column_domain`
+5. `agent_topic_group`
+6. `agent_spider_navigation_prepare`
+7. `agent_column_domain_review`
+8. `schema_landscape`
+9. `semantic_embedding`
+
+`agent_spider_navigation_prepare` writes `brief/detail` only for schemas,
+topics, table groups, and standalone tables. Member tables and ordinary columns
+remain available but are not mandatory description targets.
+
+## Agent Read Order
+
+### 1. Start from the landscape
+
+```text
+find({"ref":"*:schema_landscape"})
+meta({"ref":"<landscape ref>","property":["brief","detail"]})
 ```
 
-解释：
+The landscape is an index, not schema evidence. Use it to select a schema,
+topic, or table group; do not write SQL from the landscape alone.
 
-- `cognitive_shape=time_partitioned_table_family`：按时间/周期分区理解。
-- `cognitive_shape=versioned_snapshot_family`：先确定版本或 release。
-- `cognitive_shape=domain_sharded_table_family`：按领域 shard 选择成员。
-- `cognitive_shape=enumerated_shard_family`：谨慎，需要结合文档或样例确认 suffix 语义。
-- `consistency=same_order`：一张代表表基本能代表全组。
-- `consistency=same_set`：列集合稳定，但顺序可能不同。
-- `consistency=drifting`：只能把 `common_columns` 当稳定 schema，`variable_columns` 需要命中特定成员后再用。
+### 2. Select an official schema
 
-## 下钻关系
-
-从 source/topic/table group 找成员：
-
-```cypher
-MATCH (g:source_collection)<-[:RELATED_TO]-(n)
-WHERE n:topic_family OR n:table_group OR n:table
-RETURN DISTINCT g.schema_name AS source, labels(n) AS labels, n.name AS name, n._ref AS ref
-LIMIT 100
+```text
+find({"ref":"*:schema"})
+meta({"ref":"<schema ref>","property":["brief","detail"]})
 ```
 
-```cypher
-MATCH (g:topic_family {topic_key: $topic})<-[:RELATED_TO]-(n)
-WHERE n:table_group OR n:table
-RETURN DISTINCT labels(n) AS labels, n.name AS name, n._ref AS ref,
-       n.table_group_family AS table_group_family
-LIMIT 100
-```
+Schema is Snowflake's namespace boundary. It is independent of semantic topic
+and physical table-family grouping.
 
-```cypher
-MATCH (g:table_group {family: $family})<-[:RELATED_TO]-(t)
-WHERE t.table_name IS NOT NULL
-RETURN t.schema_name AS schema, t.table_name AS table, t._ref AS ref
-ORDER BY table
-```
+### 3. Route through topics
 
-## Prompt 压缩策略
+A topic connects the relevant table groups and standalone tables in one schema.
+Read topic detail to narrow the search and to decide whether a child agent
+should inspect a bounded subset.
 
-把 KG 摘要放进 prompt 时，建议按这个规则：
+Do not treat topic detail as a replacement for table detail. A standalone table
+must still be read before using its columns.
 
-- source 层：只放 `schema_name`、`physical_table_count`、`logical_unit_count`、`dominant_topics`。
-- topic 层：只放命中的 `topic_key/topic_label` 和 `logical_units` 摘要。
-- same-order table_group：放 1 个 `representative_member` 的 DDL。
-- same-set table_group：放 1 个代表表 DDL，并说明列顺序不构成语义。
-- drifting table_group：放 `common_columns`、`variable_columns`、`representative_members`。
-- compact year suffix 表组，例如 `INDIVYY`、`CMYY`、`PAS2YY`：先解释 suffix 是年份/选举周期，再选择成员。
+### 4. Expand table groups conservatively
 
-## 字段存储注意事项
+Read these fields first:
 
-Neo4j property 只能存 primitive 或 primitive list。当前 extractor 会这样处理：
+- `family`, `pattern_types`, and `consistency`;
+- `member_count` and `representative_members`;
+- `common_columns` and `variable_columns`;
+- `agent_usage_hint`, `brief`, and `detail`.
 
-- `common_columns`、`variable_columns`、`representative_members`、`sample_tables` 是字符串列表，可直接读。
-- `representative_column_signatures`、`logical_units` 是结构化列表，会通过 JSON 字符串存储。
-- `table_refs`、`table_group_refs` 可能被截断；如果需要完整成员，应走关系边查询，不要只读属性。
+For `same_order` or `same_set`, one representative member usually explains the
+shared schema. For `drifting`, inspect `variable_columns` and the specific
+member selected by date, release, region, chromosome, or suffix.
 
-## 什么时候继续下钻
+### 5. Use logical columns for repeated roles
 
-只有以下情况才应该展开单表：
+`logical_col` combines the same column role across all members of one table
+group. Its statistics use bounded samples from the physical member columns so
+domain discovery remains tractable. Use it for retrieval and domain reasoning,
+then resolve the selected role back to the correct physical member before
+generating SQL.
 
-- 用户问题提到明确日期、年份、release、版本、州、地区、suffix。
-- `variable_columns` 包含问题所需字段。
-- topic/source 里有多个候选 table_group，无法只靠 topic 判断。
-- SQL 需要具体物理表名，而不是逻辑 family 名。
+### 6. Treat value domains as reviewed candidates
 
-否则，优先停留在 source/topic/table_group 级别，避免把几百张物理表重新塞进上下文。
+`column_domain` means that its members have sufficient value evidence to be
+clustered. It does not imply that every member pair is a valid foreign key or
+that a join preserves row grain.
+
+- `accepted`: useful shared-domain evidence, still verify join direction and
+  grain.
+- `needs_split`: mixed domain; do not infer a join from membership alone.
+- `rejected`: do not use as join evidence.
+- `pending_review`: candidate only.
+
+Prefer explicit `fk` and reviewed `rel` entities over value-domain inference.
+
+## Grouped and Standalone Labels
+
+Graph policy maintains navigation labels automatically:
+
+- `table:grouped`: connected to a `table_group`;
+- `table:standalone`: not connected to a `table_group`;
+- `col:grouped`: represented by a `logical_col` or legacy `column_group`;
+- `col:standalone`: not represented by either.
+
+Always combine the navigation label with the physical label. `standalone`
+alone is not an entity type.
+
+The official `schema -> table` edge remains present even for grouped tables.
+Grouping is an additional graph view, not a destructive tree rewrite.
+
+## Child-Agent Boundary
+
+Use a child agent when a selected topic, table group, or standalone table still
+contains too many columns for one context. Pass:
+
+- the original instruction and relevant external-knowledge excerpt;
+- explicit topic/table/table-group refs;
+- the required output: candidate physical tables, columns, row grain, filters,
+  aggregations, and join evidence.
+
+The child agent performs bounded read-only analysis. The main agent validates
+the report, chooses physical table members, and writes the final SQL.
+
+## Invariants
+
+- Keep physical ownership in graph edges; do not duplicate schema or table names
+  into child metadata merely for navigation.
+- A physical column belongs to exactly one table or view.
+- A physical column belongs to at most one `logical_col`.
+- A `logical_col` belongs to exactly one `table_group`.
+- A topic may overlap another topic, but only when the same unit genuinely has
+  multiple semantic roles.
+- A table group never crosses an official schema.

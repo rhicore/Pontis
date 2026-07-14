@@ -74,11 +74,15 @@ TRAFFIC_SOURCE
 These fields can contain nested sub-observations. They are not equivalent to
 ordinary scalar columns.
 
-## Relation To Column Groups
+## Relation To Current Grouping
 
-Current static column-group extraction is only a candidate-indexing step. It
-can group columns that share obvious naming patterns, but it does not prove a
-valid tidy transformation.
+Current table-group extraction handles repeated physical tables, and
+`logical_col` combines the same column role across those table-group members.
+Neither mechanism groups different metrics inside one wide table.
+
+Pontis does not currently run a static `column_group` extractor for Spider2. A
+future column-group candidate index could group obvious naming patterns, but it
+would not by itself prove a valid tidy transformation.
 
 For example:
 
@@ -124,8 +128,8 @@ Agent or human review is needed for:
 
 Keep physical schema extraction separate from semantic refinement:
 
-1. Extract official tables, columns, table groups, and column groups.
-2. Add deterministic `untidy/refinement_candidate` metadata when a pattern is
+1. Extract official tables, columns, table groups, and logical columns.
+2. Add deterministic `untidy/refinement_candidate` metadata when a within-table pattern is
    clear.
 3. Let an explorer agent review candidates and write a refinement detail.
 4. Represent accepted refinements as KG entities connected to source tables and

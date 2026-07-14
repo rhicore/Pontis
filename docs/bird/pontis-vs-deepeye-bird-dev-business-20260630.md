@@ -930,7 +930,7 @@ Gap 题：20。BIRD 风格 13，schema/linking 7。
 - 代码值解释：Q280 把 `+/-` 改成 carcinogenic/non-carcinogenic。
 - 百分比少乘 100：Q324。
 
-这个库既有 BIRD 输出形状问题，也有真实 schema linking 问题，尤其是 `connected.atom_id` 和 `connected.atom_id2`。 
+这个库既有 BIRD 输出形状问题，也有真实 schema linking 问题，尤其是 `connected.atom_id` 和 `connected.atom_id2`。
 
 ## 能否通过放宽 Business 继续解决
 
@@ -949,7 +949,7 @@ Gap 题：20。BIRD 风格 13，schema/linking 7。
 - 精确条件变成模糊条件：语义不同。
 - 执行错误/timeout：不是 result matching 问题。
 
-因此，继续放宽 business 指标不能解决主差距。主要改进点仍是生成阶段对 BIRD 行粒度、原始字段和最小输出表的服从。 
+因此，继续放宽 business 指标不能解决主差距。主要改进点仍是生成阶段对 BIRD 行粒度、原始字段和最小输出表的服从。
 
 ## DISTINCT 与重复答案行
 
