@@ -199,7 +199,7 @@ def _build_readonly_schemas() -> Dict[str, dict]:
                     "properties": {
                         "ref": {
                             "type": "string",
-                            "description": "Source-rooted graph navigation ref copied from find or Related, e.g. '.:dir/results.db:db/table:table/id:col'",
+                            "description": "Source-rooted graph navigation ref copied from find or Related, e.g. 'results.db:db/table:table/id:col'",
                         },
                         "all": {
                             "type": "boolean",

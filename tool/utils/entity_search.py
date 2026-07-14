@@ -31,6 +31,15 @@ _EMBED_CACHE: dict[tuple, list[float]] = {}
 _EMBED_KEY_LOCKS: dict[tuple, threading.Lock] = {}
 _VECTOR_INDEX_CACHE_LOCK = threading.Lock()
 _VECTOR_INDEX_CACHE: dict[tuple, list[str]] = {}
+BM25_TEXT_FIELDS = (
+    "name",
+    "brief",
+    "detail",
+    "official_table_description",
+    "official_view_description",
+    "official_column_description",
+    "official_value_description",
+)
 
 
 # ========== Tokenizer ==========
@@ -382,18 +391,8 @@ def _bm25_search(workspace, query: str, ref: str = "",
         if not name:
             continue
 
-        brief = n.get("brief", "") or ""
-        detail = n.get("detail", "") or ""
-        official_table_description = n.get("official_table_description", "") or ""
-        official_view_description = n.get("official_view_description", "") or ""
-        official_column_description = n.get("official_column_description", "") or ""
-        official_value_description = n.get("official_value_description", "") or ""
-        doc_text = (
-            f"{name} {brief} {detail} "
-            f"{official_table_description} {official_view_description} "
-            f"{official_column_description} {official_value_description} "
-            f"{_structured_search_text(n)}"
-        )
+        doc_text = " ".join(str(n.get(field) or "") for field in BM25_TEXT_FIELDS)
+        doc_text = f"{doc_text} {_structured_search_text(n)}"
         if not doc_text.strip():
             continue
 

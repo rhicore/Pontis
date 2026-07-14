@@ -32,7 +32,7 @@ DETAIL = """\
 12. 创建边：MATCH (a {name: "x"}), (b {name: "y"}) CREATE EDGE (a)--(b)
 
 每个实体都有以下标准属性：name, labels, 以及具体类型的业务属性。project 是 Cypher 执行路由；节点属性条件使用实体自身字段。
-标签类型：file, db, csv, json, table, view, col, fk, rel, overlap, dir, knowledge, chunk, disambig
+标签类型：file, db, csv, json, table, view, col, logical_col, fk, rel, column_domain, dir, knowledge, chunk, disambig
 """
 
 

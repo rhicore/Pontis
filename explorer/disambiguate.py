@@ -1,9 +1,8 @@
 """Agent Disambiguate Maintenance — maintain and complete disambig entities.
 
-Default extraction routes overlap candidates through
-``relation_disambiguation_review``. This module maintains already-created
-disambig entities and looks for obvious semantic gaps not covered by overlap
-candidates.
+Default extraction routes column-domain candidates through
+``column_domain_review``. This module maintains already-created disambig
+entities and looks for obvious semantic gaps not covered by those candidates.
 """
 import logging
 
@@ -16,7 +15,7 @@ PROMPT = """\
 你是 Pontis 的 disambiguate maintenance agent。当前图谱里已经有一些 `disambig` 实体，它们连接到容易混淆的表或列。
 你的任务是维护已有 `disambig`，并补充明显缺失的消歧义组，让后来读取 `meta` 的人能看懂这些字段或表有什么不同。
 
-已有消歧义主要来自列名和列值重叠。这类候选可能漏掉语义相近但没有严格关键词重叠的字段，例如字段名不同、代码列和名称列成对出现、官方说明指向同一分类体系、一个字段拆成多个端点字段、或一个字段是另一个字段的前缀/片段。
+已有消歧义主要来自 column-domain 审核和列名/列值证据。这类候选可能漏掉语义相近但没有严格关键词或值域重叠的字段，例如字段名不同、代码列和名称列成对出现、官方说明指向同一分类体系、一个字段拆成多个端点字段、或一个字段是另一个字段的前缀/片段。
 你需要在维护已有实体时，主动检查这类明显缺口，并创建清晰的 group `disambig`。
 
 ## 维护目标

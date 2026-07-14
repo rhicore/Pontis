@@ -34,7 +34,7 @@ def display_ref_for_node(
     selector = node_selector(project, node_meta)
     match = selector_match_pattern(selector, "n")
     if "col" in set(node_meta.get("labels", []) or []):
-        # A column also connects to FK/overlap/disambiguation entities.  Those
+        # A column also connects to FK/domain/disambiguation entities.  Those
         # paths can be as short as its containment path, but they are not its
         # structural coordinate. Resolve the table/view parent through the
         # graph first, then navigate from the source to that parent.

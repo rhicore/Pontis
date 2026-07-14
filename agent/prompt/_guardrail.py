@@ -6,7 +6,7 @@ from __future__ import annotations
 _SECTIONS = {
     "sql_check": "- `sql_check`: SQL 引用关键表/列/关系前应已通过工具确认。",
     "final_sql_validity_check": "- `final_sql_validity_check`: 最终回复必须只包含一个可解析、只读、可在当前 schema 编译的 SQLite SQL 代码块。",
-    "bridge_check": "- `bridge_check`: JOIN 需要图谱中的 `fk` / `rel` / `overlap` 支撑。",
+    "bridge_check": "- `bridge_check`: JOIN 需要图谱中的 `fk` / `rel` / 已审核 `column_domain` 支撑。",
     "disambig_check": "- `disambig_check`: 同名或近义实体需要读取相关消歧信息。",
     "exploration_check": "- `exploration_check`: 优先从 DB/table/col/known neighbor 定向探索。",
 }

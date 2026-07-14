@@ -14,7 +14,7 @@ class BridgeTableCheck(Guardrail):
     """JOIN 路径合理性检测。
 
     query 工具调用 → 不拦截、不提醒。
-    文本 SQL 输出 → 仅 block 没有 fk/rel/overlap 实体支撑的 JOIN。
+    文本 SQL 输出 → 仅 block 没有 fk/rel/accepted column_domain 支撑的 JOIN。
     """
 
     def __init__(self):
@@ -98,7 +98,7 @@ class BridgeTableCheck(Guardrail):
 
             lines.append(
                 f"  - {t1}.{c1} ↔ {t2}.{c2}（"
-                "图谱中没有对应 fk/rel/overlap 实体）"
+                "图谱中没有对应 fk/rel/accepted column_domain 实体）"
             )
 
         if not lines:
@@ -129,7 +129,8 @@ class BridgeTableCheck(Guardrail):
 
         rows = workspace.cypher(
             "MATCH (n)--(c:col)--(t) "
-            "WHERE any(label IN coalesce(n.labels, []) WHERE label IN ['fk', 'rel', 'overlap']) "
+            "WHERE (any(label IN coalesce(n.labels, []) WHERE label IN ['fk', 'rel']) "
+            "OR ('column_domain' IN coalesce(n.labels, []) AND n.review_status = 'accepted')) "
             "AND any(label IN coalesce(t.labels, []) WHERE label IN ['table', 'view']) "
             "RETURN n, collect(DISTINCT {table_name: t.name, column_name: c.name}) AS endpoints"
         )
@@ -137,14 +138,14 @@ class BridgeTableCheck(Guardrail):
             n = row.get("n", {})
             ename = n.get("name", "")
             labels = n.get("labels", [])
-            # 检查 labels 是否包含 fk/rel/overlap
+            # 检查 labels 是否包含可作为连接证据的关系实体
             rel_type = None
             if "fk" in labels:
                 rel_type = "fk"
             elif "rel" in labels:
                 rel_type = "rel"
-            elif "overlap" in labels:
-                rel_type = "overlap"
+            elif "column_domain" in labels and n.get("review_status") == "accepted":
+                rel_type = "column_domain"
             if rel_type is None:
                 continue
 

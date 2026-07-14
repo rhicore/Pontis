@@ -12,12 +12,27 @@ from agent.guardrail import build_guardrails
 from storage.workspace import Workspace
 
 
-EXPLORER_BASE_PROMPTS = [
-    "base",
-    "tool",
-    "ontology",
-    "project",
-]
+_DATABASE_SOURCE_TYPES = {
+    "sqlite",
+    "postgresql",
+    "postgres",
+    "snowflake",
+    "spider2_snow",
+}
+
+
+def _explorer_prompts(workspace: Workspace) -> list[str]:
+    source_types = {
+        str(workspace.config.projects[name].source.type or "").lower()
+        for name in workspace.active_projects
+        if name in workspace.config.projects
+    }
+    ontology = (
+        "database_ontology"
+        if source_types and source_types.issubset(_DATABASE_SOURCE_TYPES)
+        else "ontology"
+    )
+    return ["base", "tool", ontology, "project"]
 
 
 def explorer_writer_spec(
@@ -35,7 +50,7 @@ def explorer_writer_spec(
         raise ValueError("Explorer workspace must have at least one active project")
 
     tool_list = list(tools)
-    prompts = list(EXPLORER_BASE_PROMPTS)
+    prompts = _explorer_prompts(workspace)
     if include_readme:
         prompts.append("readme")
 
