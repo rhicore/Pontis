@@ -11,6 +11,7 @@ import csv
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,7 +41,8 @@ _DEFAULT_RE = re.compile(
 )
 _MAX_SAMPLE_VALUES = 3
 _MAX_SAMPLE_CHARS = 512
-_UPSERT_BATCH_SIZE = 200
+_UPSERT_BATCH_SIZE = 1000
+_DELETE_BATCH_SIZE = 1000
 
 
 @dataclass
@@ -86,6 +88,7 @@ def generate(workspace: Workspace) -> None:
     logger.info("=== Spider2-Snow official schema extract: %s ===", db_id)
 
     schemas, relations, foreign_keys = _load_official_schema(database_dir, db_id)
+    _ensure_schema_indexes(workspace)
     _delete_existing_schema(workspace)
     _write_schema(workspace, db_id, schemas, relations, foreign_keys)
 
@@ -483,15 +486,36 @@ def _normalize_type_label(sql_type: str) -> str:
 
 
 def _delete_existing_schema(workspace: Workspace) -> None:
-    _write_cypher(
-        workspace,
-        """
-        MATCH (n)
-        WHERE n.project = $project
-          AND (n:db OR n:schema OR n:table OR n:view OR n:col OR n:fk)
-        DETACH DELETE n
-        """,
-    )
+    # A large Spider2 database can contain tens of thousands of schema nodes.
+    # Deleting the whole schema in one transaction exceeds the deliberately
+    # small Neo4j transaction-memory limit and can leave a partially rebuilt
+    # graph behind.  Keep every transaction bounded instead.
+    while True:
+        rows = _write_cypher(
+            workspace,
+            """
+            MATCH (n)
+            WHERE n.project = $project
+              AND (n:db OR n:schema OR n:table OR n:view OR n:col OR n:fk
+                   OR n:column_group OR n:table_group OR n:logical_col)
+            WITH n LIMIT $batch_size
+            DETACH DELETE n
+            RETURN count(*) AS deleted
+            """,
+            params={"batch_size": _DELETE_BATCH_SIZE},
+        )
+        deleted = sum(int(row.get("deleted") or 0) for row in rows)
+        if deleted < _DELETE_BATCH_SIZE:
+            break
+
+
+def _ensure_schema_indexes(workspace: Workspace) -> None:
+    for label in ("db", "schema", "table", "view", "col", "fk"):
+        _write_cypher(
+            workspace,
+            f"CREATE INDEX pontis_{label}_project_ref IF NOT EXISTS "
+            f"FOR (n:{label}) ON (n.project, n._ref)",
+        )
 
 
 def _write_schema(
@@ -643,6 +667,7 @@ def _upsert_nodes(workspace: Workspace, project: str, rows: list[dict], labels: 
     if not rows:
         return
     safe_labels = [label for label in labels if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", label)]
+    primary_label = safe_labels[0]
     label_clause = "".join(f":{label}" for label in safe_labels)
     for chunk in _chunks(rows, _UPSERT_BATCH_SIZE):
         payload = [
@@ -657,9 +682,8 @@ def _upsert_nodes(workspace: Workspace, project: str, rows: list[dict], labels: 
             workspace,
             f"""
             UNWIND $rows AS row
-            MERGE (n {{_ref: row._ref}})
+            MERGE (n:{primary_label} {{project: $project, _ref: row._ref}})
             ON CREATE SET n.id = 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8)
-            ON MATCH SET n.id = coalesce(n.id, 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8))
             SET n += row.props
             SET n.project = $project
             SET n.labels = reduce(acc = [], label IN coalesce(n.labels, []) + row.labels |
@@ -673,13 +697,32 @@ def _upsert_nodes(workspace: Workspace, project: str, rows: list[dict], labels: 
 
 def _upsert_edges(workspace: Workspace, project: str, edges: list[dict]) -> None:
     dedup = {(edge["a"], edge["b"]) for edge in edges if edge.get("a") and edge.get("b")}
-    for chunk in _chunks([{"a": a, "b": b} for a, b in sorted(dedup)], 2000):
+    element_ids: dict[str, str] = {}
+    for label in ("db", "schema", "table", "view", "col", "fk"):
+        node_rows = _write_cypher(
+            workspace,
+            f"""
+            MATCH (n:{label} {{project: $project}})
+            RETURN n._ref AS ref, elementId(n) AS element_id
+            """,
+            project=project,
+        )
+        element_ids.update({
+            str(row["ref"]): str(row["element_id"])
+            for row in node_rows
+        })
+    payload = [
+        {"a": element_ids[a], "b": element_ids[b]}
+        for a, b in sorted(dedup)
+        if a in element_ids and b in element_ids
+    ]
+    for chunk in _chunks(payload, 2000):
         _write_cypher(
             workspace,
             """
             UNWIND $edges AS edge
-            MATCH (a {_ref: edge.a})
-            MATCH (b {_ref: edge.b})
+            MATCH (a) WHERE elementId(a) = edge.a
+            MATCH (b) WHERE elementId(b) = edge.b
             MERGE (a)-[:RELATED_TO]->(b)
             """,
             params={"edges": chunk},
@@ -709,5 +752,18 @@ def _write_cypher(
         scoped_params = dict(params)
         scoped_params["project"] = project_name
         with store.execution_lock:
-            rows.extend(store.execute_cypher(query, params=scoped_params))
+            for attempt in range(3):
+                try:
+                    rows.extend(store.execute_cypher(query, params=scoped_params))
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    delay = 2 ** attempt
+                    logger.warning(
+                        "Transient graph write failed; retrying in %ss (%s/3)",
+                        delay,
+                        attempt + 1,
+                    )
+                    time.sleep(delay)
     return rows

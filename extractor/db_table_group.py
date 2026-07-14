@@ -194,19 +194,45 @@ def _compact_year_family(name: str) -> str:
 
 
 def _load_tables(workspace: Workspace) -> list[TableInfo]:
-    rows = workspace.cypher(
+    table_rows = workspace.cypher(
         """
         MATCH (d:db)-[:RELATED_TO*1..2]-(t:table)
         WHERE t._ref IS NOT NULL
-        OPTIONAL MATCH (t)--(c:col)
-        WITH d, t, c
-        ORDER BY d._ref, t.schema_name, t.table_name, c.ordinal_position, c.name
-        RETURN d, t, [name IN collect(c.name) WHERE name IS NOT NULL] AS column_names
+        RETURN DISTINCT d, t
         ORDER BY d._ref, t.schema_name, t.table_name
         """
     )
+    columns_by_table: dict[str, tuple[str, ...]] = {}
+    table_refs = [
+        str((row.get("t") or {}).get("_ref") or "")
+        for row in table_rows
+        if (row.get("t") or {}).get("_ref")
+    ]
+    # Wide partitioned databases can have hundreds of thousands of columns.
+    # Aggregate a bounded table batch per transaction instead of collecting
+    # the entire database's columns in one Neo4j result.
+    for refs in _chunks(table_refs, 100):
+        column_rows = workspace.cypher(
+            """
+            UNWIND $table_refs AS table_ref
+            MATCH (t:table {_ref: table_ref})
+            OPTIONAL MATCH (t)--(c:col)
+            WITH t, c
+            ORDER BY t._ref, c.ordinal_position, c.name
+            RETURN t._ref AS table_ref,
+                   [name IN collect(c.name) WHERE name IS NOT NULL] AS column_names
+            """,
+            params={"table_refs": refs},
+        )
+        columns_by_table.update({
+            str(row.get("table_ref") or ""): tuple(
+                str(name) for name in (row.get("column_names") or []) if name
+            )
+            for row in column_rows
+        })
+
     tables: list[TableInfo] = []
-    for row in rows:
+    for row in table_rows:
         db = row.get("d") or {}
         table = row.get("t") or {}
         db_ref = str(db.get("_ref") or db.get("name") or "")
@@ -218,7 +244,7 @@ def _load_tables(workspace: Workspace) -> list[TableInfo]:
         schema_name = str(table.get("schema_name") or _schema_name_from_ref(schema_ref) or "")
         if not schema_ref and schema_name:
             schema_ref = f"{db_ref}--{schema_name}"
-        columns = tuple(str(name) for name in (row.get("column_names") or []) if name)
+        columns = columns_by_table.get(table_ref, ())
         family, pattern_types = _table_family(table_name)
         tables.append(TableInfo(
             db_ref=db_ref,
@@ -476,9 +502,11 @@ def _upsert_group(workspace: Workspace, summary: dict) -> None:
     _write_cypher(
         workspace,
         """
-        UNWIND $member_refs AS table_ref
+        MATCH (t:table {project: $project})
+        WHERE t._ref IN $member_refs
+        WITH collect(t) AS tables
         MATCH (g:table_group {_ref: $ref})
-        MATCH (t {_ref: table_ref})
+        UNWIND tables AS t
         MERGE (t)-[:RELATED_TO]->(g)
         """,
         params={
@@ -492,25 +520,41 @@ def _upsert_group(workspace: Workspace, summary: dict) -> None:
 def _upsert_logical_columns(workspace: Workspace, table_group_ref: str) -> None:
     """Materialize one logical column for each repeated member-table role."""
 
-    rows = workspace.cypher(
+    table_rows = workspace.cypher(
         """
-        MATCH (g:table_group)-[:RELATED_TO]-(t:table)-[:RELATED_TO]-(c:col)
+        MATCH (g:table_group)-[:RELATED_TO]-(t:table)
         WHERE g._ref = $group_ref
-        RETURN coalesce(t._ref, t.path, t.name) AS table_ref,
-               coalesce(c._ref, c.path, c.name) AS col_ref,
-               c.name AS column_name,
-               c.data_type AS data_type,
-               c.labels AS labels
-        ORDER BY table_ref, c.ordinal_position, column_name
+        RETURN coalesce(t._ref, t.path, t.name) AS table_ref
+        ORDER BY table_ref
         """,
         params={"group_ref": table_group_ref},
     )
+    rows: list[dict] = []
+    for table_refs in _chunks(
+        [str(row["table_ref"]) for row in table_rows if row.get("table_ref")],
+        100,
+    ):
+        rows.extend(workspace.cypher(
+            """
+            UNWIND $table_refs AS table_ref
+            MATCH (t:table {_ref: table_ref})-[:RELATED_TO]-(c:col)
+            RETURN table_ref,
+                   coalesce(c._ref, c.path, c.name) AS col_ref,
+                   c.name AS column_name,
+                   c.data_type AS data_type,
+                   c.labels AS labels
+            ORDER BY table_ref, c.ordinal_position, column_name
+            """,
+            params={"table_refs": table_refs},
+        ))
     by_role: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         role = _logical_column_role(row.get("column_name") or "")
         if role and row.get("col_ref") and row.get("table_ref"):
             by_role[role].append(row)
 
+    logical_rows: list[dict] = []
+    member_edges: list[tuple[str, str]] = []
     for role, members in sorted(by_role.items()):
         table_refs = {str(member["table_ref"]) for member in members}
         column_refs = sorted({str(member["col_ref"]) for member in members})
@@ -532,30 +576,63 @@ def _upsert_logical_columns(workspace: Workspace, table_group_ref: str) -> None:
             "data_types": types,
             "grouping_method": "table_group_column_role_v1",
         })
+        logical_rows.append({"ref": logical_ref, "props": props})
+        member_edges.extend((logical_ref, column_ref) for column_ref in column_refs)
+
+    for chunk in _chunks(logical_rows, 500):
         _write_cypher(
             workspace,
             """
             MATCH (g:table_group {_ref: $group_ref, project: $project})
-            MERGE (l:logical_col {_ref: $logical_ref, project: $project})
-            ON CREATE SET l.id = 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8)
-            SET l += $props
+            UNWIND $rows AS row
+            CREATE (l:logical_col {_ref: row.ref, project: $project})
+            SET l.id = 'ent_' + substring(replace(randomUUID(), '-', ''), 0, 8)
+            SET l += row.props
             SET l.labels = reduce(acc = [], label IN coalesce(l.labels, []) + ['logical_col'] |
                 CASE WHEN label IN acc THEN acc ELSE acc + label END)
             MERGE (g)-[:RELATED_TO]->(l)
             """,
-            params={"group_ref": table_group_ref, "logical_ref": logical_ref, "props": props},
+            params={"group_ref": table_group_ref, "rows": chunk},
         )
+
+    refs = sorted({ref for edge in member_edges for ref in edge})
+    needed_refs = set(refs)
+    element_ids: dict[str, str] = {}
+    for label in ("logical_col", "col"):
+        node_rows = _write_cypher(
+            workspace,
+            f"""
+            MATCH (n:{label} {{project: $project}})
+            RETURN n._ref AS ref, elementId(n) AS element_id
+            """,
+        )
+        element_ids.update({
+            str(row["ref"]): str(row["element_id"])
+            for row in node_rows
+            if str(row["ref"]) in needed_refs
+        })
+
+    edge_rows = [
+        {"logical": element_ids[logical_ref], "column": element_ids[column_ref]}
+        for logical_ref, column_ref in member_edges
+        if logical_ref in element_ids and column_ref in element_ids
+    ]
+    for chunk in _chunks(edge_rows, 2000):
         _write_cypher(
             workspace,
             """
-            UNWIND $column_refs AS column_ref
-            MATCH (l:logical_col {_ref: $logical_ref, project: $project})
-            MATCH (c:col {project: $project})
-            WHERE c._ref = column_ref OR c.path = column_ref
+            UNWIND $edges AS edge
+            MATCH (l) WHERE elementId(l) = edge.logical
+            MATCH (c) WHERE elementId(c) = edge.column
             MERGE (c)-[:RELATED_TO]->(l)
             """,
-            params={"logical_ref": logical_ref, "column_refs": column_refs},
+            params={"edges": chunk},
         )
+
+
+def _chunks(items: list, size: int):
+    for idx in range(0, len(items), size):
+        yield items[idx : idx + size]
 
 
 def _logical_column_role(column_name: str) -> str:

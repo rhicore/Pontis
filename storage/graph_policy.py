@@ -44,7 +44,7 @@ class TableGroupStatusLabels:
     name = "table_group_status_labels"
 
     def apply(self, store, project: str) -> None:
-        _execute_many(
+        _execute_batched(
             store,
             [
                 (
@@ -53,8 +53,11 @@ class TableGroupStatusLabels:
                     WHERE EXISTS {
                         MATCH (t)--(g:table_group {project: $project})
                     }
+                      AND (NOT (t:grouped) OR t:standalone)
+                    WITH t LIMIT $batch_size
                     SET t:grouped
                     REMOVE t:standalone
+                    RETURN count(*) AS updated
                     """,
                     {"project": project},
                 ),
@@ -64,8 +67,11 @@ class TableGroupStatusLabels:
                     WHERE NOT EXISTS {
                         MATCH (t)--(g:table_group {project: $project})
                     }
+                      AND (NOT (t:standalone) OR t:grouped)
+                    WITH t LIMIT $batch_size
                     SET t:standalone
                     REMOVE t:grouped
+                    RETURN count(*) AS updated
                     """,
                     {"project": project},
                 ),
@@ -79,7 +85,7 @@ class ColumnGroupStatusLabels:
     name = "column_group_status_labels"
 
     def apply(self, store, project: str) -> None:
-        _execute_many(
+        _execute_batched(
             store,
             [
                 (
@@ -89,8 +95,11 @@ class ColumnGroupStatusLabels:
                         MATCH (c)--(g {project: $project})
                         WHERE g:column_group OR g:logical_col
                     }
+                      AND (NOT (c:grouped) OR c:standalone)
+                    WITH c LIMIT $batch_size
                     SET c:grouped
                     REMOVE c:standalone
+                    RETURN count(*) AS updated
                     """,
                     {"project": project},
                 ),
@@ -101,8 +110,11 @@ class ColumnGroupStatusLabels:
                         MATCH (c)--(g {project: $project})
                         WHERE g:column_group OR g:logical_col
                     }
+                      AND (NOT (c:standalone) OR c:grouped)
+                    WITH c LIMIT $batch_size
                     SET c:standalone
                     REMOVE c:grouped
+                    RETURN count(*) AS updated
                     """,
                     {"project": project},
                 ),
@@ -314,6 +326,23 @@ class GraphPolicyEngine:
 def _execute_many(store, statements: list[tuple[str, dict]]) -> None:
     for query, params in statements:
         store.execute_cypher(query, params=params)
+
+
+def _execute_batched(
+    store,
+    statements: list[tuple[str, dict]],
+    *,
+    batch_size: int = 2000,
+) -> None:
+    for query, params in statements:
+        while True:
+            rows = store.execute_cypher(
+                query,
+                params={**params, "batch_size": batch_size},
+            )
+            updated = sum(int(row.get("updated") or 0) for row in rows)
+            if updated < batch_size:
+                break
 
 
 DEFAULT_DERIVED_RULES: list[DerivedLabelRule] = [
