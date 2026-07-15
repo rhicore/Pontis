@@ -101,6 +101,9 @@ def test_reviewed_relation_entities_have_non_overlapping_ownership():
     assert "`rel` 保存 schema 未声明" in COLUMN_DOMAIN_REVIEW_PROMPT
     assert "一个稳定关系由 `fk` 或 `rel` 中的一种表达" in COLUMN_DOMAIN_REVIEW_PROMPT
     assert "A-B 已有 fk，而 C-A 经验证可稳定连接" in COLUMN_DOMAIN_REVIEW_PROMPT
+    assert 'meta(ref="<成员>", neighbor_label="fk")' in COLUMN_DOMAIN_REVIEW_PROMPT
+    assert 'meta(ref="<成员>", neighbor_label="rel")' in COLUMN_DOMAIN_REVIEW_PROMPT
+    assert "打开后确认了实际成员才构成覆盖证据" in COLUMN_DOMAIN_REVIEW_PROMPT
     assert "关系实体的 metadata 是业务摘要" in COLUMN_DOMAIN_REVIEW_PROMPT
     assert "端点身份、成员清单、主外键角色和各列 cardinality" in COLUMN_DOMAIN_REVIEW_PROMPT
     assert "同一选择问题保留一个实体" in DISAMBIGUATE_PROMPT
@@ -116,3 +119,10 @@ def test_hints_are_meta_only_and_do_not_enter_retrieval_text():
 
     assert "school rows" in text
     assert "secret hint" not in text
+
+
+def test_business_hints_keep_graph_and_structured_stats_out_of_metadata():
+    from explorer.bird_profile import PROMPT as bird_profile_prompt
+
+    assert "跨实体导航、连接端点、覆盖率和未匹配行由 `fk/rel/disambig`" in bird_profile_prompt
+    assert "hints 不再抄录它们" in bird_profile_prompt

@@ -38,7 +38,7 @@ PROMPT = """\
 
 ## 审核流程
 
-1. 读取成员的 official description、类型、cardinality、sample、topk、extractor evidence，以及邻接的 `fk/rel/disambig`。
+1. 读取成员的 official description、类型、cardinality、sample、topk、extractor evidence，以及邻接的 `fk/rel/disambig`。判定连接是否已被覆盖时，从每个候选成员出发，分别用 `meta(ref="<成员>", neighbor_label="fk")` 和 `meta(ref="<成员>", neighbor_label="rel")` 读取它的真实邻接，再打开关系实体核对另一端。`find` 的语义命中只用于发现候选，打开后确认了实际成员才构成覆盖证据。
 2. 结合对象含义、格式、行粒度和 overlap 证据确定 domain 状态。标记为 approximate 的 topk 使用其误差界理解频次。
 3. 证据仍不足时，用 query 核验唯一性、匹配覆盖率或连接基数；每个 domain 最多执行 3 次针对性查询。
 4. 每个候选 domain 调用一次 update_meta，写入 review_status、brief 和 detail。
