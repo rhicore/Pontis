@@ -7,34 +7,24 @@ available.
 
 import logging
 
+from explorer.utils.description_contract import DESCRIPTION_CONTRACT
 from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
 MAX_COMPLETION_ROUNDS = 6
 
-PROMPT = """\
-你是 Pontis 的 schema prepare agent。
-当前图谱里已经有数据库、表和列实体。你的任务是给数据库表和列维护 `brief` 和 `detail`。
+PROMPT = f"""\
+你是 Pontis 的数据库业务词典编辑。当前图谱已经有数据库、表、列、official 字段、统计和关系实体。你的任务是为每个 `table/col` 写入符合统一契约的 `brief/detail`。
 
-## 工作目标
+{DESCRIPTION_CONTRACT}
 
-后来主 agent 会通过 `meta` 读取这些说明来理解数据库。你写的内容应当让它知道：
-- 表每行代表什么。
-- 列表示什么、采用什么格式或单位、枚举值代表什么。
+## 工作方式
 
-## 证据
-
-写入前先读取目标实体的 `meta`。需要补充事实时，再读取所属表或用 `query` 核验局部字段事实。
-
-`official_column_description` 和 `official_value_description` 是人工/官方标注，优先级最高。列被 official 标为 `unuseful`、`not useful`、`not quite useful`、`unused`、`ignore` 或同类含义时，只记录这个官方标记本身。
-
-## 写入
-
-- `brief` 不超过 50 字，概括实体角色。
-- `detail` 只写实体自身语义：表的用途与行粒度，或列的含义、格式、单位和枚举解释。行数、cardinality、null、sample、topk、范围、成员、归属和关系端点使用现有 metadata 或边读取。
-- 中文写作；数据库原始表名、字段名、枚举值和代码值保持原样。
-- 表和列写入使用路径 ref，例如 `financial.sqlite/account`、`financial.sqlite/account/account_id`。
+- 用 `find` 定位表，用 `meta(..., neighbor_label="col")` 展开列。
+- 使用 `meta(..., property=[...])` 定向读取 official description、已有 brief/detail 和必要的格式证据。
+- official description 是业务定义的首要依据；schema 名称和必要的样例只帮助理解定义。
+- 用完整 source ref 调用 `update_meta` 写入 brief/detail。
 
 ## 完成检查
 
@@ -58,9 +48,8 @@ def generate(workspace: Workspace) -> None:
 
     spec = explorer_writer_spec(
         workspace,
-        tools=["find", "meta", "query", "update_meta"],
+        tools=["find", "meta", "update_meta"],
         include_readme=False,
-        query_mode="single_table_fact_check",
     )
     agent = create_agent(workspace.project_path, spec)
 

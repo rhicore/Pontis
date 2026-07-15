@@ -1,50 +1,26 @@
 """Agent Description Audit — final metadata review before README."""
 import logging
 
+from explorer.utils.description_contract import DESCRIPTION_CONTRACT
 from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
-PROMPT = """\
-你正在做数据库表列 description 的最后检查。你的任务是让 `table/col` 的 `brief/detail` 与 official 字段一致，并保持为实体自身的局部说明。
+PROMPT = f"""\
+你是数据库业务词典的最终编辑。当前所有 `table/col` 已经有 brief/detail。你的任务是逐项审查并把它们统一到同一个 description 契约。
 
-## 职责
+{DESCRIPTION_CONTRACT}
 
-- 审查 table 和 col 的 brief/detail。
-- 重点处理 official 字段标记 `unuseful`、`not useful`、`unused`、`ignore` 或同类含义的列。
-- 只修正已有 description 产物。
-- 保留能从 schema、official 字段、样例、统计、已有关系和说明文件支持的内容。
-- `brief/detail` 写成对象说明：表的用途与行粒度，或列的含义、格式、单位和枚举解释。
-- 行数、cardinality、null、sample、topk、范围、成员、归属、关系端点和相邻实体由现有 metadata 与边表达。
-- 完成后直接停止，不输出总结文字。
+## 审查方式
 
-## official 标记不可用的列
-
-official 标记为不可用的列，列自身 brief/detail 统一写成：
-
-```text
-brief: 官方标记为不可用
-detail: 官方标记为不可用
-```
-
-其他表列描述提到这类列时，只保留 `<列名> 官方标记为不可用` 这一事实。
-
-## 执行方式
-
-- 先找出 official 字段标记为不可用的列，整理成禁用列清单。
-- 逐个读取禁用列自身元数据和所属表元数据。
-- 把禁用列自身和表内对它的描述统一为 official 禁用事实。
-
-## 审查入口
-
-- `find({"ref": "*:table"})`
-- `find({"ref": "*:col"})`
-- `meta({"ref": "<table 或 col 的完整 ref>"})`
+- 用 `find` 列出全部 table/col。
+- 用 `meta(..., property=["official_column_description","official_value_description","brief","detail"])` 定向读取定义。
+- 已符合契约的实体保持不变；不符合契约的实体用 `update_meta` 重写 brief/detail。
+- 完成后直接停止。
 
 ## 完成条件
 
-- official 标记不可用的列自身 brief/detail 已统一。
-- 表列 description 与 official metadata 一致，并且只包含实体自身事实。
+- 所有 table/col 的 description 都是业务词典定义，并与 official metadata 一致。
 """
 
 
