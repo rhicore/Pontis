@@ -7,7 +7,10 @@ and column discovery comes from the KG.
 
 from __future__ import annotations
 
+import hashlib
+import heapq
 import logging
+import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,12 +25,17 @@ logger = logging.getLogger(__name__)
 
 _NUMERIC_TYPES = {"INT", "INTEGER", "REAL", "FLOAT", "DOUBLE", "DECIMAL", "NUMBER", "NUMERIC"}
 _TEXT_TYPES = {"TEXT", "VARCHAR", "CHAR", "STRING"}
-_CPC_LG_K = 11
+_CARDINALITY_SKETCH_SIZE = 2048
 _DEFAULT_SAMPLE_SIZE = 10
 _DEFAULT_TOPK = 5
 _DEFAULT_MAX_WORKERS = 4
-_DEFAULT_CARDINALITY_MODE = "exact"
-_CARDINALITY_MODES = {"exact", "sketch", "approx", "approximate"}
+_DEFAULT_CARDINALITY_MODE = "auto"
+_CARDINALITY_MODES = {"auto", "exact", "sketch", "approx", "approximate"}
+_DEFAULT_EXACT_CARDINALITY_MAX_DISTINCT = 4096
+_DEFAULT_SNOWFLAKE_EXACT_MAX_ROWS = 100_000
+_DEFAULT_EXACT_TOPK_MAX_DISTINCT = 4096
+_DEFAULT_APPROX_TOPK_CAPACITY = 2048
+_DEFAULT_APPROX_TOPK_MIN_FREQUENCY = 0.0001
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _URL_RE = re.compile(r"^(?:https?://|www\.).+")
@@ -48,6 +56,7 @@ class _ColumnTask:
     table_name: str
     col_name: str
     data_type: str
+    table_row_count: int = 0
 
 
 def generate(
@@ -164,6 +173,7 @@ def _load_column_tasks(
                     table_name=col["table_name"],
                     col_name=col["col_name"],
                     data_type=_normalize_type(col.get("data_type", "")),
+                    table_row_count=int(col.get("table_row_count") or 0),
                 )
             )
     return tasks
@@ -199,6 +209,7 @@ def _load_db_columns(workspace: Workspace, db_ref: str) -> list[dict]:
             "schema_name": str(schema.get("schema_name") or schema.get("name") or rel.get("schema_name") or ""),
             "col_name": str(col_name),
             "data_type": col.get("data_type") or col.get("col_type") or "",
+            "table_row_count": rel.get("row_count") or rel.get("rows") or 0,
         }
     return list(columns.values())
 
@@ -213,6 +224,7 @@ def _needs_profile(meta: dict, *, cardinality_mode: str = _DEFAULT_CARDINALITY_M
         return True
     if cardinality_mode == "exact" and str(meta.get("cardinality_method") or "") in {
         "cpc_sketch",
+        "kmv_sketch",
         "snowflake_approx_count_distinct",
     }:
         return True
@@ -308,6 +320,7 @@ def _generate_for_column(
         table_name=col["table_name"],
         col_name=col["col_name"],
         data_type=_normalize_type(col.get("data_type", "")),
+        table_row_count=int(col.get("table_row_count") or 0),
     )
     stats = _profile_column_task(
         task,
@@ -335,6 +348,7 @@ def _load_db_columns_from_row(row: dict) -> dict | None:
         "schema_name": str(schema.get("schema_name") or schema.get("name") or rel.get("schema_name") or ""),
         "col_name": str(col_name),
         "data_type": col.get("data_type") or col.get("col_type") or "",
+        "table_row_count": rel.get("row_count") or rel.get("rows") or 0,
     }
 
 
@@ -407,7 +421,18 @@ def _profile_column_snowflake(
 
     table_sql = _qualified_table_sql(task.schema_name, task.table_name, task.dialect)
     column_sql = _quote_identifier(task.col_name, task.dialect)
-    aggregate_sql = _snowflake_profile_aggregate_sql(table_sql, column_sql, task.data_type, cardinality_mode)
+    effective_cardinality_mode = cardinality_mode
+    if cardinality_mode == "auto":
+        exact_max_rows = _env_int(
+            "PONTIS_DB_COLUMN_STATS_SNOWFLAKE_EXACT_MAX_ROWS",
+            _DEFAULT_SNOWFLAKE_EXACT_MAX_ROWS,
+        )
+        effective_cardinality_mode = (
+            "exact" if task.table_row_count and task.table_row_count <= exact_max_rows else "sketch"
+        )
+    aggregate_sql = _snowflake_profile_aggregate_sql(
+        table_sql, column_sql, task.data_type, effective_cardinality_mode
+    )
     cursor.execute(aggregate_sql)
     row = cursor.fetchone()
     if not row:
@@ -418,11 +443,9 @@ def _profile_column_snowflake(
     cardinality = int(round(float(_row_value(row, 2) or 0)))
     stats = {
         "cardinality": cardinality,
-        "cardinality_lower_bound": cardinality,
-        "cardinality_upper_bound": cardinality,
         "cardinality_method": (
             "snowflake_approx_count_distinct"
-            if cardinality_mode == "sketch"
+            if effective_cardinality_mode == "sketch"
             else "snowflake_count_distinct"
         ),
         "null_count": null_count,
@@ -432,6 +455,11 @@ def _profile_column_snowflake(
         "topk": _snowflake_topk(cursor, table_sql, column_sql, topk_size, total_rows),
         "topk_method": "snowflake_group_by_count",
     }
+    if effective_cardinality_mode == "exact":
+        stats["cardinality_lower_bound"] = cardinality
+        stats["cardinality_upper_bound"] = cardinality
+    else:
+        stats["cardinality_approximate"] = True
 
     if task.data_type in _NUMERIC_TYPES:
         min_value = _row_value(row, 3)
@@ -598,8 +626,12 @@ def _profile_cursor(
     topk_size: int,
     cardinality_mode: str,
 ) -> Optional[dict]:
-    sketch = _new_cpc_sketch() if cardinality_mode == "sketch" else None
-    distinct_values: set[str] | None = set() if cardinality_mode == "exact" else None
+    sketch = _new_cardinality_sketch() if cardinality_mode in {"auto", "sketch"} else None
+    distinct_values: set[str] | None = set() if cardinality_mode in {"auto", "exact"} else None
+    exact_cardinality_limit = _env_int(
+        "PONTIS_DB_COLUMN_STATS_EXACT_CARDINALITY_MAX_DISTINCT",
+        _DEFAULT_EXACT_CARDINALITY_MAX_DISTINCT,
+    )
     total_rows = 0
     null_count = 0
 
@@ -615,7 +647,23 @@ def _profile_cursor(
 
     sample = []
     sample_seen = set()
-    topk_counter = _SpaceSavingCounter(max(topk_size * 4, 16))
+    topk_counter = _HybridTopKCounter(
+        exact_distinct_limit=_env_int(
+            "PONTIS_DB_COLUMN_STATS_EXACT_TOPK_MAX_DISTINCT",
+            _DEFAULT_EXACT_TOPK_MAX_DISTINCT,
+        ),
+        approximate_capacity=max(
+            topk_size * 64,
+            _env_int(
+                "PONTIS_DB_COLUMN_STATS_APPROX_TOPK_CAPACITY",
+                _DEFAULT_APPROX_TOPK_CAPACITY,
+            ),
+        ),
+        approximate_min_frequency=_env_float(
+            "PONTIS_DB_COLUMN_STATS_APPROX_TOPK_MIN_FREQUENCY",
+            _DEFAULT_APPROX_TOPK_MIN_FREQUENCY,
+        ),
+    )
     domain_counts = _new_domain_counts()
 
     for (value,) in cursor:
@@ -629,6 +677,8 @@ def _profile_cursor(
             sketch.update(stable_token)
         if distinct_values is not None:
             distinct_values.add(stable_token)
+            if cardinality_mode == "auto" and len(distinct_values) > exact_cardinality_limit:
+                distinct_values = None
         topk_counter.offer(_normalize_value(value))
         _offer_domain_value(domain_counts, value)
 
@@ -665,7 +715,7 @@ def _profile_cursor(
             "sample": [],
             "sample_method": "single_pass_distinct_prefix",
             "topk": [],
-            "topk_method": "space_saving",
+            "topk_method": "exact_counter",
             "domain_profile": build_domain_profile(data_type),
             "domain_profile_method": "full_column_scan",
         }
@@ -678,7 +728,7 @@ def _profile_cursor(
         "sample": sample,
         "sample_method": "single_pass_distinct_prefix",
         "topk": topk_counter.to_meta(topk_size, total_rows),
-        "topk_method": "space_saving",
+        "topk_method": topk_counter.method,
     }
 
     if data_type in _NUMERIC_TYPES and numeric_count > 0:
@@ -761,22 +811,18 @@ def _offer_domain_value(counts: dict[str, int], value: Any) -> None:
         counts["alnum"] += 1
 
 
-def _new_cpc_sketch():
-    try:
-        from datasketches import cpc_sketch
-    except ImportError as exc:
-        raise RuntimeError("datasketches is required when cardinality_mode='sketch'") from exc
-    return cpc_sketch(_CPC_LG_K)
+def _new_cardinality_sketch():
+    return _KMVSketch(_CARDINALITY_SKETCH_SIZE)
 
 
 def _cursor_cardinality_stats(cardinality_mode: str, sketch, distinct_values: set[str] | None) -> dict[str, int | str]:
-    if cardinality_mode == "sketch":
+    if cardinality_mode == "sketch" or (cardinality_mode == "auto" and distinct_values is None):
         estimate = int(round(sketch.get_estimate()))
         return {
             "cardinality": estimate,
-            "cardinality_lower_bound": int(round(sketch.get_lower_bound(1))),
-            "cardinality_upper_bound": int(round(sketch.get_upper_bound(1))),
-            "cardinality_method": "cpc_sketch",
+            "cardinality_lower_bound": int(round(sketch.get_lower_bound(2))),
+            "cardinality_upper_bound": int(round(sketch.get_upper_bound(2))),
+            "cardinality_method": "kmv_sketch",
         }
     cardinality = len(distinct_values or set())
     return {
@@ -788,7 +834,97 @@ def _cursor_cardinality_stats(cardinality_mode: str, sketch, distinct_values: se
 
 
 def _cardinality_method(cardinality_mode: str) -> str:
-    return "cpc_sketch" if cardinality_mode == "sketch" else "count_distinct"
+    return "kmv_sketch" if cardinality_mode == "sketch" else "count_distinct"
+
+
+class _KMVSketch:
+    """Bottom-k cardinality sketch with bounded memory and explicit bounds."""
+
+    _HASH_SPACE = 1 << 64
+
+    def __init__(self, size: int):
+        self.size = max(128, int(size))
+        self._hashes: set[int] = set()
+        self._max_heap: list[int] = []
+
+    def update(self, token: str) -> None:
+        digest = hashlib.blake2b(str(token).encode("utf-8"), digest_size=8).digest()
+        value = int.from_bytes(digest, "big")
+        if value in self._hashes:
+            return
+        if len(self._hashes) < self.size:
+            self._hashes.add(value)
+            heapq.heappush(self._max_heap, -value)
+            return
+        current_max = -self._max_heap[0]
+        if value >= current_max:
+            return
+        removed = -heapq.heapreplace(self._max_heap, -value)
+        self._hashes.remove(removed)
+        self._hashes.add(value)
+
+    def get_estimate(self) -> float:
+        if len(self._hashes) < self.size:
+            return float(len(self._hashes))
+        kth = -self._max_heap[0]
+        return (self.size - 1) * self._HASH_SPACE / max(1, kth)
+
+    def _relative_error(self, standard_deviations: int) -> float:
+        return max(1, int(standard_deviations)) / math.sqrt(self.size - 2)
+
+    def get_lower_bound(self, standard_deviations: int) -> float:
+        estimate = self.get_estimate()
+        return max(float(len(self._hashes)), estimate * (1.0 - self._relative_error(standard_deviations)))
+
+    def get_upper_bound(self, standard_deviations: int) -> float:
+        estimate = self.get_estimate()
+        return estimate * (1.0 + self._relative_error(standard_deviations))
+
+
+class _HybridTopKCounter:
+    """Exact top-k for bounded domains, approximate heavy hitters otherwise."""
+
+    def __init__(
+        self,
+        *,
+        exact_distinct_limit: int,
+        approximate_capacity: int,
+        approximate_min_frequency: float,
+    ):
+        self.exact_distinct_limit = max(1, int(exact_distinct_limit))
+        self.approximate_min_frequency = max(0.0, float(approximate_min_frequency))
+        self._exact: dict[Any, int] | None = {}
+        self._approximate = _SpaceSavingCounter(approximate_capacity)
+
+    @property
+    def method(self) -> str:
+        return "exact_counter" if self._exact is not None else "space_saving_with_bounds"
+
+    def offer(self, value: Any) -> None:
+        self._approximate.offer(value)
+        if self._exact is None:
+            return
+        if value in self._exact:
+            self._exact[value] += 1
+            return
+        if len(self._exact) >= self.exact_distinct_limit:
+            self._exact = None
+            return
+        self._exact[value] = 1
+
+    def to_meta(self, k: int, total_rows: int) -> list[dict[str, Any]]:
+        if self._exact is not None:
+            rows = sorted(self._exact.items(), key=lambda item: (-item[1], str(item[0])))
+            return [
+                {
+                    "value": value,
+                    "count": count,
+                    "percentage": round((count / total_rows) * 100, 2),
+                }
+                for value, count in rows[:k]
+            ]
+        minimum = max(2, int(math.ceil(total_rows * self.approximate_min_frequency)))
+        return self._approximate.to_meta(k, total_rows, min_lower_bound=minimum)
 
 
 class _SpaceSavingCounter:
@@ -796,30 +932,86 @@ class _SpaceSavingCounter:
 
     def __init__(self, capacity: int):
         self.capacity = max(1, capacity)
-        self._counts: dict[Any, int] = {}
+        self._counts: dict[Any, tuple[int, int]] = {}
+        self._heap: list[tuple[int, int, Any]] = []
+        self._sequence = 0
 
     def offer(self, value: Any) -> None:
         if value in self._counts:
-            self._counts[value] += 1
+            count, error = self._counts[value]
+            self._counts[value] = (count + 1, error)
+            self._push(value, count + 1)
+            self._compact_heap_if_needed()
             return
         if len(self._counts) < self.capacity:
-            self._counts[value] = 1
+            self._counts[value] = (1, 0)
+            self._push(value, 1)
             return
 
-        smallest_key = min(self._counts, key=self._counts.get)
-        smallest_count = self._counts.pop(smallest_key)
-        self._counts[value] = smallest_count + 1
+        smallest_count, _, smallest_key = self._pop_current_minimum()
+        self._counts.pop(smallest_key)
+        self._counts[value] = (smallest_count + 1, smallest_count)
+        self._push(value, smallest_count + 1)
+        self._compact_heap_if_needed()
 
-    def to_meta(self, k: int, total_rows: int) -> list[dict[str, Any]]:
-        rows = sorted(self._counts.items(), key=lambda item: (-item[1], str(item[0])))
+    def _push(self, value: Any, count: int) -> None:
+        self._sequence += 1
+        heapq.heappush(self._heap, (count, self._sequence, value))
+
+    def _pop_current_minimum(self) -> tuple[int, int, Any]:
+        while self._heap:
+            item = heapq.heappop(self._heap)
+            count, _, value = item
+            current = self._counts.get(value)
+            if current is not None and current[0] == count:
+                return item
+        raise RuntimeError("SpaceSaving heap is inconsistent")
+
+    def _compact_heap_if_needed(self) -> None:
+        if len(self._heap) <= self.capacity * 4:
+            return
+        self._heap = []
+        for value, (count, _) in self._counts.items():
+            self._push(value, count)
+
+    def to_meta(
+        self,
+        k: int,
+        total_rows: int,
+        *,
+        min_lower_bound: int = 1,
+    ) -> list[dict[str, Any]]:
+        rows = sorted(self._counts.items(), key=lambda item: (-item[1][0], str(item[0])))
         out = []
-        for value, count in rows[:k]:
+        for value, (count, error) in rows:
+            lower_bound = max(0, count - error)
+            if lower_bound < min_lower_bound:
+                continue
             out.append({
                 "value": value,
                 "count": count,
+                "count_lower_bound": lower_bound,
+                "count_error": error,
                 "percentage": round((count / total_rows) * 100, 2),
+                "approximate": True,
             })
+            if len(out) >= k:
+                break
         return out
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _normalize_number(value):

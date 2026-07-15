@@ -117,7 +117,7 @@ SPIDER_COLUMN_STATS_KWARGS = {
     "sample_size": 10,
     "topk_size": 5,
     "max_workers": 2,
-    "cardinality_mode": "exact",
+    "cardinality_mode": "auto",
 }
 
 
