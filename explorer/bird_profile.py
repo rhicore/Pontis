@@ -10,6 +10,7 @@ import logging
 from storage.workspace import Workspace
 
 logger = logging.getLogger(__name__)
+MAX_EXPLORER_ROUNDS = 96
 
 
 PROMPT = """\
@@ -79,7 +80,7 @@ def generate(workspace: Workspace) -> dict:
             "update_meta",
         ],
         include_readme=True,
-        max_rounds=32,
+        max_rounds=MAX_EXPLORER_ROUNDS,
     )
     spec.meta_write_fields = ["hints"]
     agent = create_agent(workspace.project_path, spec)

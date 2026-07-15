@@ -122,7 +122,48 @@ def test_hints_are_meta_only_and_do_not_enter_retrieval_text():
 
 
 def test_business_hints_keep_graph_and_structured_stats_out_of_metadata():
-    from explorer.bird_profile import PROMPT as bird_profile_prompt
+    from types import SimpleNamespace
+
+    from explorer.bird_profile import MAX_EXPLORER_ROUNDS, PROMPT as bird_profile_prompt
+    from explorer.utils.agent_spec import (
+        ExplorerRoundLimit,
+        _EXPLORER_ROUND_LIMIT_TEMPLATE,
+        explorer_writer_spec,
+    )
 
     assert "跨实体导航、连接端点、覆盖率和未匹配行由 `fk/rel/disambig`" in bird_profile_prompt
     assert "hints 不再抄录它们" in bird_profile_prompt
+    assert MAX_EXPLORER_ROUNDS == 96
+    assert "已审计和写入的范围" in _EXPLORER_ROUND_LIMIT_TEMPLATE
+    assert "仍未处理的范围" in _EXPLORER_ROUND_LIMIT_TEMPLATE
+    assert "生成 SQL" not in _EXPLORER_ROUND_LIMIT_TEMPLATE
+
+    workspace = SimpleNamespace(
+        active_projects=["demo"],
+        config=SimpleNamespace(
+            projects={"demo": SimpleNamespace(source=SimpleNamespace(type="sqlite"))}
+        ),
+    )
+    bounded = explorer_writer_spec(workspace, tools=["find"], max_rounds=12)
+    complete = explorer_writer_spec(workspace, tools=["find"])
+    assert len(bounded.guardrails) == 1
+    assert isinstance(bounded.guardrails[0], ExplorerRoundLimit)
+    assert bounded.guardrails[0].max_rounds == 12
+    assert complete.guardrails == []
+
+    from agent.guardrail_api import GuardrailContext
+
+    before = GuardrailContext(
+        messages=[], tool_history=[], workspace=None, rounds=11,
+        pending_calls=[("find", {})],
+    )
+    reached = GuardrailContext(
+        messages=[], tool_history=[], workspace=None, rounds=12,
+        pending_calls=[("find", {})],
+    )
+    assert bounded.guardrails[0].check(before) == {}
+    verdict = bounded.guardrails[0].check(reached)[0]
+    assert verdict.action == "block"
+    assert verdict.finalize is True
+    assert "仍未处理的范围" in verdict.message
+    assert "生成 SQL" not in verdict.message

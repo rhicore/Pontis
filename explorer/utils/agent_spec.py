@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from agent.config import AgentSpec
-from agent.guardrail import build_guardrails
+from agent.guardrail.round_limit import RoundLimit
 from storage.workspace import Workspace
 
 
@@ -19,6 +19,25 @@ _DATABASE_SOURCE_TYPES = {
     "snowflake",
     "spider2_snow",
 }
+
+
+_EXPLORER_ROUND_LIMIT_TEMPLATE = """\
+已达到 Explorer 的批处理交互上限（{max_rounds} 轮）。停止发起新的探索或写入，根据已经核验并落图的结果收尾。
+
+最终报告说明：
+- 已审计和写入的范围；
+- 仍未处理的范围；
+- 是否需要由外层 completeness check 启动补充轮次。
+"""
+
+
+class ExplorerRoundLimit(RoundLimit):
+    """Hard safety budget whose terminal behavior is written for preprocess explorers."""
+
+    builder_name = "explorer_round_limit"
+
+    def __init__(self, max_rounds: int):
+        super().__init__(max_rounds, stop_template=_EXPLORER_ROUND_LIMIT_TEMPLATE)
 
 
 def _explorer_prompts(workspace: Workspace) -> list[str]:
@@ -62,5 +81,5 @@ def explorer_writer_spec(
         prompts=prompts,
         query_mode=query_mode,
     )
-    spec.guardrails = build_guardrails(spec, ["round_limit"]) if max_rounds else []
+    spec.guardrails = [ExplorerRoundLimit(max_rounds)] if max_rounds else []
     return spec
