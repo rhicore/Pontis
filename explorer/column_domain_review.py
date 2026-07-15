@@ -28,6 +28,8 @@ PROMPT = """\
 
 一个稳定关系由 `fk` 或 `rel` 中的一种表达。多成员 domain 按实际关系连接成员子集；`logical_col` 代表一组分表中的同一列角色，关系优先连接 logical_col。
 
+多成员 domain 按“尚未表达的连接”拆分产物。例如 A-B 已有 fk，而 C-A 经验证可稳定连接，则新 rel 的边只连接 C 和 A；B-A 继续由原 fk 表达。domain 本身保留 A、B、C 的共享编码空间结论。
+
 ## Domain 结论
 
 - `accepted`：成员共享可复用的编码体系或实体标识空间。
@@ -42,6 +44,15 @@ PROMPT = """\
 4. 每个候选 domain 调用一次 update_meta，写入 review_status、brief 和 detail。
 5. 已有 fk/rel 完整承载连接时沿用该实体；发现稳定的非 schema 连接时创建 rel；发现真实字段选择边界时创建 disambig。
 
+## 关系知识写作
+
+关系实体的 metadata 是业务摘要，图边和成员自身 metadata 提供结构明细：
+
+- `rel.brief` 是不超过 50 字的业务关系名词短语，例如“交易与客户的标识关联”。
+- `rel.detail` 说明该连接支持什么业务导航、证据质量和已知例外，例如“用于从交易定位客户信息；当前交易记录均可稳定匹配”。该摘要以业务角色表达，Related 区域负责显示具体端点。
+- `disambig.brief` 命名共同的混淆主题；`disambig.detail` 说明混淆触发词和选择规则。
+- 端点身份、成员清单、主外键角色和各列 cardinality 从 Related 边及成员 metadata 读取。
+
 ## 写入格式
 
 审核域：
@@ -53,7 +64,7 @@ PROMPT = """\
 创建消歧义：
 `create_entity({"ref":"identifier_role_choice:disambig","meta":{"brief":"...","detail":"..."},"edges":[{"ref":"<成员1>"},{"ref":"<成员2>"}]})`
 
-成员身份和连接结构由边表达。brief/detail 使用中文，记录关系语义、选择规则和必要证据；实体 ref 使用简短 snake_case。完成本批全部域后回复 `DONE`。
+brief/detail 使用中文；实体 ref 使用简短 snake_case。完成本批全部域后回复 `DONE`。
 """
 
 

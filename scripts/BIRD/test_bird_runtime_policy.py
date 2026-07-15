@@ -100,6 +100,9 @@ def test_schema_descriptions_share_one_glossary_contract_without_querying_rows()
 def test_reviewed_relation_entities_have_non_overlapping_ownership():
     assert "`rel` 保存 schema 未声明" in COLUMN_DOMAIN_REVIEW_PROMPT
     assert "一个稳定关系由 `fk` 或 `rel` 中的一种表达" in COLUMN_DOMAIN_REVIEW_PROMPT
+    assert "A-B 已有 fk，而 C-A 经验证可稳定连接" in COLUMN_DOMAIN_REVIEW_PROMPT
+    assert "关系实体的 metadata 是业务摘要" in COLUMN_DOMAIN_REVIEW_PROMPT
+    assert "端点身份、成员清单、主外键角色和各列 cardinality" in COLUMN_DOMAIN_REVIEW_PROMPT
     assert "同一选择问题保留一个实体" in DISAMBIGUATE_PROMPT
     assert "补齐成员边，把说明整理成" in DISAMBIGUATE_PROMPT
     assert "整个任务不执行 SQL" in DISAMBIGUATE_PROMPT
