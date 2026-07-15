@@ -1,9 +1,4 @@
-"""Agent Disambiguate Maintenance — maintain and complete disambig entities.
-
-Default extraction routes column-domain candidates through
-``column_domain_review``. This module maintains already-created disambig
-entities and looks for obvious semantic gaps not covered by those candidates.
-"""
+"""Audit disambiguation knowledge and fill semantic gaps."""
 import logging
 
 from storage.workspace import Workspace
@@ -12,50 +7,38 @@ logger = logging.getLogger(__name__)
 
 
 PROMPT = """\
-你是 Pontis 的 disambiguate maintenance agent。当前图谱里已经有一些 `disambig` 实体，它们连接到容易混淆的表或列。
-你的任务是维护已有 `disambig`，并补充明显缺失的消歧义组，让后来读取 `meta` 的人能看懂这些字段或表有什么不同。
+你是 Pontis 的 disambiguation 审核员。图中已有一批 `disambig`，每个实体应当代表一个清晰的字段选择问题，并通过边连接全部候选。你要把现有消歧义整理成最小、准确、互不重复的知识集合，并补充 official metadata 和表结构能够明确支持的缺口。
 
-已有消歧义主要来自 column-domain 审核和列名/列值证据。这类候选可能漏掉语义相近但没有严格关键词或值域重叠的字段，例如字段名不同、代码列和名称列成对出现、官方说明指向同一分类体系、一个字段拆成多个端点字段、或一个字段是另一个字段的前缀/片段。
-你需要在维护已有实体时，主动检查这类明显缺口，并创建清晰的 group `disambig`。
+## 审核标准
 
-## 维护目标
-
-- 合并同一混淆维度下零碎的 pair disambig。
-- 扩展缺少连接实体的 group disambig。
-- 为语义相近但没有被现有候选覆盖的字段创建新的 group disambig。
-- 拆分混入多个混淆维度的 disambig。
-- 修正重复、连接错误或结论过强的 disambig；保留旧实体，用说明和补充实体收窄范围。
-- 改写含糊措辞，让每个已连接字段都有明确说明。
-
-## 写作要求
-
-- 读取列时优先查看 `official_column_description` 和 `official_value_description`；它们是人工/官方标注，优先于 AI/agent 生成的 `brief/detail`。
-- 写入内容只陈述当前数据库能看到的内容，重点比较来源、粒度、覆盖范围、编码、值域、行过滤、存储类别和连接后行数变化。
-- 每个已连接字段至少写出一条与其他字段不同的地方。
-- 使用明确差异表述：`来源表不同`、`覆盖行不同`、`值域不同`、`稳定连接证据不足`、`不是同一编码体系`。
-- 证据不足时写成“当前证据只支持候选审查，尚不足以建立稳定消歧结论”，并说明缺少哪类证据。
+- 选择问题：多个表或列会被同一自然语言表达指代，但它们的对象、粒度、角色、编码、单位或覆盖范围不同。
+- 完整性：实体连接该选择问题的全部候选；detail 说明用户在什么条件下选择哪种角色。
+- 最小性：同一选择问题保留一个实体。成员相交但选择规则不同的实体分别保留，并在 detail 中写清各自主题。
+- 稳定性：说明依赖 official description、表列结构、格式、单位和枚举语义等稳定事实；成员身份与连接结构由边表达。
+- 信息分工：Related 列表负责显示候选身份，候选自身的 metadata 负责定义字段含义；disambig detail 只写共同的混淆触发词和选择规则。例如“查询实体本身时选择主键角色；按明细筛选或聚合时选择对应明细角色”。
 
 ## 工作流程
 
-1. 用 `find({"ref":"*:disambig"})` 查找已有 disambig。
-2. 对每个需要维护的 disambig，用 `meta` 读取 brief/detail，并用 `find({"ref":"<disambig_ref>/*"})` 读取已连接实体。
-3. 读取相关列和表的 meta，必要时用 query 查看少量实际值，确认事实边界。
-4. 根据已有 disambig 的主题，检查同表和相关表中是否还有语义相近但未连接的字段：优先看 official description、official value description、列名、样例值、topk、代码/名称成对字段、端点字段和区间字段。
-5. 连接实体完整但措辞不清时，用 `update_meta` 改写 brief/detail。
-6. 连接实体不完整时，用 `add_edge` 把缺失字段补到已有 disambig。
-7. 主题混杂或重复时，保留旧实体，用 `update_meta` 写清旧实体当前覆盖范围，并在需要时用 `create_entity.edges` 创建更窄的新 group。
-8. 发现新的明显混淆组时，用 `create_entity.edges` 创建新的 group disambig，连接本组涉及的字段。
+1. 用 find 列出已有 disambig，读取每个实体的 metadata 和邻接成员，按比较主题分组。
+2. 对每组执行审计：补齐成员边，把说明整理成“混淆触发词 + 选择规则”；完全重复的实体合并到表达最清楚的一个，并删除其余副本。
+3. 查看表列名称和 official description，补充值域候选无法发现的明显选择问题，例如代码与名称、起止端点、上下界和不同结构角色。
+4. 创建或更新后重新读取实体，确认主题、说明和成员一致。
+
+数据核验以 metadata 和图结构为准，整个任务不执行 SQL。删除只适用于已确认由另一个 disambig 完整覆盖的重复实体。
 
 ## 写入格式
-
-更新实体：
-`update_meta({"ref": "<disambig_ref>", "fields": {"brief": "...", "detail": "..."}})`
 
 创建新实体：
 `create_entity({"ref": "field_choice:disambig", "meta": {"brief": "...", "detail": "..."}, "edges": [{"ref": "<列1:col>"}, {"ref": "<列2:col>"}]})`
 
-补充已有实体连接：
-`add_edge({"edges": [{"a": "<disambig_ref>", "b": "<列:col>"}]})`
+更新说明：
+`update_meta({"ref": "<disambig_ref>", "fields": {"brief": "...", "detail": "..."}})`
+
+补齐成员：
+`add_edge({"edges": [{"a": "<disambig_ref>", "b": "<候选实体>"}]})`
+
+删除重复副本：
+`delete({"ref": "<duplicate_disambig_ref>"})`
 
 用中文写 brief 和 detail。
 
@@ -64,29 +47,26 @@ PROMPT = """\
 
 
 def generate(workspace: Workspace) -> dict:
-    """Maintain existing disambiguation entities."""
+    """Audit disambiguation entities and fill metadata-driven gaps."""
     from agent.config import create_agent
     from agent.utils import load_agent_config
     from explorer.utils.agent_spec import explorer_writer_spec
 
     config = load_agent_config(workspace.project_path)
     if not config["api_key"]:
-        logger.warning("Agent not configured (no API key), skipping disambiguate maintenance")
+        logger.warning("Agent not configured (no API key), skipping disambiguation audit")
         return {}
 
-    logger.info("=== Agent Disambiguate Maintenance ===")
+    logger.info("=== Agent Disambiguation Audit ===")
 
     spec = explorer_writer_spec(
         workspace,
-        tools=[
-            "find", "meta", "query",
-            "create_entity", "update_meta", "add_edge",
-        ],
+        tools=["find", "meta", "create_entity", "update_meta", "add_edge", "delete"],
         include_readme=False,
     )
     agent = create_agent(workspace.project_path, spec)
     agent.chat(PROMPT)
-    logger.info("=== Agent Disambiguate Maintenance done ===")
+    logger.info("=== Agent Disambiguation Audit done ===")
     return _preprocess_metrics(agent)
 
 

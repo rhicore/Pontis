@@ -8,6 +8,8 @@ from agent.prompt._ontology import get_database_ontology_prompt, get_ontology_pr
 from agent.prompt._tool import get_tool_prompt
 from extractor.semantic_embedding import EMBEDDING_TEXT_FIELDS, _embedding_text
 from explorer.description_audit import PROMPT as DESCRIPTION_AUDIT_PROMPT
+from explorer.column_domain_review import PROMPT as COLUMN_DOMAIN_REVIEW_PROMPT
+from explorer.disambiguate import PROMPT as DISAMBIGUATE_PROMPT
 from explorer.schema_prepare import PROMPT as SCHEMA_PREPARE_PROMPT
 from explorer.utils.description_contract import DESCRIPTION_CONTRACT
 from tool.utils.entity_search import BM25_TEXT_FIELDS
@@ -93,6 +95,15 @@ def test_schema_descriptions_share_one_glossary_contract_without_querying_rows()
     source = Path(__file__).parents[2].joinpath("explorer/schema_prepare.py").read_text(encoding="utf-8")
     assert 'tools=["find", "meta", "update_meta"]' in source
     assert '"query"' not in source
+
+
+def test_reviewed_relation_entities_have_non_overlapping_ownership():
+    assert "`rel` 保存 schema 未声明" in COLUMN_DOMAIN_REVIEW_PROMPT
+    assert "一个稳定关系由 `fk` 或 `rel` 中的一种表达" in COLUMN_DOMAIN_REVIEW_PROMPT
+    assert "同一选择问题保留一个实体" in DISAMBIGUATE_PROMPT
+    assert "补齐成员边，把说明整理成" in DISAMBIGUATE_PROMPT
+    assert "整个任务不执行 SQL" in DISAMBIGUATE_PROMPT
+    assert "Related 列表负责显示候选身份" in DISAMBIGUATE_PROMPT
 
 
 def test_hints_are_meta_only_and_do_not_enter_retrieval_text():

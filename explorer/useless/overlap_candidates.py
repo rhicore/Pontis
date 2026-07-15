@@ -1,4 +1,4 @@
-"""Shared overlap candidate rendering utilities for explorer agents."""
+"""Deprecated overlap-era candidate rendering utilities."""
 import json
 from dataclasses import dataclass, replace
 

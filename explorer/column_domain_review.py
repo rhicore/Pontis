@@ -17,35 +17,30 @@ MAX_COMPLETION_PASSES = 2
 
 
 PROMPT = """\
-你是 Pontis 的 column-domain review agent。静态 extractor 已根据配置的筛选或聚类策略，把存在共同值证据的 `col` 和 `logical_col` 组织成候选 `column_domain`。你的任务是逐域审核其语义边界，并从中发现可靠的 `rel` 或必要的 `disambig`。
+你是 Pontis 的 column-domain 审核员。静态 extractor 已把具有共同值证据的列组织成 `column_domain`。你要逐域确认它代表的业务标识空间，并把审核结论转成主 agent 可直接使用的关系知识。
 
-`column_domain` 只表示成员值集合存在交集，不表示任意两个成员都能直接 JOIN，也不表示所有成员属于同一种业务对象。不要把一个多成员域展开成两两完全连接的 `rel`。
+## 实体职责
 
-## 每个域必须完成的判断
+- `column_domain` 保存机器候选、证据和审核状态。
+- `fk` 保存数据库 schema 已声明的列连接。
+- `rel` 保存 schema 未声明、但业务语义和行级数据共同支持的稳定连接。
+- `disambig` 保存相似候选之间会影响字段选择的边界。
 
-1. `accepted`：所有成员使用同一个可复用编码体系或实体标识空间，例如机场代码、客户 ID、专利 ID。用 `update_meta` 设置 `review_status=accepted`，并写清域的对象、格式、覆盖范围和例外。
-2. `needs_split`：域中存在两个或更多不同语义子域。设置 `review_status=needs_split`；detail 明确列出每个建议子域包含哪些成员，以及误并原因。不要删除 extractor 产生的边。
-3. `rejected`：共同值只是低基数枚举、小整数、日期、布尔值、统计量或偶然碰撞，整个域不构成可复用值域。设置 `review_status=rejected`，写清证据。
+一个稳定关系由 `fk` 或 `rel` 中的一种表达。多成员 domain 按实际关系连接成员子集；`logical_col` 代表一组分表中的同一列角色，关系优先连接 logical_col。
 
-每个候选域都必须调用一次 `update_meta`，不能只创建 `rel/disambig` 而不更新域状态。
+## Domain 结论
 
-## `rel` 与 `disambig`
+- `accepted`：成员共享可复用的编码体系或实体标识空间。
+- `needs_split`：共同值证据合并了两个或更多业务子域；detail 写明建议子域及形成误并的原因。
+- `rejected`：交集来自普通枚举、小整数、日期、布尔、统计量或偶然碰撞，不形成可复用业务值域。
 
-- 只有特定成员之间存在稳定行级匹配时才创建 `rel`。证据包括主外键语义、唯一业务标识、稳定编码映射、连接覆盖率与基数。共享值域本身不够。
-- `rel` 只连接被证明具有该关系的成员子集；域里其他成员不要顺带连接。
-- 字段名字或格式相似、容易被错选，但实际代表不同对象、不同粒度或不同编码体系时，创建 `disambig`。
-- `accepted` 域中存在明确可复用连接时，把连接结论落实为 `rel`；`needs_split` 域中存在做题时容易混淆的成员时，把选择边界落实为 `disambig`。主 agent 使用的是这些审核产物，不直接依赖候选域。
-- 同一编码域中的主键、外键或别名列可以建立 `rel`；同域中的来源/目的、起点/终点、当前/历史等角色列通常需要 `disambig`，是否建立 `rel` 取决于行级匹配证据。
-- `logical_col` 是表组同一列角色的联合值集合。审核它时查看其物理成员，但关系实体优先连接 `logical_col`，不要为每个分片重复创建相同关系。
+## 审核流程
 
-## 证据检查
-
-- 优先读 `official_column_description`、`official_value_description`、类型、cardinality、sample、topk 和 extractor evidence。
-- 必要时用 `meta` 展开成员，用 `find` 查看相邻表、逻辑列或已有关系，用 `query` 查询少量 distinct 值、JOIN 覆盖率、唯一性和连接基数。
-- overlap/min 高只能说明较小集合被较大集合覆盖；要区分主外键、同编码不同角色、低基数类别和偶然包含。
-- 数值 ID 尤其容易因共享小整数误并。表名、列语义和行粒度不同且没有稳定映射时应拆分或拒绝。
-- extractor evidence 是候选生成证据，不是最终语义结论。
-- topk 标记 `approximate=true` 时，`count` 是上界估计，`count_lower_bound` 是保守下界；语义判断优先使用值本身和误差界，不把估计次数当精确次数。
+1. 读取成员的 official description、类型、cardinality、sample、topk、extractor evidence，以及邻接的 `fk/rel/disambig`。
+2. 结合对象含义、格式、行粒度和 overlap 证据确定 domain 状态。标记为 approximate 的 topk 使用其误差界理解频次。
+3. 证据仍不足时，用 query 核验唯一性、匹配覆盖率或连接基数；每个 domain 最多执行 3 次针对性查询。
+4. 每个候选 domain 调用一次 update_meta，写入 review_status、brief 和 detail。
+5. 已有 fk/rel 完整承载连接时沿用该实体；发现稳定的非 schema 连接时创建 rel；发现真实字段选择边界时创建 disambig。
 
 ## 写入格式
 
@@ -58,7 +53,7 @@ PROMPT = """\
 创建消歧义：
 `create_entity({"ref":"identifier_role_choice:disambig","meta":{"brief":"...","detail":"..."},"edges":[{"ref":"<成员1>"},{"ref":"<成员2>"}]})`
 
-`rel/disambig` 的 brief/detail 使用中文并能独立解释关系或选择边界；成员由边读取，不在 detail 重复完整成员清单。实体 ref 使用简短 snake_case。完成本批全部域后回复 `DONE`。
+成员身份和连接结构由边表达。brief/detail 使用中文，记录关系语义、选择规则和必要证据；实体 ref 使用简短 snake_case。完成本批全部域后回复 `DONE`。
 """
 
 

@@ -2,7 +2,7 @@
 
 Pontis 使用一个统一 extractor `extractor/db_column_domain.py` 生成候选共享值域实体。BIRD 和 Spider 不再分别生成 `overlap` 与 `value_domain`；它们通过配置选择不同候选策略，最终都写成 `column_domain:domain`。
 
-最后同步：2026-07-14。
+最后同步：2026-07-15。
 
 ## 统一流程
 
@@ -29,6 +29,19 @@ storage-backed db
 | `extractor/utils/online_value_domains.py` | online 策略的 union + anchor 聚类 |
 | `extractor/utils/column_domain_entities.py` | 统一实体身份、成员边、upsert 和 stale cleanup |
 | `explorer/column_domain_review.py` | 统一审核候选域并生成必要的 `rel/disambig` |
+
+### Explorer 职责边界
+
+关系发现只保留两个互补的在线 explorer：
+
+| 模块 | 输入范围 | 唯一职责 | 可写实体 |
+|---|---|---|---|
+| `explorer/column_domain_review.py` | extractor 生成的全部 pending `column_domain` | 逐域完成 accepted / needs_split / rejected 审核；把值域候选支持的非 FK 连接或选择边界落图 | `column_domain` metadata、`rel`、`disambig` |
+| `explorer/disambiguate.py` | 已有 disambig、表列名称、结构角色和 official description | 审计已有消歧义的准确性、完整性和重复项，并补共享值域无法提出的纯语义选择问题 | `disambig` |
+
+`fk` 是 schema 已声明连接的唯一 owner；`column_domain_review` 不把已有 FK 复制成 rel。`disambiguate` 是 disambig 的最终审计者，但不重新审核 domain 或创建 rel，也不执行数据查询。这样 domain 的语义判断只做一次，消歧义产物仍有一个明确的最终质量负责人。
+
+旧 `relation_disambiguation_review.py` 基于旧 `overlap` 实体，和统一 domain review 重复，已经移入 `explorer/useless/`，不注册也不参与 BIRD/Spider pipeline。它专用的 `overlap_candidates.py` 同时退役。
 
 `db_column_overlap.py` 和 `db_value_domain.py` 是纯候选策略模块，不写图、不注册到 preprocessing registry。唯一公共入口 `db_column_domain.py` 选择一个策略，并统一负责实体写入。
 
@@ -219,5 +232,3 @@ value_read_method
 - `scripts/spider/audit_online_value_domains.py`
 - `scripts/spider/audit_gold_value_domain_rules.py`
 - `scripts/spider/extract_gold_value_overlaps.py`
-
-调整 hard filt

@@ -1,4 +1,4 @@
-"""Agent Relation/Disambiguation Review — route overlap candidates.
+"""Deprecated overlap-era Relation/Disambiguation Review.
 
 This explorer reviews the same overlap candidate once and decides whether it
 should become a rel, a disambig, both, or neither.
@@ -7,7 +7,7 @@ import logging
 
 from storage.workspace import Workspace
 
-from explorer.utils.overlap_candidates import (
+from explorer.useless.overlap_candidates import (
     MAX_CANDIDATES_PER_AGENT,
     CandidateGroup,
     build_candidate_groups,
