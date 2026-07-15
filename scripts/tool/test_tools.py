@@ -439,6 +439,14 @@ def main():
     )
     ok("create_entity creates disambig entity", "Created: status_id_domain" in create_out, create_out)
     ok("create_entity attaches path-ref edges", "books.sqlite/address_status/status_id" in create_out and "books.sqlite/order_status/status_id" in create_out, create_out)
+    disambig_db_edges = ws.cypher(
+        "MATCH (:db)--(x:disambig {name: 'status_id_domain'}) RETURN count(x) AS n"
+    )
+    ok(
+        "create_entity gives disambig a direct database navigation edge",
+        bool(disambig_db_edges and disambig_db_edges[0].get("n")),
+        str(disambig_db_edges),
+    )
 
     chunk_a = create_entity_command(
         ws,

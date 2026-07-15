@@ -8,6 +8,7 @@ from agent.prompt._ontology import get_database_ontology_prompt, get_ontology_pr
 from agent.prompt._tool import get_tool_prompt
 from extractor.semantic_embedding import EMBEDDING_TEXT_FIELDS, _embedding_text
 from tool.utils.entity_search import BM25_TEXT_FIELDS
+from utils.embedding import load_embedding_config
 
 
 def test_bird_agent_has_tool_control_but_no_text_sql_guards():
@@ -59,6 +60,26 @@ def test_large_database_ontology_extends_the_same_database_core():
     assert "唯一根节点" in ontology
     assert "table_group" in ontology
     assert "文件系统" not in ontology
+
+
+def test_main_agent_uses_reviewed_relations_instead_of_machine_domains():
+    spec = bird_runner._build_bird_agent_spec("demo")
+    prompts = "\n".join([
+        get_database_ontology_prompt(),
+        get_tool_prompt(spec),
+    ])
+
+    assert "column_domain" not in prompts
+    assert "fk" in prompts
+    assert "rel" in prompts
+    assert "disambig" in prompts
+
+
+def test_vector_retrieval_has_a_noise_floor():
+    config = load_embedding_config()
+
+    assert 0.0 < config.min_similarity < 1.0
+    assert config.min_similarity >= 0.65
 
 
 def test_hints_are_meta_only_and_do_not_enter_retrieval_text():

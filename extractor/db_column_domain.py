@@ -88,6 +88,9 @@ def generate(
 
 
 def _pairwise_candidate(candidate: dict, options: dict) -> dict:
+    stats = dict(candidate.get("stats", {}))
+    stats.pop("column_count", None)
+    stats.pop("pair_count", None)
     if "columns" in candidate:
         member_refs = [column.get("ref") for column in candidate["columns"]]
         evidence = {
@@ -107,7 +110,7 @@ def _pairwise_candidate(candidate: dict, options: dict) -> dict:
             "extraction_strategy": PAIRWISE_FILTER,
             "value_match_method": options.get("value_match_method", "sql"),
             "sources": candidate.get("sources", []),
-            "stats": candidate.get("stats", {}),
+            "stats": stats,
             "review_status": candidate.get("review_status") or "pending_review",
             **evidence,
         },
@@ -119,5 +122,6 @@ def _online_candidate(summary: dict) -> dict:
     member_refs = summary.pop("member_refs")
     for internal in ("_ref", "name", "db_ref", "schema_ref"):
         summary.pop(internal, None)
+    summary.pop("member_count", None)
     summary["extraction_strategy"] = ONLINE_CLUSTERING
     return {"member_refs": member_refs, "metadata": summary}

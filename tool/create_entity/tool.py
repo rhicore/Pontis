@@ -73,7 +73,7 @@ def _link_relation_entity_to_db(workspace, *, project: str | None, node_id: str 
     rows = workspace.cypher(
         """
         MATCH (r {id: $id})--(endpoint)
-        WHERE any(label IN coalesce(r.labels, []) WHERE label IN ['fk', 'rel', 'overlap'])
+        WHERE any(label IN coalesce(r.labels, []) WHERE label IN ['fk', 'rel', 'overlap', 'disambig'])
           AND coalesce(endpoint._db_ref, endpoint.db_ref) IS NOT NULL
         WITH r, collect(DISTINCT coalesce(endpoint._db_ref, endpoint.db_ref)) AS db_refs
         UNWIND db_refs AS db_ref
@@ -222,7 +222,7 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
                     edges=edges,
                 )
                 db_edges = 0
-                if set(labels or []) & {"fk", "rel", "overlap"}:
+                if set(labels or []) & {"fk", "rel", "overlap", "disambig"}:
                     db_edges = _link_relation_entity_to_db(
                         workspace,
                         project=project,
@@ -234,7 +234,7 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
                         lines.append(f"Edges ({len(edge_results)}):")
                         lines.extend(edge_results)
                     if db_edges:
-                        lines.append(f"DB relation index edges: {db_edges}")
+                        lines.append(f"DB navigation edges: {db_edges}")
                     return "\n".join(lines)
                 return f"实体已存在: {name}"
 
@@ -275,7 +275,7 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
     )
 
     db_edges = 0
-    if set(labels or []) & {"fk", "rel", "overlap"}:
+    if set(labels or []) & {"fk", "rel", "overlap", "disambig"}:
         db_edges = _link_relation_entity_to_db(workspace, project=project, node_id=created_id)
 
     lines = [f"Created: {name}"]
@@ -285,7 +285,7 @@ def create_entity_command(workspace, ref: str, meta: dict = None,
         lines.append(f"Edges ({len(edge_results)}):")
         lines.extend(edge_results)
     if db_edges:
-        lines.append(f"DB relation index edges: {db_edges}")
+        lines.append(f"DB navigation edges: {db_edges}")
 
     return "\n".join(lines)
 

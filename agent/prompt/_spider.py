@@ -24,9 +24,9 @@ def get_spider_snow_prompt() -> str:
 2. 根据 instruction 检索并读取相关 `schema/topic`；
 3. 展开命中的 `table_group` 或 standalone `table`；
 4. 只在该范围内读取候选 `logical_col/col`；
-5. 写 JOIN 前检查相关 `column_domain/fk/rel/disambig`，并用少量 `query` 验证仍不确定的关系。
+5. 写 JOIN 前检查相关 `fk/rel/disambig`，并用少量 `query` 验证仍不确定的关系。
 
-`topic` 只是路由索引，不能代替具体表列。`table_group` 代表多个物理分片；必须根据题目中的时间、版本、地区或其他后缀条件选择正确成员。`column_domain` 只表示候选共享值域，只有 `accepted` 域或已有 `fk/rel` 才能作为连接依据，`needs_split/rejected` 不得直接用于推断 JOIN。
+`topic` 只是路由索引，不能代替具体表列。`table_group` 代表多个物理分片；必须根据题目中的时间、版本、地区或其他后缀条件选择正确成员。`fk/rel` 提供连接依据，`disambig` 说明相近实体的选择边界。
 
 当命中的 topic、table group 或 standalone table 仍有大量列时，使用 `agent` 启动一个只读子智能体做列级聚焦。子智能体任务必须包含：原始 instruction、external knowledge 摘要、限定的实体 ref，以及要求返回的候选表全名、候选列、行粒度、过滤/聚合字段、连接依据和待验证问题。子智能体不写 SQL，不修改图谱；主 Agent 根据报告继续核验并生成最终 SQL。
 

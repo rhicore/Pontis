@@ -16,7 +16,7 @@ DETAIL = """\
 | 只有 ref | 按 ref 模式列出匹配实体 |
 | ref + query | 在 ref 范围内按实体 name / brief / detail / official 字段排序 |
 
-find 检索图谱实体和实体元数据，包括 db/table/col/fk/rel/column_domain/disambig/knowledge。原始行级过滤、聚合和 join 属于 `query`；JSON 层级浏览属于 `jd`；文本正文定位属于 `grep/read`。
+find 检索图谱实体和实体元数据，包括 db/table/col/fk/rel/disambig/knowledge。原始行级过滤、聚合和 join 属于 `query`；JSON 层级浏览属于 `jd`；文本正文定位属于 `grep/read`。
 `find` 结果中的 file 可能标记为 `metadata only`，这类生成实体只能用 `meta`；只有 `readable text` 文件才能交给 `read/grep`。
 
 ## ref 匹配语法

@@ -44,7 +44,8 @@ EMBEDDING
   -> semantic_embedding
 
 READINESS
-  -> 唯一 db source、表列、brief/detail、official metadata、README
+  -> 唯一 db source、表列、brief/detail、official metadata、非空且不超过 1800 字符的 README
+  -> column_domain 已完成 review，不存在 pending_review
   -> 所有可检索实体的 embedding 内容 hash、模型和维度均为当前值
 ```
 
@@ -61,7 +62,7 @@ db
 └── knowledge
 ```
 
-语义层可能包含 `fk`、`rel`、`column_domain`、`disambig` 和 `knowledge`。它们都是普通实体：工具不会为某一类型添加中括号、端点前缀或专用排版。
+语义层可能包含 `fk`、`rel`、`column_domain`、`disambig` 和 `knowledge`。它们都是普通实体：工具不会为某一类型添加中括号、端点前缀或专用排版。`column_domain` 是预处理审核的机器候选，普通 `meta` 不展示它的邻接；主 Agent 使用审核后生成的 `rel/disambig`。显式 `neighbor_label="column_domain"` 仍可供 explorer 检查候选。
 
 `find` 返回从唯一 `db` source 回溯得到的完整 ref。列实体固定使用结构归属路径 `db -> table/view -> col`，不会因为同时邻接关系实体而改变坐标。同名实体分别返回，例如：
 
@@ -70,7 +71,7 @@ california_schools.sqlite:db/frpm:table/CDSCode:col
 california_schools.sqlite:db/schools:table/CDSCode:col
 ```
 
-返回 ref 可直接交给 `meta`。`meta` 展示实体自身公开 metadata、邻接类型计数和普通邻居；`neighbor_label` 用于定向分页。`query` 对当前数据库执行只读 SQL，descendant ref 只选择所属数据库，不限制 SQL 的表范围。
+返回 ref 可直接交给 `meta`。新建的 `rel/disambig` 会直接连接唯一 db 根，使导航 ref 稳定为 `db/关系实体`；成员仍从关系实体的普通邻接展开。`meta` 展示实体自身公开 metadata、邻接类型计数和普通邻居；`neighbor_label` 用于定向分页。`query` 对当前数据库执行只读 SQL，descendant ref 只选择所属数据库，不限制 SQL 的表范围。
 
 ## 4. Metadata 规则
 
@@ -82,8 +83,8 @@ california_schools.sqlite:db/schools:table/CDSCode:col
 
 - db 的表/视图数量由邻接边计算；
 - table/view 的列数量由邻接边计算；
-- fk 的 source/target 端点由带 role 的边表达；
-- column_domain 的成员列和所属表由边表达；
+- fk 的参与表列由普通邻接边表达，实体名说明外键关系，不向 Agent 暴露方向或 role；
+- column_domain 的成员列和所属表由边表达，公开 metadata 不保存 member_count；
 - disambig 的成员由边表达。
 
 仍保留不能从边推出的事实：表行数、主键、official description、列统计和值样例、关系质量指标、候选筛选证据、review status、brief/detail/hints。
@@ -94,7 +95,7 @@ california_schools.sqlite:db/schools:table/CDSCode:col
 _ref / _db_ref / _db_connect / embedding / embedding_hash
 ```
 
-`col.table_name`、FK 内部端点 cache 等运行字段只有在消费者改为从带角色边读取后才能物理删除，不能仅按“公开 metadata 去冗余”直接删掉。
+`col.table_name`、FK 内部端点 cache 等运行字段继续用于数据库访问、校验和幂等写入，但不对 Agent 展示。
 
 ## 5. Agent 当前行为
 
@@ -105,7 +106,13 @@ base -> tool -> database_ontology -> sql -> bird
      -> effort -> guardrail -> project -> readme
 ```
 
-数据库 ontology 只说明 `db/table/view/col` 和普通语义实体。工具工作流从 question/evidence 中的业务概念开始定向检索，不再提示 BIRD agent 先探索 `schema_landscape/table_group`、文件、CSV 或 JSON。
+数据库 ontology 说明 `db/table/view/col` 与审核产物 `fk/rel/disambig/knowledge`。工具工作流从 question/evidence 中的业务概念开始定向检索，不再提示 BIRD agent 先探索 `column_domain`、`schema_landscape/table_group`、文件、CSV 或 JSON。
+
+README explorer 只写数据库用途、3–8 个核心业务对象和最多 5 条全局注意事项，正文硬上限 1800 字符；表列、关系、统计和消歧详情留在对应实体。表列 description 只写实体自身语义，统计字段与边关系不再复制进 detail。
+
+向量检索默认使用 `0.68` 最小相似度，可由 `embedding_min_similarity` 或 `PONTIS_EMBEDDING_MIN_SIMILARITY` 调整；低于阈值的向量候选不会进入结果，词法检索仍可提供确定命中。
+
+列统计默认使用自适应 cardinality：不超过 4096 个不同值时精确计数，超过后切换为固定 2048 样本的 KMV sketch 并记录约 95% 上下界；Snowflake 表行数不超过 100000 时精确，大表使用数据库近似计数。top-k 同样对小值域精确，对大值域使用有界 SpaceSaving，并过滤没有可靠下界的伪高频值。阈值和容量均可通过 `PONTIS_DB_COLUMN_STATS_*` 环境变量调整。
 
 Agent 每题最多 40 次工具调用，其中 `query` 最多 24 次；相同工具名和规范化参数复用已有结果。BIRD 只使用 round、工具额度和探索完成度 guard，不使用面向历史 strict 指标的文本 SQL 拦截。候选 SQL 会实际执行，最终以 result-based business-correct evaluator 为主判断业务等价。
 
@@ -115,7 +122,7 @@ Agent 每题最多 40 次工具调用，其中 `query` 最多 24 次；相同工
 
 - 11/11 个 BIRD project 均可解析唯一且存在的 SQLite source；
 - static 与 agent pipeline 注册顺序和 module 名称核对通过；
-- BIRD column-domain、runtime policy 和 prompt 回归 8/8 通过；
+- BIRD column-domain、runtime policy、混合计数和 prompt 回归通过；
 - 相关 Python package 编译通过，`git diff --check` 无格式错误。
 
 column-domain 重构提交还对 11/11 个 BIRD 库执行过静态 pipeline 验收。本轮 prompt/docs 整理没有重新写图，也没有重新调用 LLM。
@@ -125,5 +132,4 @@ column-domain 重构提交还对 11/11 个 BIRD 库执行过静态 pipeline 验�
 ## 7. 仍可继续优化
 
 1. source-rooted ref 目前仍可能按输出实体逐个查询路径，宽结果集存在 N+1 成本；
-2. 运行期内部 cache 可在 typed/role edge 消费者迁移完成后继续归一化；
-3. 对 detail 中“最大/最小/最多/最常见/唯一/全部”等高风险统计词增加事实一致性 gate。
+2. 对 detail 中“最大/最小/最多/最常见/唯一/全部”等高风险统计词增加事实一致性 gate。

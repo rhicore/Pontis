@@ -33,7 +33,7 @@ def get_bird_sql_prompt() -> str:
 
 ### 连接和值匹配
 
-- 优先使用 `fk`、`rel`、已审核 `column_domain` 中已有或经 `query` 验证的原始列简单等值连接。
+- 优先使用 `fk`、`rel` 中已有或经 `query` 验证的原始列简单等值连接。
 - 当题面值的实际存储写法不确定时，先检查 sample/top-k，再匹配数据库中存储的文本值或代码值。
 
 ### 完成条件

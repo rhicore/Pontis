@@ -17,6 +17,7 @@ _ADJACENCY_KEYS = {
 }
 _DEFAULT_NEIGHBOR_LIMIT = 20
 _MAX_NEIGHBOR_LIMIT = 100
+_DEFAULT_HIDDEN_ADJACENCY_KEYS = {"column_domain"}
 
 
 def _get_project_name(workspace) -> str:
@@ -436,7 +437,10 @@ def meta_command(
 
     visible_adj = {}
     if adjacency:
-        public_adj = {k: v for k, v in adjacency.items() if k != "hint"}
+        public_adj = {
+            k: v for k, v in adjacency.items()
+            if k != "hint" and k not in _DEFAULT_HIDDEN_ADJACENCY_KEYS
+        }
         visible_adj = {
             k: v for k, v in public_adj.items()
             if not config.adjacency_keys or k in config.adjacency_keys

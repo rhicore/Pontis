@@ -23,6 +23,7 @@ class EmbeddingConfig:
     api_key: str
     dimensions: int
     batch_size: int = 64
+    min_similarity: float = 0.68
 
     def get_client(self) -> "EmbeddingClient | None":
         if not self.enabled or not self.api_key:
@@ -117,6 +118,7 @@ def load_embedding_config(path: str | None = None) -> EmbeddingConfig:
         "api_key": defaults.EMBEDDING_API_KEY,
         "dimensions": defaults.EMBEDDING_DIMENSIONS,
         "batch_size": defaults.EMBEDDING_BATCH_SIZE,
+        "min_similarity": defaults.EMBEDDING_MIN_SIMILARITY,
     }
 
     mapping = {
@@ -125,6 +127,7 @@ def load_embedding_config(path: str | None = None) -> EmbeddingConfig:
         "embedding_api_key": "api_key",
         "embedding_dimensions": "dimensions",
         "embedding_batch_size": "batch_size",
+        "embedding_min_similarity": "min_similarity",
     }
     apply_yaml(cfg, os.path.expanduser("~/.pontis/config.yml"), mapping)
     if path:
@@ -146,4 +149,7 @@ def load_embedding_config(path: str | None = None) -> EmbeddingConfig:
         api_key=api_key,
         dimensions=int(os.environ.get("PONTIS_EMBEDDING_DIMENSIONS", cfg.get("dimensions") or 1024)),
         batch_size=int(os.environ.get("PONTIS_EMBEDDING_BATCH_SIZE", cfg.get("batch_size") or 10)),
+        min_similarity=float(
+            os.environ.get("PONTIS_EMBEDDING_MIN_SIMILARITY", cfg.get("min_similarity") or 0.68)
+        ),
     )

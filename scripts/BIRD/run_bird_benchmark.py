@@ -562,7 +562,9 @@ def main() -> None:
         readiness = assert_bird_database_ready(str(get_db_dir(db_id, args.train)))
         print(
             f"  [{db_id}] ready: tables={readiness.tables}, "
-            f"columns={readiness.columns}, stale_embeddings={readiness.stale_embeddings}"
+            f"columns={readiness.columns}, oversized_readmes={readiness.oversized_readmes}, "
+            f"pending_domains={readiness.pending_column_domains}, "
+            f"stale_embeddings={readiness.stale_embeddings}"
         )
     print("Readiness passed\n")
 

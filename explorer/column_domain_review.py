@@ -34,6 +34,7 @@ PROMPT = """\
 - 只有特定成员之间存在稳定行级匹配时才创建 `rel`。证据包括主外键语义、唯一业务标识、稳定编码映射、连接覆盖率与基数。共享值域本身不够。
 - `rel` 只连接被证明具有该关系的成员子集；域里其他成员不要顺带连接。
 - 字段名字或格式相似、容易被错选，但实际代表不同对象、不同粒度或不同编码体系时，创建 `disambig`。
+- `accepted` 域中存在明确可复用连接时，把连接结论落实为 `rel`；`needs_split` 域中存在做题时容易混淆的成员时，把选择边界落实为 `disambig`。主 agent 使用的是这些审核产物，不直接依赖候选域。
 - 同一编码域中的主键、外键或别名列可以建立 `rel`；同域中的来源/目的、起点/终点、当前/历史等角色列通常需要 `disambig`，是否建立 `rel` 取决于行级匹配证据。
 - `logical_col` 是表组同一列角色的联合值集合。审核它时查看其物理成员，但关系实体优先连接 `logical_col`，不要为每个分片重复创建相同关系。
 
@@ -44,6 +45,7 @@ PROMPT = """\
 - overlap/min 高只能说明较小集合被较大集合覆盖；要区分主外键、同编码不同角色、低基数类别和偶然包含。
 - 数值 ID 尤其容易因共享小整数误并。表名、列语义和行粒度不同且没有稳定映射时应拆分或拒绝。
 - extractor evidence 是候选生成证据，不是最终语义结论。
+- topk 标记 `approximate=true` 时，`count` 是上界估计，`count_lower_bound` 是保守下界；语义判断优先使用值本身和误差界，不把估计次数当精确次数。
 
 ## 写入格式
 
@@ -56,7 +58,7 @@ PROMPT = """\
 创建消歧义：
 `create_entity({"ref":"identifier_role_choice:disambig","meta":{"brief":"...","detail":"..."},"edges":[{"ref":"<成员1>"},{"ref":"<成员2>"}]})`
 
-brief/detail 使用中文；实体 ref 使用简短 snake_case。完成本批全部域后回复 `DONE`。
+`rel/disambig` 的 brief/detail 使用中文并能独立解释关系或选择边界；成员由边读取，不在 detail 重复完整成员清单。实体 ref 使用简短 snake_case。完成本批全部域后回复 `DONE`。
 """
 
 
@@ -148,7 +150,7 @@ def generate(workspace: Workspace) -> dict:
     spec = explorer_writer_spec(
         workspace,
         tools=["find", "meta", "query", "create_entity", "update_meta", "add_edge"],
-        include_readme=True,
+        include_readme=False,
     )
     spec.meta_write_fields = ["brief", "detail", "review_status"]
     batches = candidate_batches(candidates, MAX_DOMAINS_PER_AGENT)

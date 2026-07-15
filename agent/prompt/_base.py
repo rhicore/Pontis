@@ -11,8 +11,8 @@ def get_base_prompt() -> str:
 - Pontis 使用属性图模型的子集；图谱主要描述 schema、结构关系、统计、样例和知识，原始行数据通过 `query` 检查。
 - Pontis 一次可以打开多个 Project；Project 是图查询和 ref 匹配的路由上下文，`project::ref` 限定单个 Project。
 - ref 默认在当前已打开的全部 Project 中匹配，例如 `*:db` 会搜索全部数据库入口。
-- 实体由 `name`、标签和属性组成；常见实体包括 `db`、`table`、`col`、`fk`、`rel`、`column_domain`、`disambig`、`knowledge`。
-- 图边表示相关或邻接；有独立语义的关系通常也是实体，例如 `fk`、`rel`、`column_domain`、`disambig`。
+- 实体由 `name`、标签和属性组成；常见实体包括 `db`、`table`、`col`、`fk`、`rel`、`disambig`、`knowledge`。
+- 图边表示相关或邻接；有独立语义的关系通常也是实体，例如 `fk`、`rel`、`disambig`。
 
 ### 元数据可信度
 

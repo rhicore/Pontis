@@ -82,7 +82,7 @@ def generate(workspace: Workspace) -> dict:
             "find", "meta", "query",
             "create_entity", "update_meta", "add_edge",
         ],
-        include_readme=True,
+        include_readme=False,
     )
     agent = create_agent(workspace.project_path, spec)
     agent.chat(PROMPT)

@@ -6,18 +6,16 @@ from storage.workspace import Workspace
 logger = logging.getLogger(__name__)
 
 PROMPT = """\
-你正在做 README 写作前的最后检查。当前 Pontis 图谱里已经有表、列、关系、disambig 和 README 的 `brief/detail`。
-你的任务是修正这些已有描述中和 official 字段冲突的地方，尤其是 official 标记为不可用的列。
-你只审查和改写已有图谱描述，不重新探索数据库内容。
+你正在做数据库表列 description 的最后检查。你的任务是让 `table/col` 的 `brief/detail` 与 official 字段一致，并保持为实体自身的局部说明。
 
 ## 职责
 
-- 审查 db、table、col、fk、rel、disambig 和 README 的 brief/detail。
+- 审查 table 和 col 的 brief/detail。
 - 重点处理 official 字段标记 `unuseful`、`not useful`、`unused`、`ignore` 或同类含义的列。
 - 只修正已有 description 产物。
 - 保留能从 schema、official 字段、样例、统计、已有关系和说明文件支持的内容。
-- `brief/detail` 写成对象说明：这个对象是什么、有哪些值、和哪些对象相连、有哪些质量问题。
-- 需要读取说明文件正文时使用 `read`。
+- `brief/detail` 写成对象说明：表的用途与行粒度，或列的含义、格式、单位和枚举解释。
+- 行数、cardinality、null、sample、topk、范围、成员、归属、关系端点和相邻实体由现有 metadata 与边表达。
 - 完成后直接停止，不输出总结文字。
 
 ## official 标记不可用的列
@@ -29,36 +27,24 @@ brief: 官方标记为不可用
 detail: 官方标记为不可用
 ```
 
-其他实体提到这类列时，只保留事实：`<列名> 官方标记为不可用`。
-
-如果已有描述包含这类列的枚举值、取值分布、代码映射、值解释、业务含义、行粒度判断或连接结论，
-改写为上面的固定说明。若 rel/disambig 只围绕这类列的取值、粒度或业务用途建立，
-把该实体改写为只记录“相关字段官方标记为不可用”的事实；若实体仍覆盖其他有效字段，
-更新 detail，使其只记录有效字段之间的区别和禁用字段事实。
+其他表列描述提到这类列时，只保留 `<列名> 官方标记为不可用` 这一事实。
 
 ## 执行方式
 
 - 先找出 official 字段标记为不可用的列，整理成禁用列清单。
-- 逐个读取禁用列自身元数据、所属表元数据、README、以及与禁用列相连的 rel/disambig。
-- 对连接到禁用列的 rel/disambig，保留有效字段之间的差异说明；禁用列只写禁用事实，不展开联系人顺序、枚举、唯一值数量、代码映射或业务含义。
-- 如果一个 rel/disambig 的判断基础只剩禁用列的值分析或业务用途，改写为禁用字段事实；如果仍包含有效字段，改写后保留。
+- 逐个读取禁用列自身元数据和所属表元数据。
+- 把禁用列自身和表内对它的描述统一为 official 禁用事实。
 
 ## 审查入口
 
-- `find({"ref": "*:file:db"})`
-- `find({"ref": "<db>:db/*:table"})` 或 `find({"ref": "<db>/*:table"})`
-- `find({"ref": "<db>/<table>/*:col"})`
-- `find({"ref": "*:fk"})`
-- `find({"ref": "*:rel"})`
-- `find({"ref": "*:disambig"})`
-- `find({"ref": "README"})`
-- `read({"ref": "<说明文件 ref>"})`
+- `find({"ref": "*:table"})`
+- `find({"ref": "*:col"})`
+- `meta({"ref": "<table 或 col 的完整 ref>"})`
 
 ## 完成条件
 
 - official 标记不可用的列自身 brief/detail 已统一。
-- 表、库、fk、rel、disambig 和 README 中不再保留不可用列的值分析或业务用途。
-- 必要的 rel/disambig 已保留，完全由不可用列分析产生的实体已改写为禁用字段事实。
+- 表列 description 与 official metadata 一致，并且只包含实体自身事实。
 """
 
 
@@ -66,7 +52,7 @@ def generate(workspace: Workspace) -> dict:
     """Audit generated descriptions after relation/disambiguation review."""
     from agent.config import create_agent
     from agent.utils import load_agent_config
-    from explorer.utils.bird_metadata import explorer_tools, official_metadata_note
+    from explorer.utils.bird_metadata import official_metadata_note
     from explorer.utils.agent_spec import explorer_writer_spec
 
     config = load_agent_config(workspace.project_path)
@@ -78,11 +64,8 @@ def generate(workspace: Workspace) -> dict:
 
     spec = explorer_writer_spec(
         workspace,
-        tools=explorer_tools(workspace.project_path, [
-            "find", "meta", "read",
-            "update_meta",
-        ]),
-        include_readme=True,
+        tools=["find", "meta", "update_meta"],
+        include_readme=False,
     )
     agent = create_agent(workspace.project_path, spec)
 

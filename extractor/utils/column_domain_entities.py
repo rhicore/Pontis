@@ -34,7 +34,6 @@ def sync_column_domains(
             name=column_domain_name(ref),
             metadata={
                 **candidate.get("metadata", {}),
-                "member_count": len(member_refs),
                 "entity_method": ENTITY_METHOD,
             },
         ):

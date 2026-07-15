@@ -278,6 +278,9 @@ def _vector_search(workspace, query: str, ref: str = "", fetch_k: int = 100) -> 
             except Exception:
                 continue
             for row in rows:
+                score = float(row.get("score") or 0.0)
+                if score < embed_config.min_similarity:
+                    continue
                 node = row.get("n") or {}
                 if candidate_project:
                     node = dict(node)
@@ -297,7 +300,7 @@ def _vector_search(workspace, query: str, ref: str = "", fetch_k: int = 100) -> 
                 if not name:
                     continue
                 info = get_info(labels, node)
-                docs.append((float(row.get("score") or 0.0), name, node, info, labels, node_project))
+                docs.append((score, name, node, info, labels, node_project))
     docs.sort(key=lambda x: (-x[0], _knowledge_priority(x[4]), x[1].lower()))
     return docs
 

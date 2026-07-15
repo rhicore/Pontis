@@ -33,7 +33,7 @@ def find_command(
     query = (query or "").strip()
 
     if not ref:
-        return 'Error: find requires ref, e.g. find({"ref":"*:file"})'
+        return 'Error: find requires ref, e.g. find({"ref":"*:table"})'
     if int(offset or 0) < 0:
         return "Error: find offset 必须大于或等于 0。"
     if limit is not None and int(limit) < 1:

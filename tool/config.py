@@ -115,6 +115,11 @@ def _count_stats(d, *items):
     return ", ".join(parts) or "-"
 
 
+def _line_stats(d):
+    value = d.get("line_count")
+    return f"{value} lines" if value is not None else ""
+
+
 # ========== Info 类型配置 (find/meta) — 按标签段索引 ==========
 
 INFO_TYPE_CONFIG = {
@@ -127,8 +132,8 @@ INFO_TYPE_CONFIG = {
     "tsv":      InfoTypeConfig(info_fn=lambda m: {"stats": _count_stats(m, ("row_count", "rows"), ("column_count", "cols"))}),
     "json":     InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'structure_type')}, {_v(m,'line_count')} lines"}),
     "yaml":     InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'structure_type')}, {_v(m,'line_count')} lines"}),
-    "md":       InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'line_count')} lines"}),
-    "text":     InfoTypeConfig(info_fn=lambda m: {"stats": f"{_v(m,'line_count')} lines"}),
+    "md":       InfoTypeConfig(info_fn=lambda m: {"stats": _line_stats(m)}),
+    "text":     InfoTypeConfig(info_fn=lambda m: {"stats": _line_stats(m)}),
     # 结构段
     "table":    InfoTypeConfig(info_fn=lambda m: {
                     "stats": _count_stats(m, ("row_count", "rows")),
@@ -272,7 +277,7 @@ META_TYPE_CONFIG = {
     ),
     "column_domain": MetaTypeConfig(
         default_keys=[
-            "extraction_strategy", "value_match_method", "member_count",
+            "extraction_strategy", "value_match_method",
             "union_cardinality", "semantic_roles", "overlap_metric",
             "overlap_threshold", "min_anchor_support", "review_status",
             "sources", "stats", "brief", "detail",
